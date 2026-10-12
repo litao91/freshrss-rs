@@ -4,6 +4,7 @@
 //! The crate is deliberately free of database and web concerns so it can be exercised entirely
 //! from fixtures.
 
+pub mod discovery;
 pub mod entities;
 pub mod error;
 pub mod guid;
@@ -16,6 +17,7 @@ pub mod raw;
 pub mod sanitize;
 pub mod text;
 
+pub use discovery::{discover, Candidate, Discovered, Probe, Source};
 pub use entities::{encode_specials, html_only_entity_decode};
 pub use error::FeedError;
 pub use guid::{decide_guid, load_guids, GuidInput, GuidResolution, UnicityCriteria};
