@@ -16,7 +16,8 @@ use crate::domain::entry::Entry;
 use crate::domain::ids::{now_unix, EntryId};
 
 pub const COLUMNS: &str = "id, id_user, id_feed, guid, title, author, content, link, date, \
-     lastSeen, lastModified, lastUserModified, hash, is_read, is_favorite, tags, attributes";
+     lastSeen, lastModified, lastUserModified, hash, is_read, is_favorite, tags, attributes, \
+     title_folded, content_folded, author_folded, link_folded, tags_folded";
 
 /// The same list qualified for the late-row-lookup join in [`super::entry_query`], which fetches a
 /// page of ids first and only then reads the wide columns for those ids.
@@ -181,11 +182,13 @@ pub fn list_recent_guids_in_category(
 /// item, or two feeds in one batch) and `UNIQUE(id_feed, guid)` makes the second a no-op rather
 /// than an error.
 pub fn stage(conn: &Connection, entry: &Entry) -> SqlResult<bool> {
+    let folded = entry.folded();
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO entrytmp
              (id, id_user, guid, title, author, content, link, date, lastSeen, hash,
-              is_read, is_favorite, id_feed, tags, attributes)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+              is_read, is_favorite, id_feed, tags, attributes,
+              title_folded, content_folded, author_folded, link_folded, tags_folded)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             entry.id.micros(),
             entry.id_user,
@@ -202,6 +205,11 @@ pub fn stage(conn: &Connection, entry: &Entry) -> SqlResult<bool> {
             entry.id_feed,
             entry.tags_to_db(),
             entry.attributes.to_db(),
+            folded.title,
+            folded.content,
+            folded.author,
+            folded.link,
+            folded.tags,
         ],
     )?;
     Ok(inserted > 0)
@@ -236,10 +244,12 @@ pub fn commit_staged(conn: &Connection, id_user: i64) -> SqlResult<usize> {
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO entry
              (id, id_user, guid, title, author, content, link, date, lastSeen, hash,
-              is_read, is_favorite, id_feed, tags, attributes)
+              is_read, is_favorite, id_feed, tags, attributes,
+              title_folded, content_folded, author_folded, link_folded, tags_folded)
          SELECT ?2 + (ROW_NUMBER() OVER (ORDER BY t.date, t.id) - 1),
                 t.id_user, t.guid, t.title, t.author, t.content, t.link, t.date, t.lastSeen,
-                t.hash, t.is_read, t.is_favorite, t.id_feed, t.tags, t.attributes
+                t.hash, t.is_read, t.is_favorite, t.id_feed, t.tags, t.attributes,
+                t.title_folded, t.content_folded, t.author_folded, t.link_folded, t.tags_folded
          FROM entrytmp t
          WHERE t.id_user = ?1",
         params![id_user, first_id],
@@ -263,6 +273,7 @@ pub fn discard_staged(conn: &Connection, id_user: i64) -> SqlResult<usize> {
 /// supplied a value, so an upstream edit does not silently clear either — FreshRSS uses
 /// `COALESCE(:x, x)` for exactly this reason.
 pub fn update_existing(conn: &Connection, entry: &Entry) -> SqlResult<bool> {
+    let folded = entry.folded();
     let updated = conn.execute(
         "UPDATE entry SET
              title = ?3,
@@ -277,7 +288,12 @@ pub fn update_existing(conn: &Connection, entry: &Entry) -> SqlResult<bool> {
              is_read = COALESCE(?12, is_read),
              is_favorite = COALESCE(?13, is_favorite),
              tags = ?14,
-             attributes = ?15
+             attributes = ?15,
+             title_folded = ?16,
+             content_folded = ?17,
+             author_folded = ?18,
+             link_folded = ?19,
+             tags_folded = ?20
          WHERE id_feed = ?1 AND guid = ?2",
         params![
             entry.id_feed,
@@ -295,6 +311,11 @@ pub fn update_existing(conn: &Connection, entry: &Entry) -> SqlResult<bool> {
             entry.is_favorite.then_some(1i64),
             entry.tags_to_db(),
             entry.attributes.to_db(),
+            folded.title,
+            folded.content,
+            folded.author,
+            folded.link,
+            folded.tags,
         ],
     )?;
     Ok(updated > 0)

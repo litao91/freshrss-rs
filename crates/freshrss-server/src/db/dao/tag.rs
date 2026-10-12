@@ -13,10 +13,10 @@ use crate::db::sql::{in_clause, MAX_BIND_PARAMS};
 use crate::domain::attributes::Attributes;
 use crate::domain::tag::Tag;
 
-pub const COLUMNS: &str = "id, id_user, name, attributes";
+pub const COLUMNS: &str = "id, id_user, name, attributes, name_folded";
 
 /// The same list qualified with the `t.` alias, for joins.
-const COLUMNS_ALIASED: &str = "t.id, t.id_user, t.name, t.attributes";
+const COLUMNS_ALIASED: &str = "t.id, t.id_user, t.name, t.attributes, t.name_folded";
 
 fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Tag> {
     Ok(Tag {
@@ -29,8 +29,8 @@ fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Tag> {
 
 pub fn insert(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
     conn.execute(
-        "INSERT INTO tag (id_user, name) VALUES (?1, ?2)",
-        params![id_user, name],
+        "INSERT INTO tag (id_user, name, name_folded) VALUES (?1, ?2, ?3)",
+        params![id_user, name, freshrss_search::fold(name)],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -42,9 +42,9 @@ pub fn insert(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
 /// alone would turn the loser into an error the user sees.
 pub fn find_or_create(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
     conn.execute(
-        "INSERT INTO tag (id_user, name) VALUES (?1, ?2)
+        "INSERT INTO tag (id_user, name, name_folded) VALUES (?1, ?2, ?3)
          ON CONFLICT (id_user, name) DO NOTHING",
-        params![id_user, name],
+        params![id_user, name, freshrss_search::fold(name)],
     )?;
     conn.query_row(
         "SELECT id FROM tag WHERE id_user = ?1 AND name = ?2",
@@ -110,8 +110,8 @@ pub fn list_with_counts(conn: &Connection, id_user: i64) -> SqlResult<Vec<(Tag, 
 
 pub fn rename(conn: &Connection, id: i64, id_user: i64, name: &str) -> SqlResult<bool> {
     Ok(conn.execute(
-        "UPDATE tag SET name = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, name],
+        "UPDATE tag SET name = ?3, name_folded = ?4 WHERE id = ?1 AND id_user = ?2",
+        params![id, id_user, name, freshrss_search::fold(name)],
     )? > 0)
 }
 
@@ -230,7 +230,7 @@ pub fn labels_for_entries(
     for chunk in id_entries.chunks(MAX_BIND_PARAMS) {
         let placeholders = in_clause(chunk.len());
         let sql = format!(
-            "SELECT et.id_entry, t.id, t.id_user, t.name, t.attributes
+            "SELECT et.id_entry, t.id, t.id_user, t.name, t.attributes, t.name_folded
              FROM entrytag et
              INNER JOIN tag t ON t.id = et.id_tag
              WHERE et.id_entry IN {placeholders}

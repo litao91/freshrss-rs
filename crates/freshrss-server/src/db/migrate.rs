@@ -18,11 +18,18 @@ pub struct Migration {
 }
 
 /// Append new migrations here; never edit or reorder an entry that has shipped.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../../migrations/V1__init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../../migrations/V1__init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "folded_columns",
+        sql: include_str!("../../migrations/V2__folded_columns.sql"),
+    },
+];
 
 /// Value written to `meta('schema_version')` once everything is applied.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
@@ -179,7 +186,7 @@ mod tests {
     fn applies_every_migration_and_records_it() {
         let c = conn();
         let report = run(&c).expect("first run applies");
-        assert_eq!(report.applied, vec![1]);
+        assert_eq!(report.applied, vec![1, 2]);
         assert!(!report.already_current);
         assert_eq!(report.schema_version, SCHEMA_VERSION);
     }

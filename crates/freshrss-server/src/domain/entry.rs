@@ -80,6 +80,16 @@ pub struct Enclosure {
 }
 
 /// A feed-provided thumbnail, from the `thumbnail` attribute.
+/// The folded form of an entry's searchable columns; see [`Entry::folded`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folded {
+    pub title: String,
+    pub content: String,
+    pub author: String,
+    pub link: String,
+    pub tags: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Thumbnail {
     pub url: String,
@@ -254,6 +264,22 @@ impl Entry {
             .get(keys::ENCLOSURES)
             .and_then(|v| v.as_array())
             .is_some_and(|a| !a.is_empty())
+    }
+
+    /// The accent-folded copies of every column the search grammar compares against.
+    ///
+    /// SQLite cannot fold text itself — its `LIKE` is ASCII-case-only and the driver cannot
+    /// register a function that could — so the fold is computed once here, at write time, and
+    /// stored beside the value it was made from. The entry DAO writes these with the columns they
+    /// mirror, and the backfill in `db::fold` fills them for rows written before that existed.
+    pub fn folded(&self) -> Folded {
+        Folded {
+            title: freshrss_search::fold(&self.title),
+            content: freshrss_search::fold(&self.content),
+            author: freshrss_search::fold(&self.author_to_db()),
+            link: freshrss_search::fold(&self.link),
+            tags: freshrss_search::fold(&self.tags_to_db()),
+        }
     }
 
     // --- display helpers ---------------------------------------------------

@@ -23,7 +23,7 @@ pub mod user_query;
 
 pub use attributes::{keys as attribute_keys, Attributes};
 pub use category::{Category, CategoryKind, DEFAULT_CATEGORY_NAME};
-pub use entry::{Enclosure, Entry, Thumbnail};
+pub use entry::{Enclosure, Entry, Folded, Thumbnail};
 pub use feed::{Feed, LetterAvatar};
 pub use filter_action::{FilterAction, FilterActionType};
 pub use ids::{now_micros, now_unix, EntryId, MICROS_PER_SEC};

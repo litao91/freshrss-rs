@@ -31,6 +31,12 @@ impl Tag {
     ///
     /// `#` is stripped from the front because users type `#todo` into a label field when the
     /// search syntax taught them to, and storing it would make `labels:todo` miss the row.
+    /// The accent-folded name, stored beside `name` for the same reason as
+    /// [`crate::domain::entry::Entry::folded`].
+    pub fn name_folded(&self) -> String {
+        freshrss_search::fold(&self.name)
+    }
+
     pub fn normalize_name(raw: &str) -> Result<String, &'static str> {
         let trimmed = raw.trim().trim_start_matches('#').trim();
         let name: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");

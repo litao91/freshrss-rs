@@ -9,6 +9,7 @@
 //! interleave into `SQLITE_BUSY` storms that `busy_timeout` only papers over.
 
 pub mod dao;
+pub mod fold;
 pub mod migrate;
 pub mod sql;
 pub mod udf;
@@ -90,6 +91,12 @@ impl Db {
         };
         // Migrate eagerly so a bad schema fails at startup rather than on the first request.
         db.blocking_with(|conn| Ok(migrate::run(conn)?))?;
+        // Rows written before the folded search columns existed carry the empty default, which would
+        // make every search over them match nothing.
+        let folded = db.blocking_with(|conn| Ok(fold::ensure(conn)?))?;
+        if folded > 0 {
+            tracing::info!(rows = folded, "backfilled folded search columns");
+        }
         Ok(db)
     }
 
