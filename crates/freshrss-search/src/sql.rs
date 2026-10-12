@@ -159,8 +159,11 @@ fn compile_pred(pred: &Pred, ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> 
         Pred::Tag { pat, negated } => tag_condition(&format!("{a}.tags"), pat, *negated),
         Pred::LabelIds { ids, negated } => label_condition(ctx, ids, *negated)?,
         Pred::LabelNames { names, negated } => label_name_condition(ctx, names, *negated)?,
-        // The negation was folded into `range` by the parser, so it is not read here.
-        Pred::Date { field, range, .. } => date_condition(a, *field, *range),
+        Pred::Date {
+            field,
+            range,
+            negated,
+        } => date_condition(a, *field, *range, *negated),
         Pred::SavedQuery { target, .. } => {
             return Err(SearchError::Unsupported(match target {
                 QueryRef::Ids(_) => "S:".to_owned(),
@@ -348,10 +351,11 @@ fn label_name_condition(
 /// so the bounds are multiplied by a million. That is FreshRSS's long-standing behaviour (`date:`
 /// has always meant "when it was added") and it is kept for fidelity; `pubdate:` is the publication
 /// time. The reader's help dialog says so, because it is otherwise genuinely surprising.
-fn date_condition(alias: &str, field: DateField, range: DateRange) -> Fragment {
-    // The parser has already complemented a negated range, so there is no `NOT` to emit here. A
-    // complemented two-sided range arrives with `min > max`, which reads as the OR of the two
-    // disjoint halves — see the first match arm below.
+fn date_condition(alias: &str, field: DateField, range: DateRange, negated: bool) -> Fragment {
+    // A negated range is complemented here rather than wrapped in `NOT (…)`, which keeps the
+    // predicate index-usable: `NOT (id BETWEEN a AND b)` becomes the OR of the two disjoint halves.
+    // The complement of a two-sided range has `min > max`, which the match below reads as exactly that.
+    let range = if negated { range.negate() } else { range };
     let (column, scale): (String, i64) = match field {
         DateField::Ingestion => (format!("{alias}.id"), 1_000_000),
         DateField::Publication => (format!("{alias}.date"), 1),

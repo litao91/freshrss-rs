@@ -270,12 +270,13 @@ impl Parser {
                     }
                     other => other,
                 })?;
+                // The range is stored as written and `negated` is preserved. Complementing it here
+                // instead would lose the fact that the query was negated, so `render` could not
+                // produce text that parses back to the same tree.
                 Pred::Date {
                     field,
-                    range: if negated { range.negate() } else { range },
-                    // The range itself was complemented, so the predicate is now positive: emitting
-                    // `NOT (id BETWEEN …)` as well would cancel it out.
-                    negated: false,
+                    range,
+                    negated,
                 }
             }
             other => unreachable!("{other} is not in the lexer's key list"),
@@ -763,26 +764,27 @@ mod tests {
     }
 
     #[test]
-    fn a_negated_date_complements_the_range_instead_of_wrapping_it_in_not() {
-        // `-date:2006-01-02/2006-01-05` becomes the two disjoint halves. Emitting `NOT (BETWEEN …)`
-        // as well would cancel the complement out.
+    fn a_negated_date_keeps_its_range_and_its_flag() {
+        // The tree stores what the user wrote. Complementing the range here instead would lose the
+        // fact that the query was negated, so `render` could not produce text that parses back to the
+        // same tree — and a saved search would silently change meaning on the round trip. The
+        // complement happens in `sql`, where it can be emitted as two disjoint halves.
         let positive = match pred("date:2006-01-02/2006-01-05") {
-            Pred::Date { range, .. } => range,
+            Pred::Date { range, negated, .. } => {
+                assert!(!negated);
+                range
+            }
             _ => unreachable!(),
         };
         match pred("-date:2006-01-02/2006-01-05") {
             Pred::Date { range, negated, .. } => {
-                assert!(!negated, "the negation moved into the range");
-                assert_eq!(range, positive.negate());
-                assert!(
-                    range.is_empty(),
-                    "a complemented two-sided range reads as min>max"
-                );
+                assert!(negated, "the flag survives");
+                assert_eq!(range, positive, "and so does the range as written");
+                assert!(!range.is_empty());
             }
             other => panic!("{other:?}"),
         }
     }
-
     #[test]
     fn a_bad_date_interval_names_the_operator() {
         let e = err("date:banana");

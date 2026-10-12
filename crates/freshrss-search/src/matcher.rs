@@ -151,14 +151,13 @@ fn eval_pred(pred: &Pred, target: &dyn SearchTarget, folded: &Folded) -> Result<
             negated,
         } => {
             let value = date_value(target, *field)?;
-            let inside = match value {
-                Some(v) => range_contains(*range, v),
+            match value {
+                Some(v) => xor(range_contains(*range, v), *negated),
                 // A NULL column cannot satisfy a range. `NOT (NULL BETWEEN …)` is NULL in SQL, which
                 // a WHERE clause reads as false, so both polarities answer "no match" — matching what
                 // the SQL backend does rather than what boolean logic would suggest.
                 None => false,
-            };
-            xor(inside, *negated)
+            }
         }
         Pred::SavedQuery {
             target: reference, ..

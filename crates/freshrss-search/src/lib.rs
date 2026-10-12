@@ -27,7 +27,9 @@ pub mod matcher;
 pub mod normalize;
 pub mod parser;
 pub mod regex;
+pub mod render;
 pub mod sql;
+pub mod visibility;
 
 pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 pub use error::SearchError;
@@ -36,4 +38,6 @@ pub use matcher::{matches, SearchTarget};
 pub use normalize::{fold, ilike};
 pub use parser::parse;
 pub use regex::{Flags, Pattern};
+pub use render::{enforce, prepend, remove, render, round_trip};
 pub use sql::{compile, Fragment, Param, SqlCtx};
+pub use visibility::min_priority;
