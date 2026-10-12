@@ -64,9 +64,12 @@ fn write_expr(expr: &Expr, out: &mut String, needs_parens: bool) {
         }
         Expr::Not(inner) => {
             out.push('-');
-            // `-` applies to one atom, so a group has to be bracketed for the negation to cover it.
-            let needs = !matches!(&**inner, Expr::Leaf(preds) if preds.len() == 1);
-            write_expr(inner, out, needs);
+            // A negated subtree is always bracketed. `-` applies to one atom, so the brackets are
+            // load-bearing for a group — and they are load-bearing for a *single* term too, because
+            // `-cd` parses back as a predicate carrying its own `negated` flag rather than as a
+            // negated leaf, which is a different tree. The two are equivalent for text but not for a
+            // nullable timestamp, where a missing value fails in both polarities.
+            write_expr(inner, out, true);
         }
     }
     if needs_parens {
@@ -402,6 +405,18 @@ mod tests {
         // `-` binds to one atom, so the brackets are load-bearing.
         let canonical = rt("-(a OR b)");
         assert!(canonical.starts_with("-("), "{canonical}");
+    }
+
+    #[test]
+    fn a_negated_group_of_a_single_term_keeps_its_brackets_too() {
+        // `!(cd)` is a negated *leaf*, which is a different tree from the flagged predicate `-cd`.
+        // The two agree on text but not on a nullable timestamp, where a missing value fails in both
+        // polarities — so dropping the brackets would quietly rewrite one into the other.
+        let group = parse("!(cd)", NOW).unwrap();
+        assert!(matches!(group, Expr::Not(_)), "{group:?}");
+        assert_ne!(parse("-cd", NOW).unwrap(), group);
+        assert_eq!(rt("!(cd)"), "-(cd)");
+        assert_eq!(rt("ab !(cd)"), "ab -(cd)");
     }
 
     #[test]

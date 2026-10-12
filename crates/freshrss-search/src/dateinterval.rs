@@ -47,6 +47,14 @@ fn parse_inner(text: &str, now: i64) -> Result<DateRange, SearchError> {
     if normalized.is_empty() {
         return Ok(DateRange::default());
     }
+    // Everything below addresses operands by byte offset — the tail chop in [`date_relative`], the
+    // `YYYYMMDDTHHMMSS` fields in [`instant`], the zone candidate in [`split_zone`] — which is sound
+    // only because ISO 8601 is an ASCII grammar. Rejecting the rest here is also what PHP does, just
+    // less directly: `strtotime` returns false for a non-ASCII date and `new DateInterval` throws, so
+    // such an interval comes back as `false` rather than as a half-read bound.
+    if !normalized.is_ascii() {
+        return Err(bad(text, "not an ISO 8601 date or duration"));
+    }
 
     let (raw1, raw2) = match normalized.split_once('/') {
         Some((a, b)) => (a.to_owned(), Some(b.to_owned())),
@@ -177,16 +185,28 @@ fn date_relative(d1: Option<&str>, d2: Option<&str>) -> Option<String> {
     if d2.is_empty() {
         return None;
     }
-    if !d2.starts_with('P') {
-        if let Some(d1) = d1 {
-            if !d1.starts_with('P') && !starts_with_a_year(d2) {
-                // Replace the tail of d1 with d2, so `201402` + `04` becomes `201404`.
-                let strip = d2.len().min(d1.len());
-                return Some(format!("{}{}", &d1[..d1.len() - strip], d2));
-            }
+    let tail = no_delimit(d2);
+    // Prefix borrowing happens between two plain dates only, and only when the second operand does
+    // not already carry a year of its own.
+    let borrows = !d2.starts_with('P')
+        && !starts_with_a_year(d2)
+        && d1.is_some_and(|d1| !d1.starts_with('P'));
+    if borrows {
+        if let (Some(d1), Some(tail)) = (d1, tail.as_deref()) {
+            // Replace the tail of d1 with d2, so `201402` + `04` becomes `201404`.
+            //
+            // PHP measures the tail to chop *after* `_noDelimit` — `substr($d1, 0, -strlen($d2))`
+            // with `$d2` already stripped of `-` and `:` — so `22:15` borrows four digits rather
+            // than the five characters it was typed with: `20140203T2200` becomes `20140203T2215`.
+            // Measuring the raw operand instead lands the cut on the `T` and loses the hour.
+            //
+            // Both sides are ASCII (`parse_inner` rejects anything else), so a byte count is a
+            // character count and the cut cannot land inside a character.
+            let strip = tail.len().min(d1.len());
+            return Some(format!("{}{}", &d1[..d1.len() - strip], tail));
         }
     }
-    no_delimit(d2)
+    tail
 }
 
 /// True when the operand already carries a four-digit year and so needs no prefix.
@@ -477,6 +497,32 @@ mod tests {
         let r = range("2006-01-02/15");
         assert_eq!(r.min, Some(at("2006-01-02T00:00:00Z")));
         assert_eq!(r.max, Some(at("2006-01-15T23:59:59Z")));
+    }
+
+    #[test]
+    fn prefix_borrowing_measures_the_operand_after_its_delimiters_are_stripped() {
+        // `22:15` is five characters as typed but four digits once `:` is gone, and it is the digits
+        // that replace the tail of the first operand. Counting the raw five would cut at the `T` and
+        // silently widen the interval to the whole day.
+        let r = range("2014-02-03T22:00/22:15");
+        assert_eq!(r.min, Some(at("2014-02-03T22:00:00Z")));
+        assert_eq!(r.max, Some(at("2014-02-03T22:15:59Z")));
+        // The same rule at second granularity, where the borrowed operand carries both colons.
+        assert_eq!(
+            range("2014-02-03T22:00:00/15:30:45").max,
+            Some(at("2014-02-03T15:30:45Z"))
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_operand_is_rejected_rather_than_sliced() {
+        // PHP's byte-wise `substr` cannot split a character; a `str` slice can. The ASCII guard in
+        // `parse_inner` means these come back as errors instead of panicking on user input — the same
+        // verdict PHP reaches via `strtotime` returning false.
+        for text in ["2014-02-03/é", "aébcdef", "2014—03"] {
+            let err = parse(text, NOW).unwrap_err();
+            assert!(matches!(err, SearchError::BadDateInterval { .. }), "{text}: {err}");
+        }
     }
 
     #[test]

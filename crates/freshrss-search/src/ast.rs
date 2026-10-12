@@ -150,11 +150,46 @@ fn combine(op: Op, children: Vec<Expr>) -> Expr {
         }
     }
 
+    // A conjunction of leaves is one leaf: see `merge_adjacent_leaves`.
+    if op.is_and() {
+        flat = merge_adjacent_leaves(flat);
+    }
+
     match flat.len() {
         0 => op.neutral(),
         1 => flat.pop().expect("len 1"),
         _ => Expr::Node { op, children: flat },
     }
+}
+
+/// Merges runs of adjacent [`Expr::Leaf`] children of a conjunction into a single leaf.
+///
+/// A leaf already *is* an implicit AND, so two of them side by side under an `And` node say nothing
+/// that one leaf holding both predicate lists does not — and [`crate::render`] writes both as plain
+/// juxtaposition. Merging is what makes that faithful: `(a) (b)` renders as `a b`, which has to parse
+/// back to the same tree rather than to a differently shaped equivalent, or a saved search silently
+/// changes shape every time it is round-tripped through the canonical spelling.
+///
+/// Only *adjacent* leaves merge, so `a (b OR c) d` keeps its three children and their order.
+fn merge_adjacent_leaves(children: Vec<Expr>) -> Vec<Expr> {
+    let mut out: Vec<Expr> = Vec::with_capacity(children.len());
+    let mut pending: Vec<Pred> = Vec::new();
+
+    for child in children {
+        match child {
+            Expr::Leaf(preds) => pending.extend(preds),
+            other => {
+                if !pending.is_empty() {
+                    out.push(Expr::Leaf(std::mem::take(&mut pending)));
+                }
+                out.push(other);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        out.push(Expr::Leaf(pending));
+    }
+    out
 }
 
 /// One condition on one article.
@@ -455,9 +490,28 @@ mod tests {
 
     #[test]
     fn nested_same_operator_nodes_are_flattened() {
-        // `a AND (b AND c)` becomes a three-child And, which keeps the emitted SQL flat.
-        let inner = Expr::and(vec![leaf(title("b")), leaf(title("c"))]);
-        let outer = Expr::and(vec![leaf(title("a")), inner]);
+        // `a OR (b OR c)` becomes a three-child Or, which keeps the emitted SQL flat. (A nested
+        // *conjunction* of plain terms collapses further still, into a single leaf — see
+        // `adjacent_leaves_of_a_conjunction_merge_into_one`.)
+        let inner = Expr::or(vec![leaf(title("b")), leaf(title("c"))]);
+        let outer = Expr::or(vec![leaf(title("a")), inner]);
+        match outer {
+            Expr::Node { op, children } => {
+                assert_eq!(op, Op::Or);
+                assert_eq!(children.len(), 3, "{children:?}");
+            }
+            other => panic!("expected a node, got {other:?}"),
+        }
+
+        // The same for a conjunction whose children are subtrees rather than bare terms.
+        let inner = Expr::and(vec![
+            Expr::or(vec![leaf(title("c")), leaf(title("d"))]),
+            Expr::or(vec![leaf(title("e")), leaf(title("f"))]),
+        ]);
+        let outer = Expr::and(vec![
+            Expr::or(vec![leaf(title("a")), leaf(title("b"))]),
+            inner,
+        ]);
         match outer {
             Expr::Node { op, children } => {
                 assert_eq!(op, Op::And);
@@ -487,6 +541,48 @@ mod tests {
         // implicit conjunction and splitting them would double the emitted parentheses.
         let e = Expr::Leaf(vec![title("a"), title("b")]);
         assert_eq!(e.preds().len(), 2);
+    }
+
+    #[test]
+    fn adjacent_leaves_of_a_conjunction_merge_into_one() {
+        // `(a) (b)` is the same conjunction as `a b`, and `render` writes both as `a b` — so the tree
+        // has to be the same too, or the canonical spelling does not round-trip.
+        assert_eq!(
+            Expr::and(vec![leaf(title("a")), leaf(title("b"))]),
+            Expr::Leaf(vec![title("a"), title("b")])
+        );
+        // Merging survives a flattened nested conjunction: `a AND (b AND c)` is one leaf of three.
+        assert_eq!(
+            Expr::and(vec![
+                leaf(title("a")),
+                Expr::and(vec![leaf(title("b")), leaf(title("c"))]),
+            ]),
+            Expr::Leaf(vec![title("a"), title("b"), title("c")])
+        );
+    }
+
+    #[test]
+    fn only_adjacent_leaves_merge_and_only_under_a_conjunction() {
+        // A subtree between two leaves keeps all three children, in order, so `a (b OR c) d` still
+        // reads as three terms.
+        match Expr::and(vec![
+            leaf(title("a")),
+            Expr::or(vec![leaf(title("b")), leaf(title("c"))]),
+            leaf(title("d")),
+        ]) {
+            Expr::Node { op, children } => {
+                assert_eq!(op, Op::And);
+                assert_eq!(children.len(), 3, "{children:?}");
+                assert!(matches!(&children[2], Expr::Leaf(p) if p.len() == 1));
+            }
+            other => panic!("expected a node, got {other:?}"),
+        }
+        // A disjunction keeps its branches: merging two leaves under `Or` would turn "either" into
+        // "both".
+        assert!(matches!(
+            Expr::or(vec![leaf(title("a")), leaf(title("b"))]),
+            Expr::Node { op: Op::Or, .. }
+        ));
     }
 
     #[test]
@@ -634,17 +730,24 @@ mod tests {
     #[test]
     fn the_ast_serializes_for_the_parse_endpoint() {
         // `POST /api/v1/search/parse` returns this to the reader, so the shape is part of the API.
-        let e = Expr::and(vec![
-            leaf(title("rust")),
-            leaf(Pred::Date {
-                field: DateField::Ingestion,
-                range: DateRange {
-                    min: Some(1),
-                    max: None,
-                },
-                negated: false,
-            }),
-        ]);
+        //
+        // Built by hand rather than through `Expr::and`, which would merge two bare leaves into one
+        // (see `adjacent_leaves_of_a_conjunction_merge_into_one`); this test is about how a *node*
+        // serializes, and a hand-built one is exactly what the endpoint can be handed by a caller.
+        let e = Expr::Node {
+            op: Op::And,
+            children: vec![
+                leaf(title("rust")),
+                leaf(Pred::Date {
+                    field: DateField::Ingestion,
+                    range: DateRange {
+                        min: Some(1),
+                        max: None,
+                    },
+                    negated: false,
+                }),
+            ],
+        };
         // `Expr` is externally tagged: a `Leaf` holds a sequence of predicates, which serde cannot
         // represent under an internal tag.
         let json = serde_json::to_value(&e).unwrap();
