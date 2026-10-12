@@ -7,9 +7,12 @@
 //!
 //! Writes that touch `entry`/`entrytmp` go through [`Db::with_writer`], which serializes them on an
 //! in-process mutex. SQLite is single-writer; without this the scheduler and user mutations
-//! interleave into `SQLITE_BUSY` storms that `busy_timeout` only papers over. It is also what makes
-//! `meta::reserve_entry_ids` — a read-modify-write — impossible to interleave into handing the same
-//! id range out twice.
+//! interleave into `SQLITE_BUSY` storms that `busy_timeout` only papers over.
+//!
+//! The mutex is a contention measure, not a correctness one, and nothing load-bearing may depend on
+//! it: it exists per process, so two server instances sharing one database file have no mutex
+//! between them at all. Anything that must not interleave — the entry-id allocator above all — is
+//! atomic in its own SQL instead.
 
 pub mod dao;
 pub mod fold;
