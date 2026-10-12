@@ -1,0 +1,881 @@
+//! Compiling an [`Expr`] to a SQL `WHERE` fragment plus bound parameters.
+//!
+//! Two properties this module exists to guarantee:
+//!
+//! - **Text comparison goes through `frss_ilike`, never `LIKE`.** SQLite's `LIKE` is
+//!   case-insensitive for ASCII only, so `intitle:ecole` does not match "École". FreshRSS's SQL path
+//!   has that behaviour while its in-memory matcher accent-folds, meaning the same query gives
+//!   different answers depending on whether it ran as a listing or as a filter action. Both backends
+//!   here call [`crate::normalize::fold`], so they agree by construction. There is no index cost:
+//!   `'%x%'` could not use one either way.
+//! - **Values are always bound, never interpolated.** A search string is untrusted user input that
+//!   ends up in a `WHERE` clause; the only difference between this being safe and being an injection
+//!   hole is that every literal here is a `?`.
+
+use crate::ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
+use crate::error::SearchError;
+
+/// What the compiler needs to know about the query it is being spliced into.
+#[derive(Debug, Clone)]
+pub struct SqlCtx<'a> {
+    /// The table alias for `entry`, so the fragment can be joined into a larger query. The listing
+    /// builder uses `e`; a subquery over a different alias must not collide with it.
+    pub alias: &'a str,
+    /// The alias for `entrytag` subqueries, and the entry-id column within them.
+    pub entrytag_alias: &'a str,
+    /// Whether the surrounding query already restricts rows to one user. The label subquery needs to
+    /// know, because `entrytag` has no `id_user` of its own and must join through `tag`.
+    pub scoped_to_user: bool,
+}
+
+impl Default for SqlCtx<'_> {
+    fn default() -> Self {
+        Self {
+            alias: "e",
+            entrytag_alias: "et",
+            scoped_to_user: true,
+        }
+    }
+}
+
+/// A compiled fragment: SQL text with `?` placeholders, and the values to bind in order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Fragment {
+    pub sql: String,
+    pub params: Vec<Param>,
+}
+
+/// One bound value.
+///
+/// Deliberately not `rusqlite::types::ToSql`: this crate has no database dependency, which is what
+/// lets it be tested without a connection. The server converts.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Param {
+    Text(String),
+    Int(i64),
+    Null,
+}
+
+impl Fragment {
+    pub fn new(sql: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            params: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sql.is_empty()
+    }
+
+    /// Joins sub-fragments with an operator, parenthesizing each so precedence survives.
+    fn join(op: &str, parts: Vec<Fragment>) -> Fragment {
+        let mut sql = String::new();
+        let mut params = Vec::new();
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                sql.push_str(op);
+            }
+            sql.push('(');
+            sql.push_str(&part.sql);
+            sql.push(')');
+            params.extend(part.params);
+        }
+        Fragment { sql, params }
+    }
+}
+
+/// Compiles a whole expression.
+///
+/// # Errors
+///
+/// [`SearchError::Unsupported`] when the tree still holds an unexpanded [`Pred::SavedQuery`]. Run
+/// [`crate::expand`] first: resolving a saved search needs the database, and this crate has none.
+pub fn compile(expr: &Expr, ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> {
+    match expr {
+        Expr::Leaf(preds) => compile_leaf(preds, ctx),
+        Expr::Node { op, children } => {
+            let mut parts = Vec::with_capacity(children.len());
+            for child in children {
+                parts.push(compile(child, ctx)?);
+            }
+            // `Op::And` of nothing is TRUE and `Op::Or` of nothing is FALSE; the smart constructors
+            // in `ast` already collapsed those, but a hand-built tree may not have gone through them.
+            if parts.is_empty() {
+                return Ok(Fragment::new(match op {
+                    Op::And => "1=1",
+                    Op::Or => "1=0",
+                }));
+            }
+            Ok(Fragment::join(
+                match op {
+                    Op::And => " AND ",
+                    Op::Or => " OR ",
+                },
+                parts,
+            ))
+        }
+        Expr::Not(inner) => {
+            let part = compile(inner, ctx)?;
+            Ok(Fragment {
+                sql: format!("NOT ({})", part.sql),
+                params: part.params,
+            })
+        }
+    }
+}
+
+/// Compiles a leaf: every predicate in it must hold.
+fn compile_leaf(preds: &[Pred], ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> {
+    if preds.is_empty() {
+        return Ok(Fragment::new("1=1"));
+    }
+    let mut parts = Vec::with_capacity(preds.len());
+    for pred in preds {
+        parts.push(compile_pred(pred, ctx)?);
+    }
+    if parts.len() == 1 {
+        return Ok(parts.pop().expect("len 1"));
+    }
+    Ok(Fragment::join(" AND ", parts))
+}
+
+fn compile_pred(pred: &Pred, ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> {
+    let a = ctx.alias;
+    Ok(match pred {
+        Pred::EntryIds { ids, negated } => id_condition(&format!("{a}.id"), ids, *negated),
+        Pred::FeedIds { ids, negated } => id_condition(&format!("{a}.id_feed"), ids, *negated),
+        Pred::CategoryIds { ids, negated } => category_condition(a, ids, *negated),
+        Pred::Title { pat, negated } => text_condition(&format!("{a}.title"), pat, *negated),
+        Pred::Content { pat, negated } => text_condition(&format!("{a}.content"), pat, *negated),
+        Pred::FreeText { pat, negated } => free_text_condition(
+            &format!("{a}.title"),
+            &format!("{a}.content"),
+            pat,
+            *negated,
+        ),
+        Pred::Author { pat, negated } => text_condition(&format!("{a}.author"), pat, *negated),
+        Pred::Url { pat, negated } => text_condition(&format!("{a}.link"), pat, *negated),
+        Pred::Tag { pat, negated } => tag_condition(&format!("{a}.tags"), pat, *negated),
+        Pred::LabelIds { ids, negated } => label_condition(ctx, ids, *negated)?,
+        Pred::LabelNames { names, negated } => label_name_condition(ctx, names, *negated)?,
+        // The negation was folded into `range` by the parser, so it is not read here.
+        Pred::Date { field, range, .. } => date_condition(a, *field, *range),
+        Pred::SavedQuery { target, .. } => {
+            return Err(SearchError::Unsupported(match target {
+                QueryRef::Ids(_) => "S:".to_owned(),
+                QueryRef::Names(_) => "search:".to_owned(),
+            }))
+        }
+    })
+}
+
+/// `col IN (…)` / `col NOT IN (…)`, with the empty list collapsed.
+///
+/// An empty list must not become `IN ()`, which is a syntax error in SQLite. It becomes `1=0`
+/// (matches nothing) or `1=1` when negated, so `f:` with no ids behaves as "no feeds" rather than
+/// blowing up the query.
+fn id_condition(col: &str, ids: &[i64], negated: bool) -> Fragment {
+    if ids.is_empty() {
+        return Fragment::new(if negated { "1=1" } else { "1=0" });
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let op = if negated { "NOT IN" } else { "IN" };
+    Fragment {
+        sql: format!("{col} {op} ({placeholders})"),
+        params: ids.iter().map(|id| Param::Int(*id)).collect(),
+    }
+}
+
+/// `c:` matches the entry's feed's category, so it needs a join or a subquery.
+///
+/// A subquery rather than a join: the listing query already joins `feed`, and adding a second join
+/// path to `category` would change the row count if a feed were ever in two categories.
+fn category_condition(alias: &str, ids: &[i64], negated: bool) -> Fragment {
+    if ids.is_empty() {
+        return Fragment::new(if negated { "1=1" } else { "1=0" });
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let op = if negated { "NOT EXISTS" } else { "EXISTS" };
+    Fragment {
+        sql: format!(
+            "{op} (SELECT 1 FROM feed f2 WHERE f2.id = {alias}.id_feed AND f2.category IN ({placeholders}))"
+        ),
+        params: ids.iter().map(|id| Param::Int(*id)).collect(),
+    }
+}
+
+/// One text predicate: `frss_ilike` for a substring, `frss_regexp` for a pattern.
+///
+/// Both UDFs are registered with `SQLITE_DETERMINISTIC` and take `(text, pattern)` in that order,
+/// which is the reverse of SQLite's infix operators — worth remembering when reading the SQL.
+fn text_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
+    let not = if negated { "NOT " } else { "" };
+    match pat {
+        TextPat::Contains(needle) => Fragment {
+            // The wildcards are part of the bound value, so a needle containing `%` or `_` would act
+            // as a wildcard. That matches FreshRSS, whose `LIKE "%$value%"` does the same, and is
+            // what a user typing `%` into a search box usually wants anyway.
+            sql: format!("{not}frss_ilike({col}, ?)"),
+            params: vec![Param::Text(format!("%{needle}%"))],
+        },
+        TextPat::Regex(re) => Fragment {
+            sql: format!("{not}frss_regexp({col}, ?)"),
+            params: vec![Param::Text(re.render())],
+        },
+    }
+}
+
+/// Free text, which searches the title *or* the body.
+///
+/// Negation has to be pushed inside: `NOT (title LIKE x OR content LIKE x)` is
+/// `title NOT LIKE x AND content NOT LIKE x`. Emitting the `NOT` outside would be correct too, but
+/// this form is what FreshRSS produces and it keeps the two branches independently indexable.
+fn free_text_condition(title: &str, content: &str, pat: &TextPat, negated: bool) -> Fragment {
+    let a = text_condition(title, pat, negated);
+    let b = text_condition(content, pat, negated);
+    let op = if negated { " AND " } else { " OR " };
+    Fragment {
+        sql: format!("({a}{op}{b})", a = a.sql, b = b.sql),
+        params: [a.params, b.params].concat(),
+    }
+}
+
+/// A `#tag` predicate.
+///
+/// Tags are stored as `"#a #b"`, so a whole-tag match appends `' #'` to the haystack and looks for
+/// `"%needle #%"`. Without the trailing marker, `#ru` would match the tag `rust`.
+fn tag_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
+    let not = if negated { "NOT " } else { "" };
+    match pat {
+        TextPat::Contains(needle) => Fragment {
+            sql: format!("{not}frss_ilike(TRIM({col}) || ' #', ?)"),
+            params: vec![Param::Text(format!("%{needle} #%"))],
+        },
+        TextPat::Regex(re) => {
+            // Rewrite `#a #b` into `\na\nb` so `^` and `$` anchor a single tag, which is what a
+            // regex over tags means to someone writing one. FreshRSS does the same REPLACE chain.
+            Fragment {
+                sql: format!(
+                    "{not}frss_regexp(REPLACE(REPLACE({col}, ' #', '#'), '#', CHAR(10)), ?)"
+                ),
+                params: vec![Param::Text(re.render())],
+            }
+        }
+    }
+}
+
+/// A label predicate by id: `l:3`, `l:1,2`, or `l:*`.
+fn label_condition(ctx: &SqlCtx<'_>, ids: &IdSet, negated: bool) -> Result<Fragment, SearchError> {
+    let a = ctx.alias;
+    let et = ctx.entrytag_alias;
+    let op = if negated { "NOT EXISTS" } else { "EXISTS" };
+    let inner = match ids {
+        IdSet::Any => format!(
+            "{op} (SELECT 1 FROM entrytag {et} JOIN tag t ON t.id = {et}.id_tag \
+             WHERE {et}.id_entry = {a}.id{user})",
+            user = if ctx.scoped_to_user {
+                format!(" AND t.id_user = {a}.id_user")
+            } else {
+                String::new()
+            }
+        ),
+        IdSet::List(list) if list.is_empty() => {
+            return Ok(Fragment::new(if negated { "1=1" } else { "1=0" }));
+        }
+        IdSet::List(list) => {
+            let placeholders = vec!["?"; list.len()].join(",");
+            format!(
+                "{op} (SELECT 1 FROM entrytag {et} WHERE {et}.id_entry = {a}.id \
+                 AND {et}.id_tag IN ({placeholders}))"
+            )
+        }
+    };
+    let params = match ids {
+        IdSet::List(list) => list.iter().map(|id| Param::Int(*id)).collect(),
+        IdSet::Any => Vec::new(),
+    };
+    Ok(Fragment { sql: inner, params })
+}
+
+/// A label predicate by name: `labels:todo` or `labels:a,b`.
+///
+/// Several names are ORed together, matching how every other list-valued operator behaves. A plain
+/// name is matched **whole**, not as a substring: `labels:todo` must not match a label called
+/// "todos". `frss_ilike` with no `%` wildcards is an accent-folded exact comparison, which is exactly
+/// the semantics wanted, and it means one call per name rather than two.
+fn label_name_condition(
+    ctx: &SqlCtx<'_>,
+    names: &[TextPat],
+    negated: bool,
+) -> Result<Fragment, SearchError> {
+    if names.is_empty() {
+        return Ok(Fragment::new(if negated { "1=1" } else { "1=0" }));
+    }
+    let a = ctx.alias;
+    let et = ctx.entrytag_alias;
+    let op = if negated { "NOT EXISTS" } else { "EXISTS" };
+    let scope = if ctx.scoped_to_user {
+        format!("t.id_user = {a}.id_user AND ")
+    } else {
+        String::new()
+    };
+
+    let mut clauses = Vec::with_capacity(names.len());
+    let mut params = Vec::with_capacity(names.len());
+    for name in names {
+        let (function, param) = match name {
+            TextPat::Contains(needle) => ("frss_ilike", Param::Text(needle.clone())),
+            TextPat::Regex(re) => ("frss_regexp", Param::Text(re.render())),
+        };
+        clauses.push(format!("{function}(t.name, ?)"));
+        params.push(param);
+    }
+
+    Ok(Fragment {
+        sql: format!(
+            "{op} (SELECT 1 FROM entrytag {et} JOIN tag t ON t.id = {et}.id_tag \
+             WHERE {et}.id_entry = {a}.id AND {scope}({}))",
+            clauses.join(" OR ")
+        ),
+        params,
+    })
+}
+
+/// A date range against one of the four timestamp columns.
+///
+/// [`DateField::Ingestion`] compares against the entry **id**, which is a microsecond wall clock —
+/// so the bounds are multiplied by a million. That is FreshRSS's long-standing behaviour (`date:`
+/// has always meant "when it was added") and it is kept for fidelity; `pubdate:` is the publication
+/// time. The reader's help dialog says so, because it is otherwise genuinely surprising.
+fn date_condition(alias: &str, field: DateField, range: DateRange) -> Fragment {
+    // The parser has already complemented a negated range, so there is no `NOT` to emit here. A
+    // complemented two-sided range arrives with `min > max`, which reads as the OR of the two
+    // disjoint halves — see the first match arm below.
+    let (column, scale): (String, i64) = match field {
+        DateField::Ingestion => (format!("{alias}.id"), 1_000_000),
+        DateField::Publication => (format!("{alias}.date"), 1),
+        DateField::Modified => (format!("{alias}.lastModified"), 1),
+        DateField::UserModified => (format!("{alias}.lastUserModified"), 1),
+    };
+    let col = column;
+
+    let (min, max) = (
+        range.min.map(|v| v.saturating_mul(scale)),
+        range.max.map(|v| v.saturating_mul(scale)),
+    );
+
+    match (min, max) {
+        (Some(lo), Some(hi)) if lo > hi => Fragment {
+            // The complement of [hi+1 .. lo-1]: everything below or above the original band.
+            sql: format!("({col} < ? OR {col} > ?)"),
+            params: vec![Param::Int(hi), Param::Int(lo)],
+        },
+        (Some(lo), Some(hi)) => Fragment {
+            sql: format!("{col} BETWEEN ? AND ?"),
+            params: vec![Param::Int(lo), Param::Int(hi)],
+        },
+        (Some(lo), None) => Fragment {
+            sql: format!("{col} >= ?"),
+            params: vec![Param::Int(lo)],
+        },
+        (None, Some(hi)) => Fragment {
+            sql: format!("{col} <= ?"),
+            params: vec![Param::Int(hi)],
+        },
+        (None, None) => Fragment::new("1=1"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse;
+    use crate::regex::Pattern;
+
+    const NOW: i64 = 1_136_214_245;
+
+    fn ctx() -> SqlCtx<'static> {
+        SqlCtx {
+            alias: "e",
+            entrytag_alias: "et",
+            scoped_to_user: true,
+        }
+    }
+
+    fn compile_query(q: &str) -> Fragment {
+        compile(&parse(q, NOW).unwrap(), &ctx()).unwrap()
+    }
+
+    fn contains(needle: &str) -> TextPat {
+        TextPat::contains(needle)
+    }
+
+    fn regex(source: &str) -> TextPat {
+        TextPat::Regex(Pattern::parse(&format!("/{source}/")).unwrap())
+    }
+
+    // --- safety ------------------------------------------------------------
+
+    #[test]
+    fn no_value_is_ever_interpolated_into_the_sql() {
+        // The single most important property of this module.
+        // Each of these has to be *lexable* before it can be compiled: an unbalanced quote is a
+        // parse error, which is the first line of defence. The quoted forms below get past the lexer
+        // and are the ones that would reach the SQL builder.
+        for hostile in [
+            r#"intitle:"' OR 1=1 --""#,
+            r#"intitle:"x'); DROP TABLE entry;--""#,
+            "author:%_%",
+            r#"#"tag'; --""#,
+            r#"intext:"Robert'); DROP TABLE Students;--""#,
+            r#"inurl:"x' UNION SELECT password FROM user--""#,
+        ] {
+            let f = compile_query(hostile);
+            assert!(
+                !f.sql.contains('\'')
+                    || f.sql.contains("''")
+                    || f.sql.contains("' #'")
+                    || f.sql.contains("' AND ")
+                    || f.sql.contains("' OR "),
+                "a literal quote leaked into the SQL for {hostile:?}: {}",
+                f.sql
+            );
+            assert!(
+                !f.sql.to_uppercase().contains("DROP"),
+                "input reached the SQL text: {}",
+                f.sql
+            );
+            // Every placeholder has exactly one parameter.
+            assert_eq!(
+                f.sql.matches('?').count(),
+                f.params.len(),
+                "placeholder/parameter mismatch for {hostile:?}: {}",
+                f.sql
+            );
+        }
+
+        // An id list is parsed as numbers, so injection there is rejected rather than bound.
+        assert!(matches!(
+            parse("f:1;DELETE FROM entry", NOW).unwrap_err(),
+            SearchError::BadOperand { .. }
+        ));
+        // `f:1 OR 1=1` *is* a valid boolean query: the second branch is the free text "1=1", which
+        // gets bound as a parameter and searches for that literal string. It is not an injection, and
+        // proving that is worth more than asserting a parse error.
+        let f = compile_query("f:1 OR 1=1");
+        assert!(
+            !f.sql.contains("1=1"),
+            "the text reached the SQL: {}",
+            f.sql
+        );
+        assert!(
+            f.params.contains(&Param::Text("%1=1%".into())),
+            "{:?}",
+            f.params
+        );
+    }
+
+    #[test]
+    fn placeholders_and_parameters_always_line_up() {
+        for q in [
+            "rust",
+            "intitle:a intext:b author:c",
+            "f:1,2,3 c:4,5",
+            "a OR b OR c",
+            "(a OR b) AND !c",
+            "date:2006-01-02/2006-01-05 pubdate:P1W",
+            "labels:x,y #t1 #t2",
+            "l:1,2 l:*",
+            "intitle:/re/ intext:/re2/i",
+        ] {
+            let f = compile_query(q);
+            assert_eq!(
+                f.sql.matches('?').count(),
+                f.params.len(),
+                "{q} produced {}",
+                f.sql
+            );
+        }
+    }
+
+    // --- text predicates ---------------------------------------------------
+
+    #[test]
+    fn a_substring_uses_frss_ilike_not_like() {
+        let f = compile_query("intitle:rust");
+        assert_eq!(f.sql, "frss_ilike(e.title, ?)");
+        assert_eq!(f.params, vec![Param::Text("%rust%".into())]);
+        assert!(
+            !f.sql.contains(" LIKE "),
+            "LIKE is ASCII-only case-insensitive"
+        );
+    }
+
+    #[test]
+    fn every_text_operator_maps_to_its_column() {
+        let cases = [
+            ("intitle:x", "e.title"),
+            ("intext:x", "e.content"),
+            ("author:x", "e.author"),
+            ("inurl:x", "e.link"),
+        ];
+        for (q, col) in cases {
+            let f = compile_query(q);
+            assert!(f.sql.contains(col), "{q} -> {}", f.sql);
+        }
+    }
+
+    #[test]
+    fn free_text_searches_title_or_content() {
+        let f = compile_query("rust");
+        assert_eq!(
+            f.sql,
+            "(frss_ilike(e.title, ?) OR frss_ilike(e.content, ?))"
+        );
+        assert_eq!(f.params.len(), 2, "the needle is bound twice");
+        assert_eq!(f.params[0], f.params[1]);
+    }
+
+    #[test]
+    fn negated_free_text_is_de_morganed() {
+        let f = compile_query("-rust");
+        assert_eq!(
+            f.sql,
+            "(NOT frss_ilike(e.title, ?) AND NOT frss_ilike(e.content, ?))"
+        );
+    }
+
+    #[test]
+    fn a_regex_uses_frss_regexp_and_keeps_its_flags() {
+        let f = compile_query("intitle:/^ru.t$/i");
+        assert_eq!(f.sql, "frss_regexp(e.title, ?)");
+        assert_eq!(f.params, vec![Param::Text("/^ru.t$/i".into())]);
+    }
+
+    #[test]
+    fn a_negated_regex() {
+        let f = compile_query("-intitle:/x/");
+        assert_eq!(f.sql, "NOT frss_regexp(e.title, ?)");
+    }
+
+    #[test]
+    fn the_needle_is_folded_before_binding() {
+        // Both backends fold; folding here means the database never sees an accented needle that its
+        // collation could not match.
+        let f = compile_query("intitle:Café");
+        assert_eq!(f.params, vec![Param::Text("%cafe%".into())]);
+    }
+
+    // --- tags --------------------------------------------------------------
+
+    #[test]
+    fn a_tag_matches_whole_tags_only() {
+        let f = compile_query("#rust");
+        assert_eq!(f.sql, "frss_ilike(TRIM(e.tags) || ' #', ?)");
+        // The trailing " #" is what stops `#ru` from matching the tag `rust`.
+        assert_eq!(f.params, vec![Param::Text("%rust #%".into())]);
+    }
+
+    #[test]
+    fn a_tag_prefix_does_not_match_a_longer_tag() {
+        let f = compile_query("#ru");
+        assert_eq!(f.params, vec![Param::Text("%ru #%".into())]);
+        // Against "#rust #axum #" the pattern "%ru #%" does not occur.
+        assert!(!"#rust #axum #".contains("%ru #%"));
+        assert!(!crate::normalize::ilike("#rust #axum #", "%ru #%"));
+        assert!(crate::normalize::ilike("#ru #axum #", "%ru #%"));
+    }
+
+    #[test]
+    fn a_negated_tag() {
+        let f = compile_query("-#rust");
+        assert_eq!(f.sql, "NOT frss_ilike(TRIM(e.tags) || ' #', ?)");
+    }
+
+    #[test]
+    fn a_tag_regex_anchors_per_tag() {
+        let f = compile_query("#/^ru/");
+        assert!(
+            f.sql
+                .contains("REPLACE(REPLACE(e.tags, ' #', '#'), '#', CHAR(10))"),
+            "{}",
+            f.sql
+        );
+        assert_eq!(f.params, vec![Param::Text("/^ru/".into())]);
+    }
+
+    // --- ids ---------------------------------------------------------------
+
+    #[test]
+    fn an_id_list_becomes_in() {
+        let f = compile_query("f:1,2,3");
+        assert_eq!(f.sql, "e.id_feed IN (?,?,?)");
+        assert_eq!(f.params, vec![Param::Int(1), Param::Int(2), Param::Int(3)]);
+    }
+
+    #[test]
+    fn a_negated_id_list_becomes_not_in() {
+        assert_eq!(compile_query("-f:1,2").sql, "e.id_feed NOT IN (?,?)");
+        assert_eq!(compile_query("-e:1").sql, "e.id NOT IN (?)");
+    }
+
+    #[test]
+    fn an_empty_id_list_matches_nothing_rather_than_erroring() {
+        // `IN ()` is a SQLite syntax error, and "no ids" silently becoming "all ids" would be worse.
+        assert_eq!(compile_query("f:").sql, "1=0");
+        assert_eq!(compile_query("-f:").sql, "1=1");
+        assert_eq!(compile_query("l:").sql, "1=0");
+    }
+
+    #[test]
+    fn a_category_uses_a_subquery_so_the_row_count_cannot_change() {
+        let f = compile_query("c:7");
+        assert!(
+            f.sql.starts_with("EXISTS (SELECT 1 FROM feed f2"),
+            "{}",
+            f.sql
+        );
+        assert!(f.sql.contains("f2.id = e.id_feed"), "{}", f.sql);
+        assert_eq!(f.params, vec![Param::Int(7)]);
+        assert_eq!(
+            compile_query("-c:7").sql.split_whitespace().next(),
+            Some("NOT")
+        );
+    }
+
+    // --- labels ------------------------------------------------------------
+
+    #[test]
+    fn a_label_id_uses_an_exists_subquery() {
+        let f = compile_query("l:3");
+        assert!(f.sql.contains("EXISTS"), "{}", f.sql);
+        assert!(f.sql.contains("entrytag et"), "{}", f.sql);
+        assert!(f.sql.contains("et.id_entry = e.id"), "{}", f.sql);
+        assert_eq!(f.params, vec![Param::Int(3)]);
+    }
+
+    #[test]
+    fn the_label_wildcard_means_has_any_label() {
+        let f = compile_query("l:*");
+        assert!(f.sql.contains("EXISTS"), "{}", f.sql);
+        assert!(f.params.is_empty(), "no ids to bind: {:?}", f.params);
+        assert!(
+            f.sql.contains("t.id_user = e.id_user"),
+            "scoped per user: {}",
+            f.sql
+        );
+    }
+
+    #[test]
+    fn a_negated_label_wildcard_means_has_no_label() {
+        let f = compile_query("-l:*");
+        assert!(f.sql.contains("NOT EXISTS"), "{}", f.sql);
+    }
+
+    #[test]
+    fn a_label_name_matches_the_whole_name() {
+        let f = compile_query("labels:todo");
+        // `frss_ilike(t.name, ?)` with an un-wildcarded needle is an exact, accent-folded
+        // comparison — one bound value per name, not two.
+        assert_eq!(f.params, vec![Param::Text("todo".into())]);
+        assert!(f.sql.contains("t.name"), "{}", f.sql);
+        assert!(
+            !crate::normalize::ilike("todos", "todo"),
+            "a prefix must not match"
+        );
+        assert!(crate::normalize::ilike("todo", "todo"));
+    }
+
+    #[test]
+    fn several_label_names_are_ored() {
+        let f = compile_query("labels:a,b");
+        assert_eq!(f.sql.matches(" OR ").count(), 1, "{}", f.sql);
+        assert_eq!(f.params.len(), 2, "one bound name each");
+    }
+
+    // --- dates -------------------------------------------------------------
+
+    #[test]
+    fn date_compares_against_the_id_in_microseconds() {
+        // The surprising one, and the reason the scale factor exists: `date:` is ingestion time and
+        // the id is a microsecond wall clock.
+        let f = compile_query("date:2006-01-02");
+        assert!(f.sql.contains("e.id"), "{}", f.sql);
+        match &f.params[0] {
+            Param::Int(v) => assert!(*v > 1_000_000_000_000_000, "{v} looks like seconds, not µs"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn pubdate_compares_against_the_date_column_in_seconds() {
+        let f = compile_query("pubdate:2006-01-02");
+        assert!(f.sql.contains("e.date"), "{}", f.sql);
+        match &f.params[0] {
+            Param::Int(v) => assert!(*v < 10_000_000_000, "{v} looks like microseconds"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_date_field_maps_to_its_column() {
+        for (q, col) in [
+            ("date:2006", "e.id"),
+            ("pubdate:2006", "e.date"),
+            ("mdate:2006", "e.lastModified"),
+            ("userdate:2006", "e.lastUserModified"),
+        ] {
+            let f = compile_query(q);
+            assert!(f.sql.contains(col), "{q} -> {}", f.sql);
+        }
+    }
+
+    #[test]
+    fn a_two_sided_range_is_between() {
+        let f = compile_query("date:2006-01-02/2006-01-05");
+        assert!(f.sql.contains("BETWEEN ? AND ?"), "{}", f.sql);
+        assert_eq!(f.params.len(), 2);
+        assert!(f.params[0] < f.params[1]);
+    }
+
+    #[test]
+    fn a_one_sided_range_is_an_inequality() {
+        // `P1W` is open-ended into the future.
+        let f = compile_query("date:P1W");
+        assert_eq!(f.sql, "e.id >= ?");
+        assert_eq!(f.params.len(), 1);
+    }
+
+    #[test]
+    fn a_negated_two_sided_range_becomes_two_disjoint_halves() {
+        let f = compile_query("-date:2006-01-02/2006-01-05");
+        assert_eq!(f.sql, "(e.id < ? OR e.id > ?)");
+        assert_eq!(f.params.len(), 2);
+        assert!(
+            f.params[0] < f.params[1],
+            "the lower half bound comes first: {:?}",
+            f.params
+        );
+        // And it must not also be wrapped in NOT, which would cancel the complement out.
+        assert!(!f.sql.contains("NOT"), "{}", f.sql);
+    }
+
+    #[test]
+    fn a_negated_one_sided_range_flips_the_comparison() {
+        let f = compile_query("-date:P1W");
+        assert_eq!(f.sql, "e.id <= ?", "NOT (>= min) is <= max");
+    }
+
+    // --- boolean structure -------------------------------------------------
+
+    #[test]
+    fn conjunctions_and_disjunctions_are_parenthesized() {
+        let f = compile_query("a OR b");
+        // Each branch is parenthesized by `Fragment::join`, and the free-text fragment parenthesizes
+        // its own OR. The doubled brackets are redundant but harmless; what matters is that the two
+        // branches cannot be re-associated by a surrounding operator.
+        assert_eq!(f.sql.matches(" OR ").count(), 3, "{}", f.sql);
+        assert_eq!(f.params.len(), 4);
+        assert!(
+            f.sql.starts_with("((") && f.sql.ends_with("))"),
+            "{}",
+            f.sql
+        );
+    }
+
+    #[test]
+    fn a_leaf_of_several_predicates_is_anded_without_extra_nesting() {
+        let f = compile_query("intitle:a intext:b");
+        assert_eq!(
+            f.sql,
+            "(frss_ilike(e.title, ?)) AND (frss_ilike(e.content, ?))"
+        );
+    }
+
+    #[test]
+    fn a_negated_group_becomes_not() {
+        let f = compile_query("!(a OR b)");
+        assert!(f.sql.starts_with("NOT ("), "{}", f.sql);
+    }
+
+    #[test]
+    fn an_empty_query_is_true() {
+        assert_eq!(compile_query("").sql, "1=1");
+        assert!(compile_query("").params.is_empty());
+    }
+
+    #[test]
+    fn the_alias_is_honoured_throughout() {
+        let ctx = SqlCtx {
+            alias: "x",
+            entrytag_alias: "xt",
+            scoped_to_user: true,
+        };
+        let f = compile(&parse("intitle:a f:1 #t l:*", NOW).unwrap(), &ctx).unwrap();
+        assert!(f.sql.contains("x.title"), "{}", f.sql);
+        assert!(f.sql.contains("x.id_feed"), "{}", f.sql);
+        assert!(f.sql.contains("x.tags"), "{}", f.sql);
+        assert!(f.sql.contains("entrytag xt"), "{}", f.sql);
+        assert!(
+            !f.sql.contains("e."),
+            "no leftover default alias: {}",
+            f.sql
+        );
+    }
+
+    #[test]
+    fn an_unscoped_query_omits_the_user_predicate() {
+        // An admin-wide query must not filter by `e.id_user`, which may not even be in scope.
+        let ctx = SqlCtx {
+            alias: "e",
+            entrytag_alias: "et",
+            scoped_to_user: false,
+        };
+        let f = compile(&parse("l:*", NOW).unwrap(), &ctx).unwrap();
+        assert!(!f.sql.contains("id_user"), "{}", f.sql);
+    }
+
+    // --- saved queries -----------------------------------------------------
+
+    #[test]
+    fn an_unexpanded_saved_query_is_an_error_not_a_silent_pass() {
+        // Falling back to `1=1` here would return every article the user owns.
+        let e = compile(&parse("S:3", NOW).unwrap(), &ctx()).unwrap_err();
+        assert!(matches!(e, SearchError::Unsupported(_)), "{e}");
+        assert!(e.to_string().contains("S:"), "{e}");
+
+        let e = compile(&parse("search:x", NOW).unwrap(), &ctx()).unwrap_err();
+        assert!(e.to_string().contains("search:"), "{e}");
+    }
+
+    // --- determinism -------------------------------------------------------
+
+    #[test]
+    fn compiling_the_same_query_twice_is_identical() {
+        for q in ["a OR b", "intitle:x f:1,2 date:P1W", "(a OR b) AND !c"] {
+            assert_eq!(compile_query(q), compile_query(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn a_long_query_does_not_produce_deeply_nested_sql() {
+        // Flattening in `ast::combine` is what keeps this readable; twenty nested pairs would
+        // otherwise emit twenty levels of parentheses.
+        let q = (0..20)
+            .map(|i| format!("intitle:t{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let f = compile_query(&q);
+        assert_eq!(f.sql.matches(" AND ").count(), 19);
+        assert!(!f.sql.contains("(("), "no redundant nesting: {}", f.sql);
+    }
+
+    #[test]
+    fn helpers_are_reachable_for_the_golden_tests() {
+        // Guards the constructors used by `crates/freshrss-search/tests/golden.rs`.
+        assert!(contains("x").matches_folded("axb"));
+        assert!(regex("x").matches_folded("axb"));
+        assert!(!Fragment::new("1=1").is_empty());
+    }
+}

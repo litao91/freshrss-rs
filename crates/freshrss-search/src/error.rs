@@ -42,6 +42,15 @@ pub enum SearchError {
 
     #[error("saved-search expansion exceeded the budget of {max} expansions")]
     BudgetExceeded { max: usize },
+
+    /// A `S:`/`search:` reference reached a backend without being expanded first.
+    ///
+    /// Resolving a saved search needs the database, which this crate does not have, so expansion is a
+    /// separate pass. A backend that received an unexpanded reference has a bug in its caller; the
+    /// alternative — silently ignoring the term — would widen the result set to every article the
+    /// user owns.
+    #[error("'{0}' must be expanded before it can be evaluated")]
+    Unsupported(String),
 }
 
 impl SearchError {

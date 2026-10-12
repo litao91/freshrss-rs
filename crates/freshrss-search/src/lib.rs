@@ -26,6 +26,7 @@ pub mod lexer;
 pub mod normalize;
 pub mod parser;
 pub mod regex;
+pub mod sql;
 
 pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 pub use error::SearchError;
@@ -33,3 +34,4 @@ pub use lexer::{tokenize, Token, Value};
 pub use normalize::{fold, ilike};
 pub use parser::parse;
 pub use regex::{Flags, Pattern};
+pub use sql::{compile, Fragment, Param, SqlCtx};
