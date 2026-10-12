@@ -10,6 +10,7 @@ pub mod guid;
 pub mod hash;
 pub mod http;
 pub mod kind;
+pub mod opml;
 pub mod parse;
 pub mod raw;
 pub mod sanitize;
@@ -21,6 +22,7 @@ pub use guid::{decide_guid, load_guids, GuidInput, GuidResolution, UnicityCriter
 pub use hash::{content_hash, content_hash_hex, HashInput};
 pub use http::{FetchOutcome, FetchRequest, FetchedBody, Fetcher};
 pub use kind::FeedKind;
+pub use opml::{Opml, OpmlError, OpmlPriority, Outline};
 pub use parse::parse as parse_feed;
 pub use raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};
 pub use sanitize::{sanitize_html, SanitizeOptions};

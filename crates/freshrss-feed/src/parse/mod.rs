@@ -9,7 +9,7 @@ pub mod date;
 mod jsonfeed;
 mod rdf;
 mod rss;
-mod xml;
+pub(crate) mod xml;
 
 use crate::error::FeedError;
 use crate::kind::FeedKind;

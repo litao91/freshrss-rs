@@ -62,6 +62,24 @@ pub fn attrs(e: &BytesStart<'_>, _r: &Reader<&[u8]>) -> Attrs {
     out
 }
 
+/// An element's attributes, keyed by their **qualified** name — prefix intact.
+///
+/// The one reader that needs this is OPML, where `frss:priority` is identified by its name alone.
+/// Collapsing it to `priority` there would let any other namespace's `priority` attribute
+/// impersonate a FreshRSS one and silently change a feed's visibility on import.
+pub fn attrs_prefixed(e: &BytesStart<'_>) -> Attrs {
+    let mut out = Vec::new();
+    for attr in e.attributes().flatten() {
+        let key = attr.key.into_inner().to_owned();
+        let value = attr
+            .normalized_value(XmlVersion::default())
+            .map(Cow::into_owned)
+            .unwrap_or_else(|_| attr.value.into_owned());
+        out.push((key, value));
+    }
+    out
+}
+
 /// Finds an attribute by local name.
 pub fn attr<'a>(attrs: &'a Attrs, name: &str) -> Option<&'a str> {
     attrs
