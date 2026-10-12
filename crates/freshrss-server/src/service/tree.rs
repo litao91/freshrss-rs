@@ -447,9 +447,7 @@ mod tests {
         );
         add_entries(&db, bob, bob_feed, 9, 0);
 
-        let tree = db
-            .blocking_with(|conn| build(conn, alice))
-            .expect("tree");
+        let tree = db.blocking_with(|conn| build(conn, alice)).expect("tree");
         assert_eq!(tree.categories.len(), 1, "only alice's seeded folder");
         assert!(tree.categories.iter().all(|c| c.feeds.is_empty()));
         assert!(tree.orphans.is_empty());

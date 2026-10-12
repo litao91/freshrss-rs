@@ -20,9 +20,8 @@ use crate::raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};
 /// with no `version` and no `items` is a JSON API response, and reporting it as an empty feed would
 /// hide the fact that the URL is wrong.
 pub fn parse(body: &str) -> Result<RawFeed, FeedError> {
-    let doc: Document = serde_json::from_str(body).map_err(|e| {
-        FeedError::Parse(format!("invalid JSON Feed: {e}"))
-    })?;
+    let doc: Document = serde_json::from_str(body)
+        .map_err(|e| FeedError::Parse(format!("invalid JSON Feed: {e}")))?;
 
     if doc.version.is_none() && doc.items.is_none() {
         return Err(FeedError::Parse(
@@ -45,9 +44,10 @@ pub fn parse(body: &str) -> Result<RawFeed, FeedError> {
             .as_deref()
             .filter(|u| is_remote_uri(u))
             .and_then(nonempty),
-        hub_url: doc
-            .hubs
-            .and_then(|hubs| hubs.into_iter().find_map(|h| h.url.filter(|u| is_remote_uri(u)))),
+        hub_url: doc.hubs.and_then(|hubs| {
+            hubs.into_iter()
+                .find_map(|h| h.url.filter(|u| is_remote_uri(u)))
+        }),
         format: FeedFormat::JsonFeed,
         items: doc
             .items
@@ -282,7 +282,10 @@ mod tests {
     #[test]
     fn favicon_is_used_when_there_is_no_icon() {
         let body = r#"{"version":"https://jsonfeed.org/version/1.1","favicon":"https://example.com/f.ico","items":[]}"#;
-        assert_eq!(parse(body).unwrap().icon.as_deref(), Some("https://example.com/f.ico"));
+        assert_eq!(
+            parse(body).unwrap().icon.as_deref(),
+            Some("https://example.com/f.ico")
+        );
     }
 
     #[test]
@@ -292,7 +295,10 @@ mod tests {
                 "content_html":"<p>Body</p>","date_published":"2006-01-02T15:04:05-05:00"}"#,
         );
         assert_eq!(item.guid.as_deref(), Some("abc"));
-        assert!(!item.guid_is_permalink, "a JSON Feed id is never a permalink");
+        assert!(
+            !item.guid_is_permalink,
+            "a JSON Feed id is never a permalink"
+        );
         assert_eq!(item.link.as_deref(), Some("https://example.com/a"));
         assert_eq!(item.title.as_deref(), Some("Hello"));
         assert_eq!(item.date, Some(1_136_232_245));
@@ -301,7 +307,8 @@ mod tests {
 
     #[test]
     fn content_html_outranks_content_text() {
-        let item = one(r#"{"id":"1","title":"T","content_html":"<p>full</p>","content_text":"plain"}"#);
+        let item =
+            one(r#"{"id":"1","title":"T","content_html":"<p>full</p>","content_text":"plain"}"#);
         assert_eq!(item.content_html.as_deref(), Some("<p>full</p>"));
         assert_eq!(item.content_text.as_deref(), Some("plain"));
         assert_eq!(item.effective_content(), Some("<p>full</p>"));
@@ -379,16 +386,18 @@ mod tests {
 
     #[test]
     fn attachments_become_enclosures() {
-        let item = one(
-            r#"{"id":"1","title":"T","attachments":[
+        let item = one(r#"{"id":"1","title":"T","attachments":[
                  {"url":"https://example.com/e.mp3","mime_type":"AUDIO/MPEG",
-                  "title":"Ep 1","size_in_bytes":1024,"duration_in_seconds":600}]}"#,
-        );
+                  "title":"Ep 1","size_in_bytes":1024,"duration_in_seconds":600}]}"#);
         assert_eq!(item.enclosures.len(), 1);
         let e = &item.enclosures[0];
         assert_eq!(e.url, "https://example.com/e.mp3");
         assert_eq!(e.mime.as_deref(), Some("audio/mpeg"));
-        assert_eq!(e.medium.as_deref(), Some("audio"), "derived from the MIME type");
+        assert_eq!(
+            e.medium.as_deref(),
+            Some("audio"),
+            "derived from the MIME type"
+        );
         assert_eq!(e.title.as_deref(), Some("Ep 1"));
         assert_eq!(e.length, Some(1024));
     }
@@ -402,10 +411,16 @@ mod tests {
     #[test]
     fn image_becomes_the_thumbnail() {
         let item = one(r#"{"id":"1","title":"T","image":"https://example.com/i.jpg"}"#);
-        assert_eq!(item.thumbnail.as_ref().map(|t| t.url.as_str()), Some("https://example.com/i.jpg"));
+        assert_eq!(
+            item.thumbnail.as_ref().map(|t| t.url.as_str()),
+            Some("https://example.com/i.jpg")
+        );
 
         let banner = one(r#"{"id":"1","title":"T","banner_image":"https://example.com/b.jpg"}"#);
-        assert_eq!(banner.thumbnail.as_ref().map(|t| t.url.as_str()), Some("https://example.com/b.jpg"));
+        assert_eq!(
+            banner.thumbnail.as_ref().map(|t| t.url.as_str()),
+            Some("https://example.com/b.jpg")
+        );
     }
 
     #[test]
@@ -416,7 +431,10 @@ mod tests {
 
     #[test]
     fn an_item_with_no_title_link_or_content_is_dropped() {
-        let f = parse(&feed(r#"{"id":"1","date_published":"2006-01-02T15:04:05Z"}"#)).unwrap();
+        let f = parse(&feed(
+            r#"{"id":"1","date_published":"2006-01-02T15:04:05Z"}"#,
+        ))
+        .unwrap();
         assert!(f.items.is_empty());
     }
 
@@ -434,7 +452,10 @@ mod tests {
 
     #[test]
     fn items_keep_their_document_order() {
-        let f = parse(&feed(r#"{"id":"1","title":"newest"},{"id":"2","title":"oldest"}"#)).unwrap();
+        let f = parse(&feed(
+            r#"{"id":"1","title":"newest"},{"id":"2","title":"oldest"}"#,
+        ))
+        .unwrap();
         let titles: Vec<_> = f.items.iter().filter_map(|i| i.title.as_deref()).collect();
         assert_eq!(titles, vec!["newest", "oldest"]);
     }

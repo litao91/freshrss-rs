@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Example RSS 2.0</title>
+    <link>https://example.com</link>
+    <description>A plain RSS 2.0 feed with two items.</description>
+    <language>en-us</language>
+    <lastBuildDate>Mon, 02 Jan 2006 16:00:00 +0000</lastBuildDate>
+    <atom:link rel="self" href="https://example.com/feed.xml"/>
+    <atom:link rel="hub" href="https://hub.example.com"/>
+    <image>
+      <url>https://example.com/icon.png</url>
+      <title>Example RSS 2.0</title>
+      <link>https://example.com</link>
+    </image>
+
+    <item>
+      <title>Second article</title>
+      <link>https://example.com/second</link>
+      <guid isPermaLink="false">urn:uuid:2</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate>
+      <dc:creator>Grace Hopper</dc:creator>
+      <description>A summary of the second article.</description>
+      <category>testing</category>
+      <category>rss, fixtures</category>
+    </item>
+
+    <item>
+      <title>First article</title>
+      <link>https://example.com/first</link>
+      <guid isPermaLink="false">urn:uuid:1</guid>
+      <pubDate>Sun, 01 Jan 2006 09:00:00 +0000</pubDate>
+      <author>ada@example.com (Ada Lovelace)</author>
+      <description>A summary of the first article.</description>
+      <category>testing</category>
+    </item>
+  </channel>
+</rss>

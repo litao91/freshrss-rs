@@ -99,9 +99,11 @@ pub fn xml_unescape(text: &str) -> std::borrow::Cow<'_, str> {
         let after = &rest[amp + 1..];
 
         // A reference must terminate with `;` before any whitespace or `<`, per XML.
-        let semi = after
-            .find(';')
-            .filter(|end| !after[..*end].bytes().any(|b| b.is_ascii_whitespace() || b == b'<'));
+        let semi = after.find(';').filter(|end| {
+            !after[..*end]
+                .bytes()
+                .any(|b| b.is_ascii_whitespace() || b == b'<')
+        });
 
         match semi {
             Some(0) => {
@@ -165,7 +167,10 @@ fn resolve_xml_reference(body: &str) -> Option<String> {
 /// names have no single canonical escape and are left as literal UTF-8, which is what this project
 /// stores.
 pub fn encode_specials(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.bytes().any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\'')) {
+    if !text
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
+    {
         return std::borrow::Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len() + 8);
@@ -209,14 +214,20 @@ mod tests {
 
     #[test]
     fn leaves_a_bare_ampersand_alone() {
-        assert_eq!(html_only_entity_decode("Tom & Jerry & friends"), "Tom & Jerry & friends");
+        assert_eq!(
+            html_only_entity_decode("Tom & Jerry & friends"),
+            "Tom & Jerry & friends"
+        );
         assert_eq!(html_only_entity_decode("a & b"), "a & b");
     }
 
     #[test]
     fn does_not_decode_an_unterminated_name() {
         // No trailing `;`, so this is prose, not an entity. PHP's `strtr` agrees.
-        assert_eq!(html_only_entity_decode("&eacute without semicolon"), "&eacute without semicolon");
+        assert_eq!(
+            html_only_entity_decode("&eacute without semicolon"),
+            "&eacute without semicolon"
+        );
     }
 
     #[test]
@@ -229,7 +240,10 @@ mod tests {
 
     #[test]
     fn handles_html5_only_names() {
-        assert_eq!(html_only_entity_decode("&CounterClockwiseContourIntegral;"), "∳");
+        assert_eq!(
+            html_only_entity_decode("&CounterClockwiseContourIntegral;"),
+            "∳"
+        );
         assert_eq!(html_only_entity_decode("&NewLine;"), "\n");
     }
 
@@ -248,7 +262,10 @@ mod tests {
             assert_eq!(decoded, name, "{name} is preserved");
         }
         assert_eq!(encode_specials("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
-        assert!(matches!(encode_specials("plain"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            encode_specials("plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -263,7 +280,10 @@ mod tests {
     #[test]
     fn resolves_the_five_predefined_entities() {
         assert_eq!(xml_unescape("&amp;&lt;&gt;&quot;&apos;"), "&<>\"'");
-        assert_eq!(xml_unescape("a &lt; b &amp;&amp; c &gt; d"), "a < b && c > d");
+        assert_eq!(
+            xml_unescape("a &lt; b &amp;&amp; c &gt; d"),
+            "a < b && c > d"
+        );
     }
 
     #[test]
@@ -276,7 +296,10 @@ mod tests {
     #[test]
     fn leaves_html_only_names_for_the_next_pass() {
         // This is the whole reason the function exists: a strict unescaper errors here.
-        assert_eq!(xml_unescape("Caf&eacute; &mdash; x"), "Caf&eacute; &mdash; x");
+        assert_eq!(
+            xml_unescape("Caf&eacute; &mdash; x"),
+            "Caf&eacute; &mdash; x"
+        );
         assert_eq!(
             html_only_entity_decode(&xml_unescape("&lt;b&gt;Caf&eacute;&lt;/b&gt;")),
             "<b>Café</b>"

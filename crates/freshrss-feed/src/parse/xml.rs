@@ -138,16 +138,22 @@ pub fn skip(r: &mut Reader<&[u8]>, name: QName<'_>) {
 /// see [`split`]) and `is_empty` telling the two apart — the distinction matters because [`text`]
 /// must not be called on an `Empty` element, since there is no end tag to consume and the reader
 /// would run to EOF.
+///
+/// `until` may be given with or without its prefix; the comparison is always local-name to
+/// local-name. That is not a convenience: a caller holding the full name `"media:group"` and
+/// comparing it against the end tag's local name `"group"` would never match, and the walk would run
+/// to EOF — silently swallowing every item after the first `media:group`.
 pub fn walk(
     r: &mut Reader<&[u8]>,
     until: &str,
     mut on_start: impl FnMut(&str, &BytesStart<'_>, bool, &mut Reader<&[u8]>),
 ) {
+    let until_local = split(until).1;
     loop {
         match r.read_event() {
             Ok(Event::Start(e)) => {
                 let name = e.name().into_inner().to_owned();
-                if split(&name).1 == until {
+                if split(&name).1 == until_local {
                     return;
                 }
                 on_start(&name, &e, false, r);
@@ -157,7 +163,7 @@ pub fn walk(
                 on_start(&name, &e, true, r);
             }
             Ok(Event::End(e)) => {
-                if local(e.name()) == until {
+                if local(e.name()) == until_local {
                     return;
                 }
             }
@@ -321,6 +327,35 @@ mod tests {
     }
 
     #[test]
+    fn walk_matches_a_prefixed_terminator_by_local_name() {
+        // Regression: a caller holding the full name "media:group" compared against the end tag's
+        // local name "group" would never match, and the walk would run to EOF — silently swallowing
+        // every sibling after it.
+        let mut r = reader("<media:group><a/><b/></media:group><after/>");
+        let _ = r.read_event().unwrap();
+        let mut seen = Vec::new();
+        walk(&mut r, "media:group", |name, _, _, _| {
+            seen.push(name.to_owned())
+        });
+        assert_eq!(seen, vec!["a", "b"]);
+        // The reader must be positioned after the group, not at EOF.
+        let mut after = Vec::new();
+        walk(&mut r, "never", |name, _, _, _| after.push(name.to_owned()));
+        assert_eq!(after, vec!["after"]);
+    }
+
+    #[test]
+    fn walk_accepts_either_spelling_of_the_terminator() {
+        for until in ["group", "media:group"] {
+            let mut r = reader("<media:group><a/></media:group><sibling/>");
+            let _ = r.read_event().unwrap();
+            let mut seen = Vec::new();
+            walk(&mut r, until, |name, _, _, _| seen.push(name.to_owned()));
+            assert_eq!(seen, vec!["a"], "terminator {until:?}");
+        }
+    }
+
+    #[test]
     fn walk_stops_at_eof_when_the_end_tag_is_missing() {
         let mut r = reader("<channel><title>T</title>");
         let _ = r.read_event().unwrap();
@@ -339,6 +374,9 @@ mod tests {
         walk(&mut r, "a", |name, _, _, r| {
             seen.push((name.to_owned(), text(r, QName(name))));
         });
-        assert_eq!(seen, vec![("b".into(), "x".into()), ("d".into(), "y".into())]);
+        assert_eq!(
+            seen,
+            vec![("b".into(), "x".into()), ("d".into(), "y".into())]
+        );
     }
 }

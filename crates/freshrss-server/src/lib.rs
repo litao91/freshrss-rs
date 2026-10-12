@@ -6,6 +6,7 @@
 //! crates so the query language and the feed parsers stay testable without a database.
 
 pub mod api;
+pub mod cli;
 pub mod config;
 pub mod db;
 pub mod domain;

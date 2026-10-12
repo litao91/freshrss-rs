@@ -35,7 +35,7 @@ pub fn parse_millis(raw: &str) -> Option<i64> {
     if let Some(ms) = bare_epoch_millis(&text) {
         return Some(ms);
     }
-    if let Some(ts) = rfc2822::parse(&text).ok().map(|z| z.timestamp()) {
+    if let Some(ts) = parse_rfc2822(&text).map(|z| z.timestamp()) {
         return Some(ts.as_millisecond());
     }
     if let Ok(ts) = Timestamp::from_str(&text) {
@@ -106,7 +106,36 @@ fn normalize(raw: &str) -> String {
         Some(at) if raw[at..].ends_with(')') => &raw[..at],
         _ => raw,
     };
-    without_comment.split_whitespace().collect::<Vec<_>>().join(" ")
+    without_comment
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Parses an RFC 822/2822 date, tolerating a wrong or unrecognized weekday.
+///
+/// A strict parser rejects `Sat, 02 Jan 2206 15:04:05 +0000` because that day is a Thursday, and
+/// rejects `Funday, 02 Jan 2006 …` because `Funday` is not an abbreviation. Both are common in real
+/// feeds: the weekday is redundant information the generator computes separately from the date, and
+/// plenty of them get it wrong. Losing every article's date over it means the whole feed sorts by
+/// ingestion time and any `sha1:*published*` GUID policy silently changes.
+///
+/// The date, time and zone are what actually identify the instant, so on failure the leading
+/// `weekday,` is dropped and the rest is parsed on its own.
+fn parse_rfc2822(text: &str) -> Option<jiff::Zoned> {
+    if let Ok(zoned) = rfc2822::parse(text) {
+        return Some(zoned);
+    }
+    // Only a short alphabetic token followed by a comma qualifies as a weekday prefix.
+    let comma = text.find(',')?;
+    if comma > 16 {
+        return None;
+    }
+    let prefix = &text[..comma];
+    if prefix.is_empty() || !prefix.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    rfc2822::parse(text[comma + 1..].trim_start()).ok()
 }
 
 /// A bare integer: a W3C year, unix seconds, or unix milliseconds.
@@ -137,7 +166,12 @@ fn bare_epoch_millis(text: &str) -> Option<i64> {
 fn civil_datetime_utc(text: &str) -> Option<i64> {
     let candidate = text.replace(' ', "T");
     let dt = civil::DateTime::from_str(&candidate).ok()?;
-    Some(dt.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp().as_millisecond())
+    Some(
+        dt.to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()?
+            .timestamp()
+            .as_millisecond(),
+    )
 }
 
 /// A bare `YYYY-MM-DD`.
@@ -340,13 +374,54 @@ mod tests {
 
     #[test]
     fn rfc822_tolerates_a_trailing_comment() {
-        assert_eq!(parse_date("Mon, 02 Jan 2006 15:04:05 +0000 (UTC)"), Some(REF));
+        assert_eq!(
+            parse_date("Mon, 02 Jan 2006 15:04:05 +0000 (UTC)"),
+            Some(REF)
+        );
+    }
+
+    #[test]
+    fn a_wrong_weekday_does_not_cost_us_the_date() {
+        // 2006-01-02 was a Monday. Generators that compute the weekday separately get this wrong,
+        // and a strict parser then rejects the whole timestamp.
+        assert_eq!(parse_date("Tue, 02 Jan 2006 15:04:05 +0000"), Some(REF));
+        assert_eq!(parse_date("Sat, 02 Jan 2006 15:04:05 +0000"), Some(REF));
+        assert_eq!(
+            parse_date("Sun, 02 Jan 2206 15:04:05 +0000"),
+            Some(7_447_561_445)
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_weekday_does_not_cost_us_the_date() {
+        assert_eq!(parse_date("Funday, 02 Jan 2006 15:04:05 +0000"), Some(REF));
+        assert_eq!(parse_date("Monday, 02 Jan 2006 15:04:05 +0000"), Some(REF));
+    }
+
+    #[test]
+    fn the_lenient_weekday_path_does_not_accept_garbage() {
+        // The prefix must be a short alphabetic token before a comma, so a comma inside prose does
+        // not turn the rest of the string into a date.
+        assert_eq!(parse_date("hello, world"), None);
+        assert_eq!(parse_date("Mon, not a date at all"), None);
+        assert_eq!(
+            parse_date("a-very-long-non-weekday-prefix, 02 Jan 2006"),
+            None
+        );
+        // A genuinely impossible calendar date is still rejected.
+        assert_eq!(parse_date("Mon, 32 Jan 2006 15:04:05 +0000"), None);
     }
 
     #[test]
     fn rfc822_tolerates_surrounding_and_inner_whitespace() {
-        assert_eq!(parse_date("  Mon, 02 Jan 2006 15:04:05 +0000  \n"), Some(REF));
-        assert_eq!(parse_date("Mon,  02  Jan  2006  15:04:05  +0000"), Some(REF));
+        assert_eq!(
+            parse_date("  Mon, 02 Jan 2006 15:04:05 +0000  \n"),
+            Some(REF)
+        );
+        assert_eq!(
+            parse_date("Mon,  02  Jan  2006  15:04:05  +0000"),
+            Some(REF)
+        );
     }
 
     #[test]
@@ -354,15 +429,25 @@ mod tests {
         assert_eq!(parse_date("2006-01-02T15:04:05Z"), Some(REF));
         assert_eq!(parse_date("2006-01-02T15:04:05+00:00"), Some(REF));
         assert_eq!(parse_date("2006-01-02T10:04:05-05:00"), Some(REF));
-        assert_eq!(parse_date("2006-01-02t15:04:05z"), Some(REF), "case-insensitive");
+        assert_eq!(
+            parse_date("2006-01-02t15:04:05z"),
+            Some(REF),
+            "case-insensitive"
+        );
     }
 
     #[test]
     fn fractional_seconds_are_truncated_for_parse_date_but_kept_for_parse_millis() {
         assert_eq!(parse_date("2006-01-02T15:04:05.123Z"), Some(REF));
-        assert_eq!(parse_millis("2006-01-02T15:04:05.123Z"), Some(REF * 1000 + 123));
+        assert_eq!(
+            parse_millis("2006-01-02T15:04:05.123Z"),
+            Some(REF * 1000 + 123)
+        );
         // RFC3339_EXTENDED, which is JSON Feed's and FreshRSS's default `itemTimeFormat`.
-        assert_eq!(parse_millis("2006-01-02T15:04:05.000+00:00"), Some(REF * 1000));
+        assert_eq!(
+            parse_millis("2006-01-02T15:04:05.000+00:00"),
+            Some(REF * 1000)
+        );
     }
 
     #[test]
@@ -436,7 +521,10 @@ mod tests {
         // RFC 3339 allows `:60`, and jiff accepts it. Either reading is fine as long as the result
         // is within a second of the surrounding minute.
         let parsed = parse_date("2016-12-31T23:59:60Z");
-        assert!(parsed.is_none_or(|t| (t - 1_483_228_800).abs() <= 1), "{parsed:?}");
+        assert!(
+            parsed.is_none_or(|t| (t - 1_483_228_800).abs() <= 1),
+            "{parsed:?}"
+        );
     }
 
     #[test]
@@ -482,7 +570,11 @@ mod tests {
             ("d/m/Y H:i", "02/01/2006 15:04", REF * 1000 - 5_000),
             ("U", "1136214245", REF * 1000),
             ("Y-m-d", "2006-01-02", 1_136_160_000_000),
-            ("D, d M Y H:i:s O", "Mon, 02 Jan 2006 15:04:05 +0000", REF * 1000),
+            (
+                "D, d M Y H:i:s O",
+                "Mon, 02 Jan 2006 15:04:05 +0000",
+                REF * 1000,
+            ),
         ];
         for (php, raw, want) in cases {
             assert_eq!(parse_with_php_format(raw, php), Some(want), "{php} / {raw}");
@@ -493,7 +585,10 @@ mod tests {
     fn an_untranslatable_format_falls_back_to_the_general_parser() {
         // `%` has no PHP meaning as a directive here, and unknown letters stay literal, so the
         // pattern may simply fail to match — the input is then parsed best-effort instead.
-        assert_eq!(parse_with_php_format("2006-01-02T15:04:05Z", "QQQ"), Some(REF * 1000));
+        assert_eq!(
+            parse_with_php_format("2006-01-02T15:04:05Z", "QQQ"),
+            Some(REF * 1000)
+        );
     }
 
     #[test]
@@ -503,10 +598,7 @@ mod tests {
 
     #[test]
     fn literals_survive_translation() {
-        assert_eq!(
-            php_format_to_strtime("Y/m/d").as_deref(),
-            Some("%Y/%m/%d")
-        );
+        assert_eq!(php_format_to_strtime("Y/m/d").as_deref(), Some("%Y/%m/%d"));
         assert_eq!(
             parse_with_php_format("2006/01/02", "Y/m/d"),
             Some(1_136_160_000_000)

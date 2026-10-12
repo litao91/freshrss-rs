@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom xhtml content</title>
+  <id>urn:uuid:feed-2</id>
+  <updated>2006-01-02T15:04:05Z</updated>
+
+  <entry>
+    <id>urn:uuid:x1</id>
+    <title>xhtml with the wrapper div</title>
+    <updated>2006-01-02T15:04:05Z</updated>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Body inside the wrapper.</p></div></content>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:x2</id>
+    <title>Two sibling divs are not a wrapper</title>
+    <updated>2006-01-02T15:04:05Z</updated>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>one</p></div><div><p>two</p></div></content>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:x3</id>
+    <title>Plain text type</title>
+    <updated>2006-01-02T15:04:05Z</updated>
+    <content type="text">Not markup: a &lt; b &amp; &lt;script&gt;alert(1)&lt;/script&gt;</content>
+  </entry>
+</feed>

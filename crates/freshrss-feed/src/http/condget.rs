@@ -110,7 +110,10 @@ mod tests {
             Some("  Mon, 02 Jan 2006 15:04:05 GMT ".to_owned()),
         );
         assert_eq!(c.etag.as_deref(), Some("\"abc\""));
-        assert_eq!(c.last_modified.as_deref(), Some("Mon, 02 Jan 2006 15:04:05 GMT"));
+        assert_eq!(
+            c.last_modified.as_deref(),
+            Some("Mon, 02 Jan 2006 15:04:05 GMT")
+        );
     }
 
     #[test]

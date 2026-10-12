@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel rdf:about="https://example.com">
+    <title>Example RDF</title>
+    <link>https://example.com</link>
+    <description>An RSS 1.0 / RDF feed: items are siblings of the channel.</description>
+    <dc:date>2006-01-02T15:04:05Z</dc:date>
+  </channel>
+  <image rdf:about="https://example.com/icon.png">
+    <url>https://example.com/icon.png</url>
+    <title>Example RDF</title>
+    <link>https://example.com</link>
+  </image>
+  <item rdf:about="https://example.com/first">
+    <title>First RDF item</title>
+    <link>https://example.com/first</link>
+    <description>The summary.</description>
+    <content:encoded><![CDATA[<p>The full body.</p>]]></content:encoded>
+    <dc:date>2006-01-02T15:04:05Z</dc:date>
+    <dc:creator>Ada Lovelace</dc:creator>
+    <dc:subject>rdf, fixtures</dc:subject>
+  </item>
+  <item rdf:about="urn:not-a-url">
+    <title>About is not a URL</title>
+    <description> rdf:about is the guid here but is not remote, so it is not the link.</description>
+  </item>
+</rdf:RDF>

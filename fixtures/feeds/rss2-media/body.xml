@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
+     xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Podcast with media namespaces</title>
+    <link>https://example.com</link>
+    <item>
+      <title>Episode with an enclosure</title>
+      <guid isPermaLink="false">ep1</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate>
+      <itunes:author>The Host</itunes:author>
+      <enclosure url="https://cdn.example.com/ep1.mp3" length="10485760" type="AUDIO/MPEG"/>
+      <media:thumbnail url="https://cdn.example.com/ep1.jpg" width="640" height="360"/>
+      <media:content url="https://cdn.example.com/ep1.mp4" type="video/mp4" medium="video"/>
+    </item>
+    <item>
+      <title>Episode with a media:group</title>
+      <guid isPermaLink="false">ep2</guid>
+      <media:group>
+        <media:content url="https://cdn.example.com/ep2-low.mp4" medium="video"/>
+        <media:content url="https://cdn.example.com/ep2-high.mp4" medium="video" isDefault="true"/>
+      </media:group>
+    </item>
+    <item>
+      <title>Episode with an atom:link enclosure</title>
+      <guid isPermaLink="false">ep3</guid>
+      <atom:link rel="enclosure" href="https://cdn.example.com/ep3.mp3" type="audio/mpeg" length="99"/>
+    </item>
+    <item>
+      <title>Non-remote attachment is dropped</title>
+      <guid isPermaLink="false">ep4</guid>
+      <enclosure url="file:///etc/passwd" type="text/plain"/>
+      <media:thumbnail url="data:image/png;base64,AAAA"/>
+    </item>
+  </channel>
+</rss>

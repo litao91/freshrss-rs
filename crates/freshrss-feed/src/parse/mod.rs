@@ -3,9 +3,9 @@
 //! The entry point is [`parse`], which sniffs the format and dispatches. Format-specific modules are
 //! private to this one because their element handling only makes sense next to each other.
 
-pub mod date;
 mod atom;
 mod common;
+pub mod date;
 mod jsonfeed;
 mod rdf;
 mod rss;
@@ -62,9 +62,7 @@ fn decode_body(body: &[u8]) -> Result<String, FeedError> {
         return Err(FeedError::Empty);
     }
     // Strip a UTF-8 BOM: legal, but it makes the first element name look like "\u{feff}rss".
-    let body = body
-        .strip_prefix(&[0xEF, 0xBB, 0xBF][..])
-        .unwrap_or(body);
+    let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(body);
     std::str::from_utf8(body)
         .map(str::to_owned)
         .map_err(|_| FeedError::Parse("feed body is not valid UTF-8".to_owned()))
@@ -125,9 +123,7 @@ fn local_name(name: &str) -> &str {
 
 /// The format a document would be parsed as, without parsing it.
 pub fn detect_format(body: &[u8]) -> FeedFormat {
-    let body = body
-        .strip_prefix(&[0xEF, 0xBB, 0xBF][..])
-        .unwrap_or(body);
+    let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(body);
     let Ok(text) = std::str::from_utf8(body) else {
         return FeedFormat::Unknown;
     };
@@ -149,7 +145,10 @@ mod tests {
 
     #[test]
     fn sniffs_root_elements_past_declarations_and_comments() {
-        assert_eq!(sniff_xml_root(r#"<?xml version="1.0"?><rss version="2.0">"#), Some("rss"));
+        assert_eq!(
+            sniff_xml_root(r#"<?xml version="1.0"?><rss version="2.0">"#),
+            Some("rss")
+        );
         assert_eq!(sniff_xml_root("\n\n  <feed xmlns='x'>"), Some("feed"));
         assert_eq!(sniff_xml_root("<!-- c --><RDF>"), Some("RDF"));
         assert_eq!(
@@ -183,8 +182,14 @@ mod tests {
 
     #[test]
     fn detect_format_recognizes_the_three_xml_roots_and_json() {
-        assert_eq!(detect_format(b"<rss version=\"2.0\"></rss>"), FeedFormat::Rss2);
-        assert_eq!(detect_format(b"<feed xmlns=\"a\"></feed>"), FeedFormat::Atom);
+        assert_eq!(
+            detect_format(b"<rss version=\"2.0\"></rss>"),
+            FeedFormat::Rss2
+        );
+        assert_eq!(
+            detect_format(b"<feed xmlns=\"a\"></feed>"),
+            FeedFormat::Atom
+        );
         assert_eq!(detect_format(b"<rdf:RDF></rdf:RDF>"), FeedFormat::Rss1);
         assert_eq!(
             detect_format(br#"{"version":"https://jsonfeed.org/version/1.1"}"#),
@@ -214,7 +219,8 @@ mod tests {
 
     #[test]
     fn a_non_utf8_body_is_a_clear_error_rather_than_mangled_text() {
-        let body = b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss><title>Caf\xE9</title></rss>";
+        let body =
+            b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss><title>Caf\xE9</title></rss>";
         let err = decode_body(body).unwrap_err();
         assert!(err.to_string().contains("not valid UTF-8"), "{err}");
     }

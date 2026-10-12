@@ -1,0 +1,54 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "Example JSON Feed",
+  "home_page_url": "https://example.com/",
+  "feed_url": "https://example.com/feed.json",
+  "description": "A JSON Feed 1.1 document.",
+  "icon": "https://example.com/icon.png",
+  "favicon": "https://example.com/favicon.ico",
+  "language": "en-US",
+  "hubs": [{ "type": "WebSub", "url": "https://hub.example.com" }],
+  "authors": [{ "name": "Feed Author", "url": "https://example.com/about" }],
+  "items": [
+    {
+      "id": "jf-1",
+      "url": "https://example.com/first",
+      "title": "Full HTML content",
+      "content_html": "<p>The whole article.</p>",
+      "content_text": "The whole article.",
+      "summary": "A shorter summary.",
+      "image": "https://example.com/i/first.jpg",
+      "date_published": "2006-01-02T15:04:05.123-05:00",
+      "date_modified": "2006-01-03T00:00:00Z",
+      "authors": [{ "name": "Ada Lovelace" }],
+      "tags": ["jsonfeed", "testing", "jsonfeed"],
+      "attachments": [
+        {
+          "url": "https://cdn.example.com/ep.mp3",
+          "mime_type": "AUDIO/MPEG",
+          "title": "Episode one",
+          "size_in_bytes": 1048576,
+          "duration_in_seconds": 600
+        }
+      ],
+      "_blue_shed": { "deep": "unknown fields must be ignored" }
+    },
+    {
+      "id": "jf-2",
+      "external_url": "https://other.example/post",
+      "title": "Text only, no url",
+      "content_text": "Just text."
+    },
+    {
+      "title": "No id at all",
+      "content_text": "The GUID has to be synthesized.",
+      "date_published": "2006-01-01T00:00:00Z"
+    },
+    {
+      "id": "jf-4",
+      "title": "Non-remote attachment and image",
+      "attachments": [{ "url": "file:///etc/passwd" }],
+      "image": "data:image/png;base64,AAAA"
+    }
+  ]
+}

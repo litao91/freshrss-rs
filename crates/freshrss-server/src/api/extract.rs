@@ -108,9 +108,7 @@ async fn resolve(
 
     let db = app.db.clone();
     let sid = session_id.clone();
-    let user = tokio::task::spawn_blocking(move || auth::resolve_session(&db, &sid))
-        .await
-        ?;
+    let user = tokio::task::spawn_blocking(move || auth::resolve_session(&db, &sid)).await?;
 
     Ok(user?.map(|u| (u, session_id)))
 }

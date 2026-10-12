@@ -131,7 +131,6 @@ impl FeedKind {
     }
 }
 
-
 impl TryFrom<i16> for FeedKind {
     type Error = UnknownFeedKind;
 

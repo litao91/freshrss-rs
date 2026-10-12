@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Malformed and exotic dates</title>
+    <link>https://example.com</link>
+    <item><title>RFC 822 with a named zone</title><guid>1</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 GMT</pubDate></item>
+    <item><title>No weekday</title><guid>2</guid>
+      <pubDate>02 Jan 2006 15:04:05 +0000</pubDate></item>
+    <item><title>Single-digit day and doubled spaces</title><guid>3</guid>
+      <pubDate>Mon,  2  Jan  2006  15:04:05  +0000</pubDate></item>
+    <item><title>Trailing comment</title><guid>4</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 +0000 (UTC)</pubDate></item>
+    <item><title>ISO 8601 via dc:date</title><guid>5</guid>
+      <dc:date>2006-01-02T15:04:05Z</dc:date></item>
+    <item><title>Space instead of T, no zone</title><guid>6</guid>
+      <pubDate>2006-01-02 15:04:05</pubDate></item>
+    <item><title>Bare unix seconds</title><guid>7</guid>
+      <pubDate>1136214245</pubDate></item>
+    <item><title>Epoch milliseconds</title><guid>8</guid>
+      <pubDate>1136214245000</pubDate></item>
+    <item><title>W3C partial month</title><guid>9</guid>
+      <pubDate>2006-01</pubDate></item>
+    <item><title>Complete nonsense</title><guid>10</guid>
+      <pubDate>whenever it was published</pubDate></item>
+    <item><title>No date at all</title><guid>11</guid></item>
+    <item><title>Far future</title><guid>12</guid>
+      <pubDate>Thu, 02 Jan 2206 15:04:05 +0000</pubDate></item>
+  </channel>
+</rss>

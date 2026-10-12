@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use reqwest::{Client, Method, StatusCode};
 
-use super::{body_hash, FetchedBody, FetchOutcome, FetchRequest};
+use super::{body_hash, FetchOutcome, FetchRequest, FetchedBody};
 use crate::error::FeedError;
 
 /// How many redirects to follow before giving up.
@@ -82,10 +82,10 @@ impl super::Fetcher for ReqwestFetcher {
             let status = response.status();
 
             if status.is_redirection() {
-                let location = header(response.headers(), "location").ok_or_else(|| {
-                    transport(&url, "redirect with no Location header")
-                })?;
-                if status == StatusCode::MOVED_PERMANENTLY || status == StatusCode::PERMANENT_REDIRECT
+                let location = header(response.headers(), "location")
+                    .ok_or_else(|| transport(&url, "redirect with no Location header"))?;
+                if status == StatusCode::MOVED_PERMANENTLY
+                    || status == StatusCode::PERMANENT_REDIRECT
                 {
                     permanently_moved = true;
                 }
@@ -133,8 +133,15 @@ async fn send(
     let mut builder = client
         .request(Method::GET, url)
         .timeout(request.timeout)
-        .header(USER_AGENT, HeaderValue::from_str(&request.user_agent).unwrap_or_else(|_| HeaderValue::from_static(super::DEFAULT_USER_AGENT)))
-        .header(ACCEPT, HeaderValue::from_str(&request.accept).unwrap_or(HeaderValue::from_static("*/*")));
+        .header(
+            USER_AGENT,
+            HeaderValue::from_str(&request.user_agent)
+                .unwrap_or_else(|_| HeaderValue::from_static(super::DEFAULT_USER_AGENT)),
+        )
+        .header(
+            ACCEPT,
+            HeaderValue::from_str(&request.accept).unwrap_or(HeaderValue::from_static("*/*")),
+        );
 
     if let Some((user, pass)) = &request.basic_auth {
         builder = builder.basic_auth(user, Some(pass));
@@ -427,8 +434,8 @@ impl super::Fetcher for FixtureFetcher {
             } => {
                 // Honour a conditional request the way a real server would, so the 304 path is
                 // exercised rather than stubbed.
-                let validators_match = request.conditional.etag.as_deref() == etag.as_deref()
-                    && etag.is_some();
+                let validators_match =
+                    request.conditional.etag.as_deref() == etag.as_deref() && etag.is_some();
                 if *status == 200 && validators_match {
                     return Ok(FetchOutcome::NotModified);
                 }
@@ -470,7 +477,10 @@ mod tests {
             "https://example.com/feed.xml",
             FixtureResponse::ok(b"<rss></rss>".to_vec()),
         );
-        let outcome = fetcher.fetch(&req("https://example.com/feed.xml")).await.unwrap();
+        let outcome = fetcher
+            .fetch(&req("https://example.com/feed.xml"))
+            .await
+            .unwrap();
         match outcome {
             FetchOutcome::Found(f) => {
                 assert_eq!(f.body, b"<rss></rss>");
@@ -485,7 +495,10 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_url_is_not_found() {
         let fetcher = FixtureFetcher::new();
-        let err = fetcher.fetch(&req("https://nope.example/feed")).await.unwrap_err();
+        let err = fetcher
+            .fetch(&req("https://nope.example/feed"))
+            .await
+            .unwrap_err();
         assert!(matches!(err, FeedError::Http { status: 404, .. }), "{err}");
     }
 
@@ -493,10 +506,17 @@ mod tests {
     async fn a_replayed_etag_yields_not_modified() {
         let fetcher = FixtureFetcher::new().with(
             "https://example.com/feed.xml",
-            FixtureResponse::ok_with_validators(b"<rss></rss>".to_vec(), "\"v1\"", "Mon, 02 Jan 2006 15:04:05 GMT"),
+            FixtureResponse::ok_with_validators(
+                b"<rss></rss>".to_vec(),
+                "\"v1\"",
+                "Mon, 02 Jan 2006 15:04:05 GMT",
+            ),
         );
 
-        let first = fetcher.fetch(&req("https://example.com/feed.xml")).await.unwrap();
+        let first = fetcher
+            .fetch(&req("https://example.com/feed.xml"))
+            .await
+            .unwrap();
         let etag = match first {
             FetchOutcome::Found(f) => f.etag.unwrap(),
             FetchOutcome::NotModified => panic!("first fetch must return a body"),
@@ -504,10 +524,16 @@ mod tests {
         assert_eq!(etag, "\"v1\"");
 
         let second = FetchRequest {
-            conditional: ConditionalHeaders { etag: Some(etag), last_modified: None },
+            conditional: ConditionalHeaders {
+                etag: Some(etag),
+                last_modified: None,
+            },
             ..req("https://example.com/feed.xml")
         };
-        assert_eq!(fetcher.fetch(&second).await.unwrap(), FetchOutcome::NotModified);
+        assert_eq!(
+            fetcher.fetch(&second).await.unwrap(),
+            FetchOutcome::NotModified
+        );
     }
 
     #[tokio::test]
@@ -526,7 +552,10 @@ mod tests {
         let seen = fetcher.requests();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].accept, "text/html");
-        assert_eq!(seen[0].basic_auth.as_ref().map(|(u, _)| u.as_str()), Some("user"));
+        assert_eq!(
+            seen[0].basic_auth.as_ref().map(|(u, _)| u.as_str()),
+            Some("user")
+        );
     }
 
     #[tokio::test]
@@ -535,7 +564,10 @@ mod tests {
             "https://example.com/big",
             FixtureResponse::ok(vec![b'x'; 1024]),
         );
-        let request = FetchRequest { max_bytes: 10, ..req("https://example.com/big") };
+        let request = FetchRequest {
+            max_bytes: 10,
+            ..req("https://example.com/big")
+        };
         assert!(matches!(
             fetcher.fetch(&request).await.unwrap_err(),
             FeedError::TooLarge { .. }
@@ -544,10 +576,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_canned_error_is_passed_through() {
-        let fetcher = FixtureFetcher::new()
-            .with("https://example.com/gone", FixtureResponse::Error(FixtureError::Gone));
+        let fetcher = FixtureFetcher::new().with(
+            "https://example.com/gone",
+            FixtureResponse::Error(FixtureError::Gone),
+        );
         assert!(matches!(
-            fetcher.fetch(&req("https://example.com/gone")).await.unwrap_err(),
+            fetcher
+                .fetch(&req("https://example.com/gone"))
+                .await
+                .unwrap_err(),
             FeedError::Gone
         ));
     }
@@ -556,7 +593,11 @@ mod tests {
 
     #[test]
     fn only_absolute_http_and_https_are_accepted() {
-        for ok in ["http://example.com/f", "https://example.com/f", "https://example.com:8443/f?x=1"] {
+        for ok in [
+            "http://example.com/f",
+            "https://example.com/f",
+            "https://example.com:8443/f?x=1",
+        ] {
             assert!(validate_url(ok).is_ok(), "{ok}");
         }
         for bad in [

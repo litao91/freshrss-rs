@@ -132,10 +132,7 @@ impl<'a> GuidInput<'a> {
     pub fn from_item(item: &'a RawItem, content: Option<&'a str>) -> Self {
         Self {
             // `guid` stays an `Option` all the way down: an absent id and an empty one differ.
-            id: item
-                .guid
-                .as_deref()
-                .map(|g| ascii_cow(g)),
+            id: item.guid.as_deref().map(|g| ascii_cow(g)),
             link: item.link.as_deref(),
             title: item.title.as_deref(),
             content: content.or_else(|| item.effective_content()),
@@ -426,7 +423,10 @@ mod tests {
     fn the_blank_sha1_is_treated_as_no_guid() {
         let empty = RawItem::default();
         // sha1("") is exactly BLANK_SHA1, so this must come back empty and not as a digest.
-        assert_eq!(decide_guid(&input(&empty), UnicityCriteria::Sha1Title, true), "");
+        assert_eq!(
+            decide_guid(&input(&empty), UnicityCriteria::Sha1Title, true),
+            ""
+        );
         assert_eq!(
             decide_guid(&input(&empty), UnicityCriteria::Sha1Title, false),
             ""
@@ -445,7 +445,10 @@ mod tests {
 
         // Nothing but a date: link is empty so the chain skips to title, which is also empty,
         // then to content.
-        let bare = RawItem { date: Some(42), ..RawItem::default() };
+        let bare = RawItem {
+            date: Some(42),
+            ..RawItem::default()
+        };
         assert_eq!(decide(&bare, None), sha1_hex(["", "42", "", ""]));
 
         let with_link = RawItem {
@@ -458,12 +461,18 @@ mod tests {
             "a usable link is the guid"
         );
 
-        let with_title = RawItem { title: Some("T".into()), ..bare.clone() };
+        let with_title = RawItem {
+            title: Some("T".into()),
+            ..bare.clone()
+        };
         assert_eq!(decide(&with_title, None), sha1_hex(["", "42", "T"]));
 
         assert_eq!(decide(&bare, Some("C")), sha1_hex(["", "42", "", "C"]));
 
-        let with_id = RawItem { guid: Some("real-id".into()), ..bare };
+        let with_id = RawItem {
+            guid: Some("real-id".into()),
+            ..bare
+        };
         assert_eq!(
             decide(&with_id, Some("C")),
             "real-id",
@@ -562,10 +571,7 @@ mod tests {
 
         // Clean ASCII ids borrow rather than allocate.
         it.guid = Some("urn:clean".into());
-        assert!(matches!(
-            input(&it).id,
-            Some(std::borrow::Cow::Borrowed(_))
-        ));
+        assert!(matches!(input(&it).id, Some(std::borrow::Cow::Borrowed(_))));
     }
 
     #[test]
@@ -628,7 +634,10 @@ mod tests {
         assert_eq!(res.invalid, 0);
         assert!(!res.degraded);
         assert!(res.guids.iter().all(|g| !g.is_empty()));
-        assert_eq!(res.guids[0], sha1_hex(["https://example.com/0", "1700000000"]));
+        assert_eq!(
+            res.guids[0],
+            sha1_hex(["https://example.com/0", "1700000000"])
+        );
     }
 
     #[test]
@@ -641,7 +650,10 @@ mod tests {
         // After degrading, the batch is clean — that is the whole point of retrying.
         assert_eq!(res.invalid, 0);
         assert_eq!(
-            res.guids.iter().collect::<std::collections::HashSet<_>>().len(),
+            res.guids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
             10,
             "every article is distinguishable again"
         );
@@ -663,7 +675,10 @@ mod tests {
         let res = load_guids(&items, UnicityCriteria::Id, true, 0.05);
         assert_eq!(res.criteria, UnicityCriteria::Id);
         assert!(!res.degraded);
-        assert!(res.invalid > 0, "but the caller still learns the feed is broken");
+        assert!(
+            res.invalid > 0,
+            "but the caller still learns the feed is broken"
+        );
     }
 
     #[test]

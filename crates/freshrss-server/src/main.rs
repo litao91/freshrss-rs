@@ -31,11 +31,21 @@ enum Command {
     Serve,
     /// Apply pending database migrations and exit.
     Migrate,
+    /// Fetch or read a feed and print what the parser, GUID policy and sanitizer made of it.
+    Parse(freshrss_server::cli::ParseArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // `parse` is a feed-inspection tool: it needs no database and no configuration, and requiring
+    // both would make it useless in the one situation it exists for — checking a parser change
+    // against a feed from a clean checkout.
+    if let Command::Parse(args) = cli.command {
+        return freshrss_server::cli::run(args).await;
+    }
+
     let config = AppConfig::load_from(cli.config.as_deref())
         .context("could not load configuration (set FRESHRSS_CONFIG or edit config.toml)")?;
 
@@ -56,6 +66,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Serve => serve(config).await?,
+        Command::Parse(_) => unreachable!("handled above, before configuration is loaded"),
     }
     Ok(())
 }

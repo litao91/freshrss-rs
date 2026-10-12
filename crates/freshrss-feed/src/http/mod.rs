@@ -14,6 +14,7 @@ use crate::error::FeedError;
 
 pub use bodyhash::body_hash;
 pub use condget::{ConditionalHeaders, NotModified};
+pub use reqwest::{FixtureFetcher, FixtureResponse, ReqwestFetcher};
 
 /// The default `User-Agent`.
 ///
@@ -166,7 +167,10 @@ mod tests {
     fn a_never_fetched_feed_counts_as_changed() {
         let f = fetched("abc");
         assert!(f.changed_since(None));
-        assert!(f.changed_since(Some("")), "an empty stored hash means never fetched");
+        assert!(
+            f.changed_since(Some("")),
+            "an empty stored hash means never fetched"
+        );
     }
 
     #[test]
@@ -188,7 +192,10 @@ mod tests {
     #[test]
     fn defaults_are_safe() {
         let r = FetchRequest::new("https://example.com/feed.xml");
-        assert!(r.ssl_verify, "certificate verification is on unless a feed opts out");
+        assert!(
+            r.ssl_verify,
+            "certificate verification is on unless a feed opts out"
+        );
         assert_eq!(r.max_bytes, DEFAULT_MAX_BYTES);
         assert!(r.basic_auth.is_none());
         assert!(r.conditional.is_empty());
@@ -214,14 +221,20 @@ mod tests {
     fn retry_after_accepts_an_http_date() {
         let now = 1_136_214_245;
         let later = crate::parse::date::to_rfc822(now + 300);
-        assert_eq!(parse_retry_after(&later, now), Some(Duration::from_secs(300)));
+        assert_eq!(
+            parse_retry_after(&later, now),
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
     fn a_retry_after_in_the_past_is_zero_not_negative() {
         let now = 1_136_214_245;
         let earlier = crate::parse::date::to_rfc822(now - 600);
-        assert_eq!(parse_retry_after(&earlier, now), Some(Duration::from_secs(0)));
+        assert_eq!(
+            parse_retry_after(&earlier, now),
+            Some(Duration::from_secs(0))
+        );
     }
 
     #[test]

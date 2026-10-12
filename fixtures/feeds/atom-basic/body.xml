@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:base="https://example.com/blog/">
+  <title>Example Atom</title>
+  <subtitle type="html">An &lt;b&gt;Atom&lt;/b&gt; feed.</subtitle>
+  <link rel="alternate" href="https://example.com/"/>
+  <link rel="self" href="https://example.com/feed.atom"/>
+  <link rel="hub" href="https://hub.example.com/"/>
+  <icon>https://example.com/icon.png</icon>
+  <updated>2006-01-02T15:04:05Z</updated>
+  <id>urn:uuid:feed-1</id>
+  <author><name>Feed Owner</name></author>
+
+  <entry>
+    <id>urn:uuid:entry-1</id>
+    <title type="html">An &lt;em&gt;HTML&lt;/em&gt; title</title>
+    <link rel="alternate" href="/blog/first"/>
+    <published>2006-01-02T15:04:05Z</published>
+    <updated>2006-01-03T10:00:00Z</updated>
+    <author><name>Ada Lovelace</name><email>ada@example.com</email></author>
+    <category term="atom"/>
+    <category term="x" label="Fixtures, Testing"/>
+    <summary type="text">a &lt; b &amp; c</summary>
+    <content type="html">&lt;p&gt;Relative image: &lt;img src="img/a.png"&gt;&lt;/p&gt;</content>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:entry-2</id>
+    <title>Summary only</title>
+    <link rel="alternate" href="https://example.com/blog/second"/>
+    <updated>2006-01-01T00:00:00Z</updated>
+    <summary>The summary is the body when there is no content element.</summary>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:entry-3</id>
+    <title>Attachment via rel=enclosure</title>
+    <link rel="enclosure" href="https://cdn.example.com/a.mp3" type="audio/mpeg" length="2048"/>
+    <updated>2005-12-31T00:00:00Z</updated>
+  </entry>
+</feed>

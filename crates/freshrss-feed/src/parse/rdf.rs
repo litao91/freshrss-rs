@@ -81,7 +81,9 @@ fn parse_channel(r: &mut Reader<&[u8]>, name: &str, feed: &mut RawFeed) {
         let (_, tag) = split(child);
         match tag {
             "title" if feed.title.is_none() => feed.title = leaf(r, child, is_empty),
-            "description" if feed.description.is_none() => feed.description = leaf(r, child, is_empty),
+            "description" if feed.description.is_none() => {
+                feed.description = leaf(r, child, is_empty)
+            }
             "link" if feed.website.is_none() => {
                 let a = attrs(e, r);
                 match attr(&a, "href") {
@@ -127,7 +129,8 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str, about: Option<&str>) -> Option<
 
         match tag {
             "title" if !is_media => {
-                item.title.get_or_insert_with(|| leaf_or_empty(r, child, is_empty));
+                item.title
+                    .get_or_insert_with(|| leaf_or_empty(r, child, is_empty));
             }
             "link" => match attr(&a, "href") {
                 Some(_) if attr(&a, "rel") == Some("enclosure") => {
@@ -286,7 +289,11 @@ mod tests {
                <item rdf:about="https://example.com/b"><title>Two</title></item>"#,
         ))
         .unwrap();
-        let titles: Vec<_> = feed.items.iter().filter_map(|i| i.title.as_deref()).collect();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         assert_eq!(titles, vec!["One", "Two"]);
     }
 
@@ -315,45 +322,40 @@ mod tests {
 
     #[test]
     fn dc_date_is_the_publication_date() {
-        let item = one(
-            r#"<item rdf:about="https://example.com/a"><title>T</title>
-               <dc:date>2006-01-02T15:04:05Z</dc:date></item>"#,
-        );
+        let item = one(r#"<item rdf:about="https://example.com/a"><title>T</title>
+               <dc:date>2006-01-02T15:04:05Z</dc:date></item>"#);
         assert_eq!(item.date, Some(1_136_214_245));
     }
 
     #[test]
     fn dc_creator_is_the_author() {
-        let item = one(
-            r#"<item rdf:about="https://example.com/a"><title>T</title>
-               <dc:creator>Jane Doe</dc:creator></item>"#,
-        );
+        let item = one(r#"<item rdf:about="https://example.com/a"><title>T</title>
+               <dc:creator>Jane Doe</dc:creator></item>"#);
         assert_eq!(item.authors, vec!["Jane Doe"]);
     }
 
     #[test]
     fn content_encoded_outranks_description() {
-        let item = one(
-            r#"<item rdf:about="https://example.com/a"><title>T</title>
+        let item = one(r#"<item rdf:about="https://example.com/a"><title>T</title>
                <description>summary</description>
-               <content:encoded><![CDATA[<p>full</p>]]></content:encoded></item>"#,
-        );
+               <content:encoded><![CDATA[<p>full</p>]]></content:encoded></item>"#);
         assert_eq!(item.content_text.as_deref(), Some("summary"));
         assert_eq!(item.effective_content(), Some("<p>full</p>"));
     }
 
     #[test]
     fn dc_subject_becomes_a_tag() {
-        let item = one(
-            r#"<item rdf:about="https://example.com/a"><title>T</title>
-               <dc:subject>rust, rss</dc:subject></item>"#,
-        );
+        let item = one(r#"<item rdf:about="https://example.com/a"><title>T</title>
+               <dc:subject>rust, rss</dc:subject></item>"#);
         assert_eq!(item.tags, vec!["rust", "rss"]);
     }
 
     #[test]
     fn an_item_with_no_about_and_no_content_is_dropped() {
-        let feed = parse(&rdf(r#"<item><dc:date>2006-01-02T15:04:05Z</dc:date></item>"#)).unwrap();
+        let feed = parse(&rdf(
+            r#"<item><dc:date>2006-01-02T15:04:05Z</dc:date></item>"#,
+        ))
+        .unwrap();
         assert!(feed.items.is_empty());
     }
 

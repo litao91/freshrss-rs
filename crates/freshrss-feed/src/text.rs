@@ -51,7 +51,10 @@ pub fn strip_tags(html: &str) -> String {
 
         // `<!-- comment -->`
         if html[i..].starts_with("<!--") {
-            i = html[i..].find("-->").map(|p| i + p + 3).unwrap_or(bytes.len());
+            i = html[i..]
+                .find("-->")
+                .map(|p| i + p + 3)
+                .unwrap_or(bytes.len());
             continue;
         }
         // `<![CDATA[ ... ]]>` — keep the contents, since in XML that *is* text.
@@ -71,11 +74,17 @@ pub fn strip_tags(html: &str) -> String {
         }
         // `<?pi?>`, `<!DOCTYPE …>`
         if html[i..].starts_with("<?") {
-            i = html[i..].find("?>").map(|p| i + p + 2).unwrap_or(bytes.len());
+            i = html[i..]
+                .find("?>")
+                .map(|p| i + p + 2)
+                .unwrap_or(bytes.len());
             continue;
         }
         if html[i..].starts_with("<!") {
-            i = html[i..].find('>').map(|p| i + p + 1).unwrap_or(bytes.len());
+            i = html[i..]
+                .find('>')
+                .map(|p| i + p + 1)
+                .unwrap_or(bytes.len());
             continue;
         }
 
@@ -211,9 +220,7 @@ pub fn drop_trailing_fragment(text: &str) -> &str {
 /// Feeds frequently indent and newline their `<title>` content; without this, two parses of the
 /// same document can produce titles that differ only in whitespace and therefore different hashes.
 pub fn normalize_space(text: &str) -> Cow<'_, str> {
-    let needs = text
-        .chars()
-        .any(|c| c.is_whitespace() && c != ' ')
+    let needs = text.chars().any(|c| c.is_whitespace() && c != ' ')
         || text.starts_with(' ')
         || text.ends_with(' ')
         || text.contains("  ");
@@ -340,7 +347,10 @@ mod tests {
     fn drop_trailing_fragment_removes_a_cut_tag() {
         assert_eq!(drop_trailing_fragment(r#"hello <img src="x"#), "hello ");
         assert_eq!(drop_trailing_fragment("hello <b"), "hello ");
-        assert_eq!(drop_trailing_fragment("complete <b>tag</b>"), "complete <b>tag</b>");
+        assert_eq!(
+            drop_trailing_fragment("complete <b>tag</b>"),
+            "complete <b>tag</b>"
+        );
     }
 
     #[test]
@@ -349,7 +359,10 @@ mod tests {
         // the `<` and the end. `<b>world` is not dangling — the sanitizer will auto-close it — so
         // it survives, and the exponential-shrink retry loop handles the overflow instead.
         assert_eq!(drop_trailing_fragment("hello <b>world"), "hello <b>world");
-        assert_eq!(drop_trailing_fragment("<p>truncated mid-text"), "<p>truncated mid-text");
+        assert_eq!(
+            drop_trailing_fragment("<p>truncated mid-text"),
+            "<p>truncated mid-text"
+        );
     }
 
     #[test]
@@ -380,7 +393,10 @@ mod tests {
 
     #[test]
     fn plain_text_combines_the_three() {
-        assert_eq!(plain_text("<p>  Hello\n <b>world</b>  </p>", 100), "Hello world");
+        assert_eq!(
+            plain_text("<p>  Hello\n <b>world</b>  </p>", 100),
+            "Hello world"
+        );
         assert_eq!(plain_text("<p>abcdefghij</p>", 5), "abcde");
         assert_eq!(plain_text("Caf&eacute;", 10), "Café");
     }

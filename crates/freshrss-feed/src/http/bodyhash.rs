@@ -127,8 +127,14 @@ mod tests {
 
     #[test]
     fn two_bodies_differing_only_in_lastbuilddate_hash_equal() {
-        let a = rss("<lastBuildDate>Mon, 02 Jan 2006 15:04:05 +0000</lastBuildDate>", ITEM);
-        let b = rss("<lastBuildDate>Tue, 03 Jan 2006 09:00:00 +0000</lastBuildDate>", ITEM);
+        let a = rss(
+            "<lastBuildDate>Mon, 02 Jan 2006 15:04:05 +0000</lastBuildDate>",
+            ITEM,
+        );
+        let b = rss(
+            "<lastBuildDate>Tue, 03 Jan 2006 09:00:00 +0000</lastBuildDate>",
+            ITEM,
+        );
         assert_eq!(body_hash(a.as_bytes()), body_hash(b.as_bytes()));
     }
 
@@ -173,8 +179,14 @@ mod tests {
         // `<pubDate>` inside an item is stripped by the same rule. That is intentional and matches
         // SimplePie: an article's *content* is what identifies a change, and the GUID already covers
         // identity.
-        let a = rss("", "<item><title>T</title><pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate></item>");
-        let b = rss("", "<item><title>T</title><pubDate>Tue, 03 Jan 2006 15:04:05 +0000</pubDate></item>");
+        let a = rss(
+            "",
+            "<item><title>T</title><pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate></item>",
+        );
+        let b = rss(
+            "",
+            "<item><title>T</title><pubDate>Tue, 03 Jan 2006 15:04:05 +0000</pubDate></item>",
+        );
         assert_eq!(body_hash(a.as_bytes()), body_hash(b.as_bytes()));
     }
 
@@ -207,13 +219,20 @@ mod tests {
     fn an_unterminated_comment_is_left_as_text() {
         let body = "<rss><!-- never closed";
         assert_eq!(strip_comments(body), body);
-        assert_eq!(body_hash(body.as_bytes()), hex::encode(Sha1::digest(body.as_bytes())));
+        assert_eq!(
+            body_hash(body.as_bytes()),
+            hex::encode(Sha1::digest(body.as_bytes()))
+        );
     }
 
     #[test]
     fn a_comment_beyond_the_cap_is_not_stripped() {
         let long = format!("<!--{}-->", "x".repeat(MAX_COMMENT_SPAN + 10));
-        assert_eq!(strip_comments(&long), long, "too long to be treated as a comment");
+        assert_eq!(
+            strip_comments(&long),
+            long,
+            "too long to be treated as a comment"
+        );
         let short = format!("<!--{}-->", "x".repeat(10));
         assert_eq!(strip_comments(&short), "");
     }
@@ -241,7 +260,9 @@ mod tests {
     fn the_hash_is_40_lowercase_hex_characters() {
         let h = body_hash(rss("", ITEM).as_bytes());
         assert_eq!(h.len(), 40);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]

@@ -9,7 +9,8 @@ use quick_xml::name::QName;
 use quick_xml::Reader;
 
 use super::common::{
-    enclosure_from_attrs, is_remote_uri, split_tags, thumbnail_from_attrs, unique_in_place,
+    enclosure_from_attrs_with_base, resolve_remote, split_tags, thumbnail_from_attrs_with_base,
+    unique_in_place,
 };
 use super::xml::{attr, attrs, reader, split, text, walk};
 use super::{date, FeedError};
@@ -33,10 +34,14 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
             "Atom document has no <feed> root element".to_owned(),
         ));
     };
-    // `xml:base` on the root is the resolution base for every relative href in the document.
+    // `xml:base` on the root is the resolution base for every relative href in the document. Atom
+    // explicitly permits relative hrefs, so without this an entry's `<link href="/blog/x">` would be
+    // rejected as non-remote and the article would have nothing to open.
     if let Some(base) = attr(&root_attrs, "base").filter(|b| !b.trim().is_empty()) {
         feed.base_url = Some(base.trim().to_owned());
     }
+    let base = feed.base_url.clone();
+    let base = base.as_deref();
 
     walk(&mut r, &feed_name, |name, e, is_empty, r| {
         let (_, tag) = split(name);
@@ -46,9 +51,11 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
             "subtitle" | "tagline" if feed.description.is_none() => {
                 feed.description = content_body(r, name, is_empty, &a)
             }
-            "link" => apply_feed_link(&mut feed, &a),
+            "link" => apply_feed_link(&mut feed, &a, base),
             "icon" | "logo" if feed.icon.is_none() => {
-                feed.icon = leaf(r, name, is_empty).filter(|u| is_remote_uri(u));
+                if let Some(url) = leaf(r, name, is_empty) {
+                    feed.icon = resolve_remote(&url, base);
+                }
             }
             "id" | "updated" | "author" | "contributor" | "rights" | "generator" | "category"
                 if !is_empty =>
@@ -59,7 +66,7 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
                 super::xml::skip(r, QName(name));
             }
             "entry" if !is_empty => {
-                if let Some(item) = parse_entry(r, name) {
+                if let Some(item) = parse_entry(r, name, base) {
                     feed.items.push(item);
                 }
             }
@@ -101,27 +108,27 @@ fn leaf(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> Option<String> {
 ///
 /// `rel` defaults to `alternate` per RFC 4287 §4.2.7, and the `alternate` link is the human-facing
 /// site — the Atom equivalent of RSS's `<link>`.
-fn apply_feed_link(feed: &mut RawFeed, a: &super::xml::Attrs) {
+fn apply_feed_link(feed: &mut RawFeed, a: &super::xml::Attrs, base: Option<&str>) {
     let Some(href) = attr(a, "href") else { return };
-    if !is_remote_uri(href) {
+    let Some(href) = resolve_remote(href, base) else {
         return;
-    }
+    };
     match attr(a, "rel").unwrap_or("alternate") {
         "self" => {
-            feed.self_url.get_or_insert_with(|| href.to_owned());
+            feed.self_url.get_or_insert(href);
         }
         "hub" => {
-            feed.hub_url.get_or_insert_with(|| href.to_owned());
+            feed.hub_url.get_or_insert(href);
         }
         "alternate" => {
-            feed.website.get_or_insert_with(|| href.to_owned());
+            feed.website.get_or_insert(href);
         }
         _ => {}
     }
 }
 
 /// Parses one `<entry>`.
-fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
+fn parse_entry(r: &mut Reader<&[u8]>, name: &str, base: Option<&str>) -> Option<RawItem> {
     let mut item = RawItem::default();
     let mut categories: Vec<String> = Vec::new();
     let mut author_names: Vec<String> = Vec::new();
@@ -146,7 +153,9 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 ));
             }
             "title" if !is_media => {
-                item.title.get_or_insert_with(|| content_body(r, child, is_empty, &a).unwrap_or_default());
+                item.title.get_or_insert_with(|| {
+                    content_body(r, child, is_empty, &a).unwrap_or_default()
+                });
             }
             "link" => {
                 let Some(href) = attr(&a, "href") else {
@@ -157,14 +166,14 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 };
                 match attr(&a, "rel").unwrap_or("alternate") {
                     "enclosure" => {
-                        if let Some(enc) = enclosure_from_attrs(&a) {
+                        if let Some(enc) = enclosure_from_attrs_with_base(&a, base) {
                             item.enclosures.push(enc);
                         }
                     }
-                    "alternate" | "related"
-                        if item.link.is_none() && is_remote_uri(href) =>
-                    {
-                        item.link = Some(href.to_owned());
+                    "alternate" | "related" if item.link.is_none() => {
+                        if let Some(resolved) = resolve_remote(href, base) {
+                            item.link = Some(resolved);
+                        }
                     }
                     _ => {}
                 }
@@ -199,7 +208,7 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 categories.push(label.unwrap_or(term).to_owned());
             }
             "thumbnail" if is_media => {
-                if let Some(t) = thumbnail_from_attrs(&a) {
+                if let Some(t) = thumbnail_from_attrs_with_base(&a, base) {
                     item.thumbnail.get_or_insert(t);
                 }
             }
@@ -223,7 +232,10 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
     item.date = published.or(updated);
     item.updated = updated;
 
-    item.tags = categories.iter().flat_map(|l| split_tags(l)).collect::<Vec<_>>();
+    item.tags = categories
+        .iter()
+        .flat_map(|l| split_tags(l))
+        .collect::<Vec<_>>();
     unique_in_place(&mut item.tags);
 
     // An entry with only a summary still has something to show.
@@ -238,21 +250,19 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
 fn parse_person(r: &mut Reader<&[u8]>, name: &str) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
     let mut emails = Vec::new();
-    walk(r, name, |child, _, is_empty, r| {
-        match split(child).1 {
-            "name" => {
-                if let Some(v) = leaf(r, child, is_empty) {
-                    names.push(v);
-                }
+    walk(r, name, |child, _, is_empty, r| match split(child).1 {
+        "name" => {
+            if let Some(v) = leaf(r, child, is_empty) {
+                names.push(v);
             }
-            "email" | "uri" => {
-                if let Some(v) = leaf(r, child, is_empty) {
-                    emails.push(v);
-                }
-            }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
-            _ => {}
         }
+        "email" | "uri" => {
+            if let Some(v) = leaf(r, child, is_empty) {
+                emails.push(v);
+            }
+        }
+        _ if !is_empty => super::xml::skip(r, QName(child)),
+        _ => {}
     });
     (names, emails)
 }
@@ -276,7 +286,10 @@ fn content_body(
         return None;
     }
     let raw = text(r, QName(name));
-    let kind = attr(a, "type").unwrap_or_default().trim().to_ascii_lowercase();
+    let kind = attr(a, "type")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let body = match kind.as_str() {
         "xhtml" => strip_xhtml_wrapper(&raw),
         "text" | "text/plain" => crate::entities::encode_specials(&raw).into_owned(),
@@ -324,7 +337,10 @@ fn matching_close_div(body: &str) -> Option<usize> {
             }
             at = pos + 5;
         } else if let Some(rest) = tag.strip_prefix("<div") {
-            if rest.starts_with('>') || rest.starts_with(char::is_whitespace) || rest.starts_with('/') {
+            if rest.starts_with('>')
+                || rest.starts_with(char::is_whitespace)
+                || rest.starts_with('/')
+            {
                 depth += 1;
             }
             at = pos + 4;
@@ -387,7 +403,10 @@ mod tests {
         assert_eq!(feed.title.as_deref(), Some("Example Atom"));
         assert_eq!(feed.description.as_deref(), Some("An <b>example</b>"));
         assert_eq!(feed.website.as_deref(), Some("https://example.com/"));
-        assert_eq!(feed.self_url.as_deref(), Some("https://example.com/feed.atom"));
+        assert_eq!(
+            feed.self_url.as_deref(),
+            Some("https://example.com/feed.atom")
+        );
         assert_eq!(feed.hub_url.as_deref(), Some("https://hub.example.com/"));
         assert_eq!(feed.icon.as_deref(), Some("https://example.com/icon.png"));
         assert_eq!(feed.base_url.as_deref(), Some("https://example.com/"));
@@ -402,16 +421,14 @@ mod tests {
 
     #[test]
     fn the_basic_entry_shape() {
-        let item = one(
-            r#"<entry>
+        let item = one(r#"<entry>
                  <id>urn:uuid:1</id>
                  <title>Hello</title>
                  <link rel="alternate" href="https://example.com/a"/>
                  <published>2006-01-02T15:04:05Z</published>
                  <updated>2006-01-03T15:04:05Z</updated>
                  <content type="html">&lt;p&gt;Body&lt;/p&gt;</content>
-               </entry>"#,
-        );
+               </entry>"#);
         assert_eq!(item.guid.as_deref(), Some("urn:uuid:1"));
         assert!(!item.guid_is_permalink, "an Atom id is never a URL");
         assert_eq!(item.title.as_deref(), Some("Hello"));
@@ -423,19 +440,16 @@ mod tests {
 
     #[test]
     fn a_link_with_no_rel_is_the_alternate() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title><link href="https://example.com/a"/></entry>"#,
-        );
+        let item =
+            one(r#"<entry><id>1</id><title>T</title><link href="https://example.com/a"/></entry>"#);
         assert_eq!(item.link.as_deref(), Some("https://example.com/a"));
     }
 
     #[test]
     fn rel_enclosure_becomes_an_attachment_not_the_link() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <link rel="enclosure" href="https://example.com/e.mp3" type="audio/mpeg" length="99"/>
-             </entry>"#,
-        );
+             </entry>"#);
         assert_eq!(item.link, None);
         assert_eq!(item.enclosures.len(), 1);
         assert_eq!(item.enclosures[0].length, Some(99));
@@ -443,12 +457,10 @@ mod tests {
 
     #[test]
     fn rel_self_does_not_become_the_article_link() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <link rel="self" href="https://example.com/feed.atom#1"/>
                <link rel="alternate" href="https://example.com/a"/>
-             </entry>"#,
-        );
+             </entry>"#);
         assert_eq!(item.link.as_deref(), Some("https://example.com/a"));
     }
 
@@ -457,28 +469,28 @@ mod tests {
         let item = one(
             r#"<entry><id>1</id><title>T</title><updated>2006-01-02T15:04:05Z</updated></entry>"#,
         );
-        assert_eq!(item.date, Some(1_136_214_245), "an entry with only <updated> still gets a date");
+        assert_eq!(
+            item.date,
+            Some(1_136_214_245),
+            "an entry with only <updated> still gets a date"
+        );
         assert_eq!(item.updated, Some(1_136_214_245));
     }
 
     #[test]
     fn published_outranks_updated_for_the_publication_date() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <updated>2020-01-01T00:00:00Z</updated>
-               <published>2006-01-02T15:04:05Z</published></entry>"#,
-        );
+               <published>2006-01-02T15:04:05Z</published></entry>"#);
         assert_eq!(item.date, Some(1_136_214_245));
         assert_eq!(item.updated, Some(1_577_836_800));
     }
 
     #[test]
     fn content_outranks_summary() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <summary>short</summary>
-               <content type="html">&lt;p&gt;full&lt;/p&gt;</content></entry>"#,
-        );
+               <content type="html">&lt;p&gt;full&lt;/p&gt;</content></entry>"#);
         assert_eq!(item.effective_content(), Some("<p>full</p>"));
     }
 
@@ -490,20 +502,16 @@ mod tests {
 
     #[test]
     fn content_arriving_after_summary_still_wins() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <content type="html">&lt;p&gt;full&lt;/p&gt;</content>
-               <summary>short</summary></entry>"#,
-        );
+               <summary>short</summary></entry>"#);
         assert_eq!(item.effective_content(), Some("<p>full</p>"));
     }
 
     #[test]
     fn type_text_content_is_escaped_rather_than_treated_as_markup() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
-               <content type="text">a &lt; b &amp; c</content></entry>"#,
-        );
+        let item = one(r#"<entry><id>1</id><title>T</title>
+               <content type="text">a &lt; b &amp; c</content></entry>"#);
         // The XML parser already unescaped once, so the body is `a < b & c`. Escaping it again keeps
         // the `<` from becoming a tag when the sanitizer and the reader see the body as HTML.
         assert_eq!(item.effective_content(), Some("a &lt; b &amp; c"));
@@ -512,70 +520,67 @@ mod tests {
 
     #[test]
     fn type_xhtml_strips_the_wrapper_div() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Body</p></div></content>
-             </entry>"#,
-        );
+             </entry>"#);
         assert_eq!(item.effective_content(), Some("<p>Body</p>"));
     }
 
     #[test]
     fn an_xhtml_wrapper_is_only_stripped_when_it_wraps_the_whole_body() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <content type="xhtml"><div>one</div><div>two</div></content>
-             </entry>"#,
+             </entry>"#);
+        assert_eq!(
+            item.effective_content(),
+            Some("<div>one</div><div>two</div>")
         );
-        assert_eq!(item.effective_content(), Some("<div>one</div><div>two</div>"));
     }
 
     #[test]
     fn strip_xhtml_wrapper_leaves_a_non_div_body_alone() {
         assert_eq!(strip_xhtml_wrapper("<p>x</p>"), "<p>x</p>");
         assert_eq!(strip_xhtml_wrapper("<div>unclosed"), "<div>unclosed");
-        assert_eq!(strip_xhtml_wrapper("<div>a</div> trailing"), "<div>a</div> trailing");
+        assert_eq!(
+            strip_xhtml_wrapper("<div>a</div> trailing"),
+            "<div>a</div> trailing"
+        );
         assert_eq!(strip_xhtml_wrapper("<div class='c'>a</div>"), "a");
-        assert_eq!(strip_xhtml_wrapper("<divider>a</divider>"), "<divider>a</divider>");
+        assert_eq!(
+            strip_xhtml_wrapper("<divider>a</divider>"),
+            "<divider>a</divider>"
+        );
     }
 
     #[test]
     fn a_person_construct_yields_the_name_not_the_email() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <author><name>Jane Doe</name><email>jane@example.com</email></author>
-             </entry>"#,
-        );
+             </entry>"#);
         assert_eq!(item.authors, vec!["Jane Doe"]);
     }
 
     #[test]
     fn an_author_with_only_an_email_shows_the_email() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
-               <author><email>jane@example.com</email></author></entry>"#,
-        );
+        let item = one(r#"<entry><id>1</id><title>T</title>
+               <author><email>jane@example.com</email></author></entry>"#);
         assert_eq!(item.authors, vec!["jane@example.com"]);
     }
 
     #[test]
     fn multiple_authors_are_kept_in_order() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <author><name>Ada</name></author>
-               <author><name>Grace</name></author></entry>"#,
-        );
+               <author><name>Grace</name></author></entry>"#);
         assert_eq!(item.authors, vec!["Ada", "Grace"]);
     }
 
     #[test]
     fn category_term_becomes_a_tag_and_label_outranks_it() {
-        let item = one(
-            r#"<entry><id>1</id><title>T</title>
+        let item = one(r#"<entry><id>1</id><title>T</title>
                <category term="rust"/>
                <category term="x" label="Reader, RSS"/>
-             </entry>"#,
-        );
+             </entry>"#);
         assert_eq!(item.tags, vec!["rust", "Reader", "RSS"]);
     }
 
@@ -595,7 +600,10 @@ mod tests {
             r#"<entry xmlns:media="http://search.yahoo.com/mrss/"><id>1</id><title>T</title>
                <media:thumbnail url="https://example.com/t.jpg"/></entry>"#,
         );
-        assert_eq!(item.thumbnail.as_ref().map(|t| t.url.as_str()), Some("https://example.com/t.jpg"));
+        assert_eq!(
+            item.thumbnail.as_ref().map(|t| t.url.as_str()),
+            Some("https://example.com/t.jpg")
+        );
     }
 
     #[test]
@@ -624,8 +632,67 @@ mod tests {
                <entry><id>2</id><title>oldest</title></entry>"#,
         ))
         .unwrap();
-        let titles: Vec<_> = feed.items.iter().filter_map(|i| i.title.as_deref()).collect();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         assert_eq!(titles, vec!["newest", "oldest"]);
+    }
+
+    #[test]
+    fn a_relative_href_resolves_against_xml_base() {
+        // Atom permits relative hrefs. Without resolving them, `is_remote_uri` rejects the value and
+        // the article has nothing to open — the most visible failure a reader can have.
+        let item = one(
+            r#"<entry><id>1</id><title>T</title><link rel="alternate" href="first.html"/></entry>"#,
+        );
+        assert_eq!(
+            item.link.as_deref(),
+            Some("https://example.com/first.html"),
+            "resolved against the fixture's xml:base of https://example.com/"
+        );
+    }
+
+    #[test]
+    fn a_root_relative_href_resolves_to_the_base_origin() {
+        let item = one(
+            r#"<entry><id>1</id><title>T</title><link rel="alternate" href="/posts/x"/></entry>"#,
+        );
+        assert_eq!(item.link.as_deref(), Some("https://example.com/posts/x"));
+    }
+
+    #[test]
+    fn a_relative_enclosure_and_thumbnail_resolve_too() {
+        let item = one(
+            r#"<entry xmlns:media="http://search.yahoo.com/mrss/"><id>1</id><title>T</title>
+               <link rel="enclosure" href="ep.mp3" type="audio/mpeg"/>
+               <media:thumbnail url="thumb.jpg"/>
+             </entry>"#,
+        );
+        assert_eq!(
+            item.enclosures.first().map(|e| e.url.as_str()),
+            Some("https://example.com/ep.mp3")
+        );
+        assert_eq!(
+            item.thumbnail.as_ref().map(|t| t.url.as_str()),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn without_xml_base_a_relative_href_is_still_rejected() {
+        // Nothing to resolve against, so it stays relative and fails the remote check rather than
+        // being silently turned into a URL on some other host.
+        let feed = parse(
+            r#"<feed xmlns="http://www.w3.org/2005/Atom">
+                 <title>T</title>
+                 <entry><id>1</id><title>x</title><link href="/posts/x"/></entry>
+               </feed>"#,
+        )
+        .unwrap();
+        assert_eq!(feed.base_url, None);
+        assert_eq!(feed.items[0].link, None);
     }
 
     #[test]

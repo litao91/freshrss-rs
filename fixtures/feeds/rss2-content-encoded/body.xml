@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>content:encoded precedence</title>
+    <link>https://example.com</link>
+    <item>
+      <title>Both bodies present</title>
+      <guid isPermaLink="false">1</guid>
+      <description>&lt;p&gt;Only a summary.&lt;/p&gt;</description>
+      <content:encoded><![CDATA[<p>The <b>full</b> article, in CDATA.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Escaped rather than CDATA</title>
+      <guid isPermaLink="false">2</guid>
+      <content:encoded>&lt;p&gt;Identical result, escaped form.&lt;/p&gt;</content:encoded>
+    </item>
+    <item>
+      <title>Unescaped markup inside description</title>
+      <guid isPermaLink="false">3</guid>
+      <description><p>Not well-formed XML, but common.</p></description>
+    </item>
+    <item>
+      <title>Blank content:encoded falls through</title>
+      <guid isPermaLink="false">4</guid>
+      <content:encoded>   </content:encoded>
+      <description>The summary is used because the full body is blank.</description>
+    </item>
+  </channel>
+</rss>

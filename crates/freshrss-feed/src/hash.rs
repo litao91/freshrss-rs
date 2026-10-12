@@ -65,7 +65,10 @@ pub fn tags_field(tags: &[String]) -> String {
 /// the pre-scrape text was saved there and is the correct hash input, because that is what the feed
 /// itself will be compared against next time.
 #[must_use]
-pub fn original_content<'a>(content: &'a str, stored_original: Option<&'a str>) -> std::borrow::Cow<'a, str> {
+pub fn original_content<'a>(
+    content: &'a str,
+    stored_original: Option<&'a str>,
+) -> std::borrow::Cow<'a, str> {
     if let Some(original) = stored_original {
         return std::borrow::Cow::Borrowed(original);
     }
@@ -178,7 +181,10 @@ mod tests {
     fn the_digest_is_md5_of_the_fields_in_order() {
         let mut expected = Md5::new();
         expected.update(b"https://example.com/aA titleAda; Grace<p>Body</p>#rust #rss");
-        assert_eq!(content_hash(&input()), <[u8; 16]>::from(expected.finalize()));
+        assert_eq!(
+            content_hash(&input()),
+            <[u8; 16]>::from(expected.finalize())
+        );
     }
 
     #[test]
@@ -187,7 +193,9 @@ mod tests {
         assert_eq!(digest.len(), 16);
         let hexed = content_hash_hex(&input());
         assert_eq!(hexed.len(), 32);
-        assert!(hexed.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(hexed
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(hexed, hex::encode(digest));
     }
 
@@ -196,12 +204,30 @@ mod tests {
         let base = content_hash_hex(&input());
         let enclosures = enclosures_field(&[enclosure("https://e/x.mp3")]);
         let variants = [
-            HashInput { link: "https://example.com/b", ..input() },
-            HashInput { title: "Another title", ..input() },
-            HashInput { author: "Ada", ..input() },
-            HashInput { content: "<p>Different</p>", ..input() },
-            HashInput { tags: "#rust", ..input() },
-            HashInput { enclosures: &enclosures, ..input() },
+            HashInput {
+                link: "https://example.com/b",
+                ..input()
+            },
+            HashInput {
+                title: "Another title",
+                ..input()
+            },
+            HashInput {
+                author: "Ada",
+                ..input()
+            },
+            HashInput {
+                content: "<p>Different</p>",
+                ..input()
+            },
+            HashInput {
+                tags: "#rust",
+                ..input()
+            },
+            HashInput {
+                enclosures: &enclosures,
+                ..input()
+            },
         ];
         for v in variants {
             assert_ne!(content_hash_hex(&v), base, "{v:?} must change the digest");
@@ -247,7 +273,10 @@ mod tests {
             date: Some(1_000_000_000),
             ..RawItem::default()
         };
-        let b = RawItem { date: Some(1_999_999_999), ..a.clone() };
+        let b = RawItem {
+            date: Some(1_999_999_999),
+            ..a.clone()
+        };
 
         let hash_of = |it: &RawItem| {
             content_hash_hex(&HashInput {
@@ -257,7 +286,11 @@ mod tests {
                 ..HashInput::default()
             })
         };
-        assert_eq!(hash_of(&a), hash_of(&b), "a feed that starts sending dates must not re-mark every article");
+        assert_eq!(
+            hash_of(&a),
+            hash_of(&b),
+            "a feed that starts sending dates must not re-mark every article"
+        );
     }
 
     // --- field serializers -------------------------------------------------
@@ -271,7 +304,11 @@ mod tests {
 
     #[test]
     fn tags_field_is_the_hash_prefixed_form() {
-        assert_eq!(tags_field(&[]), "", "no tags stores an empty string, not '#'");
+        assert_eq!(
+            tags_field(&[]),
+            "",
+            "no tags stores an empty string, not '#'"
+        );
         assert_eq!(tags_field(&["rust".into()]), "#rust");
         assert_eq!(tags_field(&["rust".into(), "rss".into()]), "#rust #rss");
     }
@@ -300,7 +337,10 @@ mod tests {
     fn enclosure_order_is_significant() {
         let a = enclosures_field(&[enclosure("https://x/1"), enclosure("https://x/2")]);
         let b = enclosures_field(&[enclosure("https://x/2"), enclosure("https://x/1")]);
-        assert_ne!(a, b, "reordered attachments are a real change to the article");
+        assert_ne!(
+            a, b,
+            "reordered attachments are a real change to the article"
+        );
     }
 
     #[test]
@@ -311,7 +351,10 @@ mod tests {
         let mut b = a.clone();
         b.description = Some("shownotes".into());
         b.height = Some(100);
-        assert_eq!(enclosures_field(std::slice::from_ref(&a)), enclosures_field(&[b]));
+        assert_eq!(
+            enclosures_field(std::slice::from_ref(&a)),
+            enclosures_field(&[b])
+        );
 
         // But a changed URL or length is.
         let mut c = a.clone();
@@ -325,7 +368,10 @@ mod tests {
     fn content_without_markers_is_returned_unchanged() {
         let body = "<p>plain</p>";
         assert_eq!(original_content(body, None), body);
-        assert!(matches!(original_content(body, None), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            original_content(body, None),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -361,8 +407,15 @@ mod tests {
     #[test]
     fn a_stored_original_wins_over_the_marker_strip() {
         let body = format!("{FULLCONTENT_START}scraped{FULLCONTENT_END}");
-        assert_eq!(original_content(&body, Some("from the feed")), "from the feed");
-        assert_eq!(original_content("whatever", Some("")), "", "an explicitly empty original is honoured");
+        assert_eq!(
+            original_content(&body, Some("from the feed")),
+            "from the feed"
+        );
+        assert_eq!(
+            original_content("whatever", Some("")),
+            "",
+            "an explicitly empty original is honoured"
+        );
     }
 
     #[test]

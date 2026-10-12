@@ -15,7 +15,8 @@ pub fn is_remote_uri(url: &str) -> bool {
     let Some(colon) = trimmed.find(':') else {
         return false;
     };
-    if !trimmed[..colon].eq_ignore_ascii_case("http") && !trimmed[..colon].eq_ignore_ascii_case("https")
+    if !trimmed[..colon].eq_ignore_ascii_case("http")
+        && !trimmed[..colon].eq_ignore_ascii_case("https")
     {
         return false;
     }
@@ -38,6 +39,34 @@ pub fn is_remote_uri(url: &str) -> bool {
 pub fn unique_in_place(values: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::with_capacity(values.len());
     values.retain(|v| seen.insert(v.clone()));
+}
+
+/// Resolves an href against the document's `xml:base`, leaving anything unresolvable as it was.
+///
+/// Atom explicitly allows relative hrefs, and feeds that use them are common — the `<link>` of an
+/// entry is usually the site's own path. Without resolving, `is_remote_uri` rejects the value and
+/// the article ends up with no link at all, which is the most visible failure a reader can have:
+/// there is nothing to open.
+///
+/// A `base` of `None` or `""` returns the href unchanged, so feeds without `xml:base` behave exactly
+/// as before and a relative href is still rejected by [`is_remote_uri`].
+pub fn resolve_url(href: &str, base: Option<&str>) -> String {
+    let href = href.trim();
+    let Some(base) = base.map(str::trim).filter(|b| !b.is_empty()) else {
+        return href.to_owned();
+    };
+    // Already absolute: nothing to do, and re-resolving would normalize away a form the publisher
+    // chose (a trailing slash, for instance), which feeds the change-detection hash.
+    if is_remote_uri(href) {
+        return href.to_owned();
+    }
+    crate::sanitize::uri::absolutize(href, base)
+}
+
+/// Resolves an href against `base` and returns it only if it is then fetchable.
+pub fn resolve_remote(href: &str, base: Option<&str>) -> Option<String> {
+    let resolved = resolve_url(href, base);
+    is_remote_uri(&resolved).then_some(resolved)
 }
 
 /// Splits a `<category>` label into individual tags.
@@ -99,6 +128,53 @@ pub fn enclosure_from_attrs(attrs: &super::xml::Attrs) -> Option<RawEnclosure> {
     })
 }
 
+/// [`enclosure_from_attrs`] with the URL resolved against a document base first.
+///
+/// Atom permits a relative `href`, and an attachment that is dropped for being relative means a
+/// podcast episode with no player — so resolution has to happen before the remote check.
+pub fn enclosure_from_attrs_with_base(
+    attrs: &super::xml::Attrs,
+    base: Option<&str>,
+) -> Option<RawEnclosure> {
+    let raw = super::xml::attr(attrs, "url").or_else(|| super::xml::attr(attrs, "href"))?;
+    let resolved = resolve_remote(raw, base)?;
+    let mime = super::xml::attr(attrs, "type")
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|m| m.to_ascii_lowercase());
+    Some(RawEnclosure {
+        medium: super::xml::attr(attrs, "medium")
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(|m| m.to_ascii_lowercase())
+            .or_else(|| mime_top_level(mime.as_deref())),
+        url: resolved,
+        mime,
+        length: int_attr(attrs, "length")
+            .or_else(|| int_attr(attrs, "size_in_bytes"))
+            .or_else(|| int_attr(attrs, "fileSize")),
+        title: nonempty(super::xml::attr(attrs, "title")),
+        description: None,
+        height: int_attr(attrs, "height"),
+        width: int_attr(attrs, "width"),
+    })
+}
+
+/// [`thumbnail_from_attrs`] with the URL resolved against a document base first.
+pub fn thumbnail_from_attrs_with_base(
+    attrs: &super::xml::Attrs,
+    base: Option<&str>,
+) -> Option<RawThumbnail> {
+    let raw = super::xml::attr(attrs, "url").or_else(|| super::xml::attr(attrs, "href"))?;
+    let resolved = resolve_remote(raw, base)?;
+    Some(RawThumbnail {
+        url: resolved,
+        height: int_attr(attrs, "height"),
+        width: int_attr(attrs, "width"),
+        time: nonempty(super::xml::attr(attrs, "time")),
+    })
+}
+
 /// The top-level MIME type, when it is one of the five media kinds the reader can do something with.
 ///
 /// Deriving `medium` from the MIME type is what lets an `<atom:link rel="enclosure" type="audio/mpeg">`
@@ -124,7 +200,10 @@ pub fn thumbnail_from_attrs(attrs: &super::xml::Attrs) -> Option<RawThumbnail> {
 }
 
 fn nonempty(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -165,7 +244,10 @@ mod tests {
 
     #[test]
     fn a_single_category_is_split_on_commas() {
-        assert_eq!(split_tags("rust, rss ,reader"), vec!["rust", "rss", "reader"]);
+        assert_eq!(
+            split_tags("rust, rss ,reader"),
+            vec!["rust", "rss", "reader"]
+        );
         assert_eq!(split_tags("solo"), vec!["solo"]);
         assert!(split_tags("").is_empty());
         assert!(split_tags(" , , ").is_empty());
@@ -207,11 +289,8 @@ mod tests {
 
     #[test]
     fn a_non_numeric_length_is_dropped_not_zeroed() {
-        let e = enclosure_from_attrs(&attrs(&[
-            ("url", "https://x/a.mp3"),
-            ("length", "unknown"),
-        ]))
-        .unwrap();
+        let e = enclosure_from_attrs(&attrs(&[("url", "https://x/a.mp3"), ("length", "unknown")]))
+            .unwrap();
         assert_eq!(e.length, None);
     }
 

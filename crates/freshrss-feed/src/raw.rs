@@ -290,6 +290,9 @@ mod tests {
         // The `parse --json` CLI path and the fixture corpus both depend on this.
         let it = item();
         let json = serde_json::to_string(&it).expect("serialize");
-        assert_eq!(serde_json::from_str::<RawItem>(&json).expect("deserialize"), it);
+        assert_eq!(
+            serde_json::from_str::<RawItem>(&json).expect("deserialize"),
+            it
+        );
     }
 }

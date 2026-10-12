@@ -94,7 +94,10 @@ fn find_element(r: &mut Reader<&[u8]>, wanted: &str) -> Option<(String, Option<S
             Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e)) => {
                 let name = e.name().into_inner().to_owned();
                 let found = attrs(&e, r);
-                if let Some(href) = attr(&found, "base").map(str::trim).filter(|b| !b.is_empty()) {
+                if let Some(href) = attr(&found, "base")
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                {
                     base.get_or_insert(href.to_owned());
                 }
                 if split(&name).1 == wanted {
@@ -196,10 +199,16 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
             "guid" => {
                 // `isPermaLink` defaults to true in RSS 2.0, and only an explicit false opts out.
                 item.guid_is_permalink = !matches!(
-                    attr(&a, "isPermaLink").map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+                    attr(&a, "isPermaLink")
+                        .map(|v| v.trim().to_ascii_lowercase())
+                        .as_deref(),
                     Some("false") | Some("0") | Some("no")
                 );
-                let value = if is_empty { String::new() } else { text(r, QName(child)) };
+                let value = if is_empty {
+                    String::new()
+                } else {
+                    text(r, QName(child))
+                };
                 // `Some("")` is preserved: a feed that emits an empty `<guid/>` did supply an id
                 // element, and that is a different situation from supplying none at all.
                 item.guid = Some(crate::guid::safe_ascii(value.trim()));
@@ -224,13 +233,21 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
             }
             "encoded" => {
                 // `content:encoded` is the full body and wins over `<description>`.
-                let body = if is_empty { String::new() } else { text(r, QName(child)) };
+                let body = if is_empty {
+                    String::new()
+                } else {
+                    text(r, QName(child))
+                };
                 if !body.trim().is_empty() {
                     item.content_html.get_or_insert(body);
                 }
             }
             "description" if !is_media => {
-                let body = if is_empty { String::new() } else { text(r, QName(child)) };
+                let body = if is_empty {
+                    String::new()
+                } else {
+                    text(r, QName(child))
+                };
                 if !body.trim().is_empty() {
                     item.content_text.get_or_insert(body);
                 }
@@ -257,7 +274,9 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
             }
             "group" if is_media && !is_empty => parse_media_group(r, child, &mut item),
             "player" | "credit" | "rating" | "copyright" | "rights" | "summary" | "keywords"
-            | "subtitle" | "content" | "description" | "title" if is_media => {
+            | "subtitle" | "content" | "description" | "title"
+                if is_media =>
+            {
                 // Media RSS elements with text we do not model.
                 if !is_empty {
                     super::xml::skip(r, QName(child));
@@ -269,7 +288,10 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
     });
 
     item.authors = merge_authors(&creators, &emails);
-    item.tags = categories.iter().flat_map(|label| split_tags(label)).collect::<Vec<_>>();
+    item.tags = categories
+        .iter()
+        .flat_map(|label| split_tags(label))
+        .collect::<Vec<_>>();
     unique_in_place(&mut item.tags);
 
     // A permalink GUID doubles as the article URL when the item has no `<link>`.
@@ -301,8 +323,9 @@ fn parse_media_group(r: &mut Reader<&[u8]>, name: &str, item: &mut RawItem) {
         match tag {
             "content" => {
                 if let Some(enc) = media_content(&a) {
-                    let is_default = attr(&a, "isDefault")
-                        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"));
+                    let is_default = attr(&a, "isDefault").is_some_and(|v| {
+                        matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+                    });
                     renditions.push((is_default, enc));
                 }
             }
@@ -439,7 +462,10 @@ mod tests {
         assert_eq!(feed.website.as_deref(), Some("https://example.com"));
         assert_eq!(feed.description.as_deref(), Some("Just an example"));
         assert_eq!(feed.icon.as_deref(), Some("https://example.com/icon.png"));
-        assert_eq!(feed.self_url.as_deref(), Some("https://example.com/feed.xml"));
+        assert_eq!(
+            feed.self_url.as_deref(),
+            Some("https://example.com/feed.xml")
+        );
         assert_eq!(feed.hub_url.as_deref(), Some("https://hub.example.com"));
         assert_eq!(feed.format, FeedFormat::Rss2);
     }
@@ -451,6 +477,25 @@ mod tests {
     }
 
     #[test]
+    fn items_after_a_media_group_are_not_swallowed() {
+        // Regression: the `media:group` walk used to compare its full element name against the end
+        // tag's local name, never match, and run to EOF — losing every item after the first group.
+        let feed = parse(&rss(r#"<item><title>One</title><media:group>
+                 <media:content url="https://x/a.mp4" medium="video"/>
+               </media:group></item>
+               <item><title>Two</title></item>
+               <item><title>Three</title></item>"#))
+        .unwrap();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
+        assert_eq!(titles, vec!["One", "Two", "Three"]);
+        assert_eq!(feed.items[0].enclosures.len(), 1);
+    }
+
+    #[test]
     fn an_empty_feed_is_not_an_error() {
         let feed = parse(&rss("")).unwrap();
         assert!(feed.items.is_empty());
@@ -459,15 +504,13 @@ mod tests {
 
     #[test]
     fn the_basic_item_shape() {
-        let item = one(
-            r#"<item>
+        let item = one(r#"<item>
                  <title>Hello</title>
                  <link>https://example.com/a</link>
                  <guid>tag:example,2006:a</guid>
                  <pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate>
                  <description>&lt;p&gt;Body&lt;/p&gt;</description>
-               </item>"#,
-        );
+               </item>"#);
         assert_eq!(item.title.as_deref(), Some("Hello"));
         assert_eq!(item.link.as_deref(), Some("https://example.com/a"));
         assert_eq!(item.guid.as_deref(), Some("tag:example,2006:a"));
@@ -478,13 +521,11 @@ mod tests {
 
     #[test]
     fn content_encoded_wins_over_description() {
-        let item = one(
-            r#"<item>
+        let item = one(r#"<item>
                  <title>T</title>
                  <description>summary only</description>
                  <content:encoded><![CDATA[<p>the whole thing</p>]]></content:encoded>
-               </item>"#,
-        );
+               </item>"#);
         assert_eq!(item.content_text.as_deref(), Some("summary only"));
         assert_eq!(item.content_html.as_deref(), Some("<p>the whole thing</p>"));
         assert_eq!(item.effective_content(), Some("<p>the whole thing</p>"));
@@ -492,8 +533,10 @@ mod tests {
 
     #[test]
     fn cdata_and_escaped_markup_produce_the_same_body() {
-        let escaped = one(r#"<item><title>T</title><description>&lt;p&gt;Hi&lt;/p&gt;</description></item>"#);
-        let cdata = one(r#"<item><title>T</title><description><![CDATA[<p>Hi</p>]]></description></item>"#);
+        let escaped =
+            one(r#"<item><title>T</title><description>&lt;p&gt;Hi&lt;/p&gt;</description></item>"#);
+        let cdata =
+            one(r#"<item><title>T</title><description><![CDATA[<p>Hi</p>]]></description></item>"#);
         assert_eq!(escaped.effective_content(), cdata.effective_content());
         assert_eq!(escaped.effective_content(), Some("<p>Hi</p>"));
     }
@@ -501,15 +544,15 @@ mod tests {
     #[test]
     fn unescaped_markup_inside_description_survives() {
         // Not well-formed XML, but common enough that losing the markup would be visible.
-        let item = one(r#"<item><title>T</title><description><p>Hi <b>there</b></p></description></item>"#);
+        let item = one(
+            r#"<item><title>T</title><description><p>Hi <b>there</b></p></description></item>"#,
+        );
         assert_eq!(item.effective_content(), Some("<p>Hi <b>there</b></p>"));
     }
 
     #[test]
     fn an_explicit_false_permalink_is_recorded() {
-        let item = one(
-            r#"<item><title>T</title><guid isPermaLink="false">urn:1</guid></item>"#,
-        );
+        let item = one(r#"<item><title>T</title><guid isPermaLink="false">urn:1</guid></item>"#);
         assert!(!item.guid_is_permalink);
         assert_eq!(item.guid.as_deref(), Some("urn:1"));
         assert_eq!(item.link, None, "a non-permalink guid is not a URL");
@@ -517,9 +560,7 @@ mod tests {
 
     #[test]
     fn a_permalink_guid_supplies_the_link_when_there_is_none() {
-        let item = one(
-            r#"<item><title>T</title><guid>https://example.com/a</guid></item>"#,
-        );
+        let item = one(r#"<item><title>T</title><guid>https://example.com/a</guid></item>"#);
         assert_eq!(item.link.as_deref(), Some("https://example.com/a"));
 
         // But a non-permalink guid that happens to look like a URL does not.
@@ -540,19 +581,15 @@ mod tests {
 
     #[test]
     fn dc_date_is_used_when_there_is_no_pubdate() {
-        let item = one(
-            r#"<item><title>T</title><dc:date>2006-01-02T15:04:05Z</dc:date></item>"#,
-        );
+        let item = one(r#"<item><title>T</title><dc:date>2006-01-02T15:04:05Z</dc:date></item>"#);
         assert_eq!(item.date, Some(1_136_214_245));
     }
 
     #[test]
     fn pubdate_wins_over_dc_date() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate>
-               <dc:date>2020-01-01T00:00:00Z</dc:date></item>"#,
-        );
+               <dc:date>2020-01-01T00:00:00Z</dc:date></item>"#);
         assert_eq!(item.date, Some(1_136_214_245));
     }
 
@@ -564,17 +601,16 @@ mod tests {
 
     #[test]
     fn dc_creator_is_preferred_over_the_rss_author_email() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <author>jane@example.com (Jane Doe)</author>
-               <dc:creator>Jane Q. Doe</dc:creator></item>"#,
-        );
+               <dc:creator>Jane Q. Doe</dc:creator></item>"#);
         assert_eq!(item.authors, vec!["Jane Q. Doe"]);
     }
 
     #[test]
     fn an_rss_author_email_has_its_parenthesised_name_extracted() {
-        let item = one(r#"<item><title>T</title><author>jane@example.com (Jane Doe)</author></item>"#);
+        let item =
+            one(r#"<item><title>T</title><author>jane@example.com (Jane Doe)</author></item>"#);
         assert_eq!(item.authors, vec!["Jane Doe"]);
     }
 
@@ -586,10 +622,8 @@ mod tests {
 
     #[test]
     fn multiple_authors_are_all_kept_in_order() {
-        let item = one(
-            r#"<item><title>T</title>
-               <dc:creator>Ada</dc:creator><dc:creator>Grace</dc:creator></item>"#,
-        );
+        let item = one(r#"<item><title>T</title>
+               <dc:creator>Ada</dc:creator><dc:creator>Grace</dc:creator></item>"#);
         assert_eq!(item.authors, vec!["Ada", "Grace"]);
     }
 
@@ -604,12 +638,10 @@ mod tests {
 
     #[test]
     fn categories_become_tags_and_are_split_on_commas() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <category>rust</category>
                <category>rss, reader</category>
-               <category>rust</category></item>"#,
-        );
+               <category>rust</category></item>"#);
         assert_eq!(item.tags, vec!["rust", "rss", "reader"]);
     }
 
@@ -621,11 +653,9 @@ mod tests {
 
     #[test]
     fn enclosures_are_collected_with_their_metadata() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <enclosure url="https://example.com/e.mp3" length="1024" type="audio/mpeg"/>
-             </item>"#,
-        );
+             </item>"#);
         assert_eq!(item.enclosures.len(), 1);
         let e = &item.enclosures[0];
         assert_eq!(e.url, "https://example.com/e.mp3");
@@ -635,11 +665,9 @@ mod tests {
 
     #[test]
     fn an_atom_link_rel_enclosure_is_an_attachment_not_the_article_url() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <atom:link rel="enclosure" href="https://example.com/e.mp3" type="audio/mpeg"/>
-             </item>"#,
-        );
+             </item>"#);
         assert_eq!(item.link, None);
         assert_eq!(item.enclosures.len(), 1);
         assert_eq!(item.enclosures[0].url, "https://example.com/e.mp3");
@@ -647,11 +675,9 @@ mod tests {
 
     #[test]
     fn media_thumbnail_is_picked_up() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <media:thumbnail url="https://example.com/t.jpg" width="160" height="90"/>
-             </item>"#,
-        );
+             </item>"#);
         let t = item.thumbnail.unwrap();
         assert_eq!(t.url, "https://example.com/t.jpg");
         assert_eq!((t.width, t.height), (Some(160), Some(90)));
@@ -659,82 +685,84 @@ mod tests {
 
     #[test]
     fn an_image_enclosure_becomes_the_thumbnail_when_there_is_no_media_thumbnail() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <media:content url="https://example.com/i.jpg" medium="image"/>
-             </item>"#,
+             </item>"#);
+        assert_eq!(
+            item.thumbnail.as_ref().map(|t| t.url.as_str()),
+            Some("https://example.com/i.jpg")
         );
-        assert_eq!(item.thumbnail.as_ref().map(|t| t.url.as_str()), Some("https://example.com/i.jpg"));
         assert_eq!(item.enclosures.len(), 1);
     }
 
     #[test]
     fn a_media_content_mime_implies_its_medium() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <media:content url="https://example.com/v.mp4" type="video/mp4"/>
-             </item>"#,
-        );
+             </item>"#);
         assert_eq!(item.enclosures[0].medium.as_deref(), Some("video"));
     }
 
     #[test]
     fn a_media_group_yields_one_rendition_not_all_of_them() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <media:group>
                  <media:content url="https://example.com/low.mp4" medium="video"/>
                  <media:content url="https://example.com/high.mp4" medium="video" isDefault="true"/>
                </media:group>
-             </item>"#,
-        );
+             </item>"#);
         // FreshRSS keeps the `isDefault` rendition when the feed marks one…
         assert_eq!(item.enclosures.len(), 1);
         assert_eq!(item.enclosures[0].url, "https://example.com/high.mp4");
 
         // …and the first one when it does not.
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <media:group>
                  <media:content url="https://example.com/low.mp4" medium="video"/>
                  <media:content url="https://example.com/high.mp4" medium="video"/>
                </media:group>
-             </item>"#,
-        );
+             </item>"#);
         assert_eq!(item.enclosures.len(), 1);
         assert_eq!(item.enclosures[0].url, "https://example.com/low.mp4");
     }
 
     #[test]
     fn non_remote_enclosure_and_thumbnail_urls_are_dropped() {
-        let item = one(
-            r#"<item><title>T</title>
+        let item = one(r#"<item><title>T</title>
                <enclosure url="file:///etc/passwd" type="text/plain"/>
                <media:thumbnail url="data:image/png;base64,AAAA"/>
-             </item>"#,
-        );
+             </item>"#);
         assert!(item.enclosures.is_empty());
         assert_eq!(item.thumbnail, None);
     }
 
     #[test]
     fn an_item_with_no_title_link_or_body_is_dropped() {
-        let feed = parse(&rss(r#"<item><pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate></item>"#)).unwrap();
+        let feed = parse(&rss(
+            r#"<item><pubDate>Mon, 02 Jan 2006 15:04:05 +0000</pubDate></item>"#,
+        ))
+        .unwrap();
         assert!(feed.items.is_empty(), "a date alone is not an article");
     }
 
     #[test]
     fn multiple_items_keep_their_document_order() {
-        let feed = parse(&rss(
-            r#"<item><title>newest</title></item>
+        let feed = parse(&rss(r#"<item><title>newest</title></item>
                <item><title>middle</title></item>
-               <item><title>oldest</title></item>"#,
-        ))
+               <item><title>oldest</title></item>"#))
         .unwrap();
-        let titles: Vec<_> = feed.items.iter().filter_map(|i| i.title.as_deref()).collect();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         assert_eq!(titles, vec!["newest", "middle", "oldest"]);
         // …and `chronological` is what the refresh pipeline uses for id allocation.
-        let chrono: Vec<_> = feed.chronological().iter().filter_map(|i| i.title.as_deref()).collect();
+        let chrono: Vec<_> = feed
+            .chronological()
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         assert_eq!(chrono, vec!["oldest", "middle", "newest"]);
     }
 
@@ -763,7 +791,11 @@ mod tests {
                <item><title>Two</title></item>"#,
         ))
         .unwrap();
-        let titles: Vec<_> = feed.items.iter().filter_map(|i| i.title.as_deref()).collect();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         assert_eq!(titles, vec!["One", "Two"]);
     }
 
@@ -773,7 +805,11 @@ mod tests {
             <item><title>One</title></item>
             <item><title>Two</title>"#;
         let feed = parse(body).unwrap();
-        let titles: Vec<_> = feed.items.iter().filter_map(|i| i.title.as_deref()).collect();
+        let titles: Vec<_> = feed
+            .items
+            .iter()
+            .filter_map(|i| i.title.as_deref())
+            .collect();
         // The unterminated `<title>` runs to EOF, so "Two" is recovered rather than lost. A feed
         // truncated mid-write is worth reading partially; discarding it is not.
         assert_eq!(titles, vec!["One", "Two"]);
@@ -782,7 +818,11 @@ mod tests {
     #[test]
     fn author_from_rss_handles_the_edge_shapes() {
         assert_eq!(author_from_rss("a@b.c (Jane)"), "Jane");
-        assert_eq!(author_from_rss("a@b.c ()"), "a@b.c ()", "empty parens are not a name");
+        assert_eq!(
+            author_from_rss("a@b.c ()"),
+            "a@b.c ()",
+            "empty parens are not a name"
+        );
         assert_eq!(author_from_rss("  Jane   Doe  "), "Jane Doe");
         assert_eq!(author_from_rss(""), "");
         // The outermost pair is the name, so an address containing parens still works.

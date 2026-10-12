@@ -205,8 +205,20 @@ mod tests {
 
     #[test]
     fn relative_references_are_relative() {
-        for url in ["/a/b", "a/b", "./a", "../a", "?q=1", "#frag", "//cdn.example/x.png"] {
-            assert_eq!(classify("a", "href", url), SchemeDecision::Relative, "{url}");
+        for url in [
+            "/a/b",
+            "a/b",
+            "./a",
+            "../a",
+            "?q=1",
+            "#frag",
+            "//cdn.example/x.png",
+        ] {
+            assert_eq!(
+                classify("a", "href", url),
+                SchemeDecision::Relative,
+                "{url}"
+            );
         }
     }
 
@@ -244,17 +256,31 @@ mod tests {
             "\tjavascript:alert(1)",
             "jAvaScRipT:alert(1)",
         ] {
-            assert_eq!(classify("a", "href", url), SchemeDecision::Denied, "{url:?}");
+            assert_eq!(
+                classify("a", "href", url),
+                SchemeDecision::Denied,
+                "{url:?}"
+            );
         }
     }
 
     #[test]
     fn a_control_character_cannot_smuggle_a_scheme_past_the_colon_rule() {
         // `http://x` with a newline in the middle is still http, and must not be read as relative.
-        assert_eq!(classify("a", "href", "htt\np://x/"), SchemeDecision::Allowed);
+        assert_eq!(
+            classify("a", "href", "htt\np://x/"),
+            SchemeDecision::Allowed
+        );
         // …and the reverse: a path that merely contains a colon stays relative.
-        assert_eq!(classify("a", "href", "/redirect?url=http://x"), SchemeDecision::Relative);
-        assert_eq!(classify("a", "href", "a:b:c"), SchemeDecision::Denied, "an unknown scheme");
+        assert_eq!(
+            classify("a", "href", "/redirect?url=http://x"),
+            SchemeDecision::Relative
+        );
+        assert_eq!(
+            classify("a", "href", "a:b:c"),
+            SchemeDecision::Denied,
+            "an unknown scheme"
+        );
     }
 
     #[test]
@@ -285,10 +311,20 @@ mod tests {
 
     #[test]
     fn a_non_image_data_url_is_denied_even_on_an_image_source() {
-        assert_eq!(classify("img", "src", "data:application/pdf,x"), SchemeDecision::Denied);
-        assert_eq!(classify("img", "src", "data:text/html,<b>x</b>"), SchemeDecision::Denied);
+        assert_eq!(
+            classify("img", "src", "data:application/pdf,x"),
+            SchemeDecision::Denied
+        );
+        assert_eq!(
+            classify("img", "src", "data:text/html,<b>x</b>"),
+            SchemeDecision::Denied
+        );
         assert_eq!(classify("img", "src", "data:"), SchemeDecision::Denied);
-        assert_eq!(classify("img", "src", "data:image/"), SchemeDecision::Allowed, "the prefix is the rule");
+        assert_eq!(
+            classify("img", "src", "data:image/"),
+            SchemeDecision::Allowed,
+            "the prefix is the rule"
+        );
     }
 
     #[test]
@@ -303,10 +339,18 @@ mod tests {
         assert_eq!(scheme_of("http://x"), Some("http"));
         assert_eq!(scheme_of("mailto:a@b"), Some("mailto"));
         assert_eq!(scheme_of("a+b-c.d:x"), Some("a+b-c.d"));
-        assert_eq!(scheme_of("/a:b"), None, "a path segment may contain a colon");
+        assert_eq!(
+            scheme_of("/a:b"),
+            None,
+            "a path segment may contain a colon"
+        );
         assert_eq!(scheme_of("?a:b"), None);
         assert_eq!(scheme_of("#a:b"), None);
-        assert_eq!(scheme_of("1http://x"), None, "a scheme must start with a letter");
+        assert_eq!(
+            scheme_of("1http://x"),
+            None,
+            "a scheme must start with a letter"
+        );
         assert_eq!(scheme_of(":x"), None);
         assert_eq!(scheme_of("no colon"), None);
         assert_eq!(scheme_of("http:/x"), Some("http"));
@@ -354,7 +398,11 @@ mod tests {
         assert_eq!(force_https("https://example.com/a", &d), None);
         assert_eq!(force_https("http://other.test/a", &d), None);
         assert_eq!(force_https("/relative", &d), None);
-        assert_eq!(force_https("http://example.com/a", &[]), None, "an empty list changes nothing");
+        assert_eq!(
+            force_https("http://example.com/a", &[]),
+            None,
+            "an empty list changes nothing"
+        );
     }
 
     #[test]
@@ -382,8 +430,14 @@ mod tests {
     #[test]
     fn host_of_handles_ipv6_userinfo_and_ports() {
         assert_eq!(host_of("http://[::1]:8080/x").as_deref(), Some("[::1]"));
-        assert_eq!(host_of("http://user:pw@Example.COM:80/x").as_deref(), Some("example.com"));
-        assert_eq!(host_of("http://example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            host_of("http://user:pw@Example.COM:80/x").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            host_of("http://example.com").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(host_of("http://"), None);
     }
 
@@ -392,8 +446,14 @@ mod tests {
     #[test]
     fn relative_urls_resolve_against_the_base() {
         let base = "https://example.com/blog/feed.xml";
-        assert_eq!(absolutize("post.html", base), "https://example.com/blog/post.html");
-        assert_eq!(absolutize("/img/a.png", base), "https://example.com/img/a.png");
+        assert_eq!(
+            absolutize("post.html", base),
+            "https://example.com/blog/post.html"
+        );
+        assert_eq!(
+            absolutize("/img/a.png", base),
+            "https://example.com/img/a.png"
+        );
         assert_eq!(absolutize("../up.png", base), "https://example.com/up.png");
         assert_eq!(
             absolutize("//cdn.example/x.png", base),
@@ -430,6 +490,9 @@ mod tests {
         // The base is always the feed's, so a root-relative path lands on the publisher's host.
         let base = "https://publisher.test/rss";
         let resolved = absolutize("/logo.png", base);
-        assert!(resolved.starts_with("https://publisher.test/"), "{resolved}");
+        assert!(
+            resolved.starts_with("https://publisher.test/"),
+            "{resolved}"
+        );
     }
 }

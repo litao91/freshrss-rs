@@ -64,7 +64,10 @@ impl FeedKind {
 
     /// True when the response body must be parsed as HTML rather than as a feed document.
     pub const fn is_html(self) -> bool {
-        matches!(self, FeedKind::HtmlXpath | FeedKind::HtmlXpathJsonDotNotation)
+        matches!(
+            self,
+            FeedKind::HtmlXpath | FeedKind::HtmlXpathJsonDotNotation
+        )
     }
 
     /// True when the document is JSON at some level, including JSON buried in an HTML page.
@@ -82,7 +85,10 @@ impl FeedKind {
     pub const fn uses_xpath(self) -> bool {
         matches!(
             self,
-            FeedKind::HtmlXpath | FeedKind::XmlXpath | FeedKind::JsonXpath | FeedKind::HtmlXpathJsonDotNotation
+            FeedKind::HtmlXpath
+                | FeedKind::XmlXpath
+                | FeedKind::JsonXpath
+                | FeedKind::HtmlXpathJsonDotNotation
         )
     }
 

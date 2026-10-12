@@ -19,7 +19,7 @@ pub use entities::{encode_specials, html_only_entity_decode};
 pub use error::FeedError;
 pub use guid::{decide_guid, load_guids, GuidInput, GuidResolution, UnicityCriteria};
 pub use hash::{content_hash, content_hash_hex, HashInput};
-pub use http::{Fetcher, FetchOutcome, FetchRequest, FetchedBody};
+pub use http::{FetchOutcome, FetchRequest, FetchedBody, Fetcher};
 pub use kind::FeedKind;
 pub use parse::parse as parse_feed;
 pub use raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};

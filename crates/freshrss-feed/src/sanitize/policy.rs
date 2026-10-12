@@ -22,28 +22,158 @@
 ///   URL rewriting pass.
 pub const TAGS: &[&str] = &[
     // HTML
-    "a", "abbr", "acronym", "address", "article", "aside", "audio", "b", "bdi", "bdo", "big",
-    "blink", "blockquote", "br", "button", "canvas", "caption", "center", "cite", "code", "col",
-    "colgroup", "data", "datalist", "dd", "del", "details", "dfn", "dialog", "dir", "div", "dl",
-    "dt", "em", "fieldset", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
-    "header", "hgroup", "hr", "i", "iframe", "image", "img", "ins", "kbd", "label", "legend", "li",
-    "main", "mark", "marquee", "menu", "meter", "nav", "nobr", "noframes", "ol", "optgroup",
-    "option", "output", "p", "picture", "pre", "progress", "q", "rb", "rp", "rt", "rtc", "ruby",
-    "s", "samp", "search", "section", "select", "small", "source", "span", "strike", "strong",
-    "sub", "summary", "sup", "table", "tbody", "td", "textarea", "tfoot", "th", "thead", "time",
-    "tr", "track", "tt", "u", "ul", "var", "video", "wbr", "xmp",
+    "a",
+    "abbr",
+    "acronym",
+    "address",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "bdi",
+    "bdo",
+    "big",
+    "blink",
+    "blockquote",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "data",
+    "datalist",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "i",
+    "iframe",
+    "image",
+    "img",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "main",
+    "mark",
+    "marquee",
+    "menu",
+    "meter",
+    "nav",
+    "nobr",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "picture",
+    "pre",
+    "progress",
+    "q",
+    "rb",
+    "rp",
+    "rt",
+    "rtc",
+    "ruby",
+    "s",
+    "samp",
+    "search",
+    "section",
+    "select",
+    "small",
+    "source",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "tr",
+    "track",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "wbr",
+    "xmp",
     // MathML
-    "maction", "math", "menclose", "merror", "mfenced", "mfrac", "mi", "mmultiscripts", "mn", "mo",
-    "mover", "mpadded", "mphantom", "mprescripts", "mroot", "mrow", "ms", "mspace", "msqrt", "msub",
-    "msubsup", "msup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover",
+    "maction",
+    "math",
+    "menclose",
+    "merror",
+    "mfenced",
+    "mfrac",
+    "mi",
+    "mmultiscripts",
+    "mn",
+    "mo",
+    "mover",
+    "mpadded",
+    "mphantom",
+    "mprescripts",
+    "mroot",
+    "mrow",
+    "ms",
+    "mspace",
+    "msqrt",
+    "msub",
+    "msubsup",
+    "msup",
+    "mtable",
+    "mtd",
+    "mtext",
+    "mtr",
+    "munder",
+    "munderover",
 ];
 
 /// Attributes allowed on any element in [`TAGS`].
 pub const GENERIC_ATTRIBUTES: &[&str] = &[
     // HTML
-    "dir", "draggable", "hidden", "lang", "role", "title",
+    "dir",
+    "draggable",
+    "hidden",
+    "lang",
+    "role",
+    "title",
     // MathML
-    "displaystyle", "mathsize", "scriptlevel",
+    "displaystyle",
+    "mathsize",
+    "scriptlevel",
 ];
 
 /// `aria-*` and `data-*` are allowed by prefix, matching FreshRSS's `allow_aria_attr(true)` and
@@ -103,29 +233,13 @@ pub const TAG_ATTRIBUTES: &[(&str, &[&str])] = &[
     (
         "image",
         &[
-            "src",
-            "alt",
-            "width",
-            "height",
-            "align",
-            "border",
-            "hspace",
-            "longdesc",
-            "vspace",
+            "src", "alt", "width", "height", "align", "border", "hspace", "longdesc", "vspace",
         ],
     ),
     (
         "img",
         &[
-            "src",
-            "alt",
-            "width",
-            "height",
-            "align",
-            "border",
-            "hspace",
-            "longdesc",
-            "vspace",
+            "src", "alt", "width", "height", "align", "border", "hspace", "longdesc", "vspace",
         ],
     ),
     ("ins", &["cite", "datetime"]),
@@ -171,15 +285,7 @@ pub const TAG_ATTRIBUTES: &[(&str, &[&str])] = &[
     (
         "td",
         &[
-            "colspan",
-            "headers",
-            "rowspan",
-            "abbr",
-            "align",
-            "height",
-            "scope",
-            "valign",
-            "width",
+            "colspan", "headers", "rowspan", "abbr", "align", "height", "scope", "valign", "width",
         ],
     ),
     (
@@ -199,14 +305,7 @@ pub const TAG_ATTRIBUTES: &[(&str, &[&str])] = &[
     (
         "th",
         &[
-            "abbr",
-            "colspan",
-            "rowspan",
-            "scope",
-            "align",
-            "height",
-            "valign",
-            "width",
+            "abbr", "colspan", "rowspan", "scope", "align", "height", "valign", "width",
         ],
     ),
     ("thead", &["align", "valign"]),
@@ -253,7 +352,10 @@ pub const TAG_ATTRIBUTES: &[(&str, &[&str])] = &[
         ],
     ),
     ("mover", &["accent"]),
-    ("mpadded", &["depth", "height", "lspace", "voffset", "width"]),
+    (
+        "mpadded",
+        &["depth", "height", "lspace", "voffset", "width"],
+    ),
     ("mspace", &["depth", "height", "width"]),
     ("msubsup", &["subscriptshift", "superscriptshift"]),
     ("msup", &["superscriptshift"]),
@@ -351,9 +453,28 @@ mod tests {
     #[test]
     fn dangerous_elements_are_not_allowed() {
         for tag in [
-            "script", "style", "object", "embed", "applet", "form", "input", "link", "meta",
-            "base", "svg", "animate", "plaintext", "area", "map", "noscript", "noembed", "frame",
-            "frameset", "body", "html", "head",
+            "script",
+            "style",
+            "object",
+            "embed",
+            "applet",
+            "form",
+            "input",
+            "link",
+            "meta",
+            "base",
+            "svg",
+            "animate",
+            "plaintext",
+            "area",
+            "map",
+            "noscript",
+            "noembed",
+            "frame",
+            "frameset",
+            "body",
+            "html",
+            "head",
         ] {
             assert!(!TAGS.contains(&tag), "<{tag}> must not be in the allowlist");
         }
@@ -368,8 +489,21 @@ mod tests {
     #[test]
     fn no_dangerous_attribute_is_allowed_anywhere() {
         let banned = [
-            "style", "onclick", "onerror", "onload", "formaction", "srcdoc", "background",
-            "dynsrc", "lowsrc", "ping", "codebase", "classid", "data", "id", "class",
+            "style",
+            "onclick",
+            "onerror",
+            "onload",
+            "formaction",
+            "srcdoc",
+            "background",
+            "dynsrc",
+            "lowsrc",
+            "ping",
+            "codebase",
+            "classid",
+            "data",
+            "id",
+            "class",
         ];
         for attr in banned {
             assert!(
@@ -377,7 +511,10 @@ mod tests {
                 "{attr} must not be a generic attribute"
             );
             for (tag, list) in TAG_ATTRIBUTES {
-                assert!(!list.contains(&attr), "{attr} must not be allowed on <{tag}>");
+                assert!(
+                    !list.contains(&attr),
+                    "{attr} must not be allowed on <{tag}>"
+                );
             }
         }
     }
@@ -385,7 +522,10 @@ mod tests {
     #[test]
     fn every_tag_with_attributes_is_an_allowed_tag() {
         for (tag, _) in TAG_ATTRIBUTES {
-            assert!(TAGS.contains(tag), "<{tag}> has attributes but is not allowed");
+            assert!(
+                TAGS.contains(tag),
+                "<{tag}> has attributes but is not allowed"
+            );
         }
     }
 
@@ -413,7 +553,10 @@ mod tests {
         let mut sorted = TAGS.to_vec();
         sorted.sort_unstable();
         // MathML follows the HTML block, so only the HTML prefix is expected to be sorted.
-        let html_end = TAGS.iter().position(|t| *t == "maction").unwrap_or(TAGS.len());
+        let html_end = TAGS
+            .iter()
+            .position(|t| *t == "maction")
+            .unwrap_or(TAGS.len());
         let mut html: Vec<&str> = TAGS[..html_end].to_vec();
         let original = html.clone();
         html.sort_unstable();

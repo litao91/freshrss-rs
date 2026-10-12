@@ -271,7 +271,8 @@ mod tests {
 
     #[test]
     fn audio_and_video_get_controls_and_do_not_preload() {
-        let out = clean(r#"<audio src="https://x/e.mp3"></audio><video src="https://x/v.mp4"></video>"#);
+        let out =
+            clean(r#"<audio src="https://x/e.mp3"></audio><video src="https://x/v.mp4"></video>"#);
         assert!(out.contains(r#"preload="none""#), "{out}");
         assert_eq!(out.matches("controls=").count(), 2, "{out}");
     }
@@ -296,7 +297,12 @@ mod tests {
     #[test]
     fn event_handlers_are_removed() {
         for handler in [
-            "onclick", "onerror", "onload", "onmouseover", "onfocus", "onanimationstart",
+            "onclick",
+            "onerror",
+            "onload",
+            "onmouseover",
+            "onfocus",
+            "onanimationstart",
         ] {
             let out = clean(&format!("<p {handler}=\"alert(1)\">x</p>"));
             assert!(!out.to_ascii_lowercase().contains(handler), "{out}");
@@ -367,7 +373,10 @@ mod tests {
             "javascript&#58;alert(1)",
         ] {
             let out = clean(&format!(r#"<a href="{url}">x</a>"#));
-            assert!(!out.to_ascii_lowercase().contains("javascript"), "{out} for {url:?}");
+            assert!(
+                !out.to_ascii_lowercase().contains("javascript"),
+                "{out} for {url:?}"
+            );
             assert!(!out.contains("alert"), "{out} for {url:?}");
         }
     }
@@ -380,7 +389,11 @@ mod tests {
 
     #[test]
     fn other_dangerous_schemes_are_removed() {
-        for url in ["vbscript:x", "data:text/html,<script>alert(1)</script>", "file:///etc/passwd"] {
+        for url in [
+            "vbscript:x",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+        ] {
             let out = clean(&format!(r#"<a href="{url}">x</a>"#));
             assert!(!out.contains("href"), "{out} for {url:?}");
         }
@@ -408,14 +421,23 @@ mod tests {
     #[test]
     fn relative_urls_are_resolved_against_the_feed_base() {
         let out = clean(r#"<img src="/img/a.png"><a href="../post.html">x</a>"#);
-        assert!(out.contains(r#"src="https://example.com/img/a.png""#), "{out}");
-        assert!(out.contains(r#"href="https://example.com/post.html""#), "{out}");
+        assert!(
+            out.contains(r#"src="https://example.com/img/a.png""#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"href="https://example.com/post.html""#),
+            "{out}"
+        );
     }
 
     #[test]
     fn a_relative_url_never_resolves_against_the_readers_origin() {
         // With no base at all the URL must be left relative rather than invented.
-        let options = SanitizeOptions { base_url: String::new(), ..opts() };
+        let options = SanitizeOptions {
+            base_url: String::new(),
+            ..opts()
+        };
         let out = sanitize_html(r#"<img src="/img/a.png">"#, &options);
         assert!(out.contains(r#"src="/img/a.png""#), "{out}");
     }
@@ -466,7 +488,8 @@ mod tests {
 
     #[test]
     fn sanitizing_is_idempotent() {
-        let body = r#"<p>Text with <a href="/rel">a link</a> and <img src="https://x/a.png" alt="a"></p>"#;
+        let body =
+            r#"<p>Text with <a href="/rel">a link</a> and <img src="https://x/a.png" alt="a"></p>"#;
         let once = clean(body);
         let twice = clean(&once);
         assert_eq!(once, twice, "a second pass must not change the result");
@@ -493,7 +516,10 @@ mod tests {
         let depth = 5_000;
         let body = format!("{}x{}", "<div>".repeat(depth), "</div>".repeat(depth));
         let out = sanitize_html(&body, &opts());
-        assert!(out.contains('x'), "content survives {depth} levels of nesting");
+        assert!(
+            out.contains('x'),
+            "content survives {depth} levels of nesting"
+        );
     }
 
     #[test]
@@ -514,7 +540,10 @@ mod tests {
     // --- byte budget -------------------------------------------------------
 
     fn with_budget(max_length: usize) -> SanitizeOptions {
-        SanitizeOptions { max_length: Some(max_length), ..opts() }
+        SanitizeOptions {
+            max_length: Some(max_length),
+            ..opts()
+        }
     }
 
     #[test]
@@ -561,7 +590,10 @@ mod tests {
         for budget in 1..body.len() {
             let out = sanitize_html(body, &with_budget(budget));
             assert!(out.len() <= budget, "budget {budget}: {out:?}");
-            assert!(!out.ends_with('<'), "budget {budget} left a bare '<': {out:?}");
+            assert!(
+                !out.ends_with('<'),
+                "budget {budget} left a bare '<': {out:?}"
+            );
             assert!(
                 std::str::from_utf8(out.as_bytes()).is_ok(),
                 "budget {budget} split a character: {out:?}"
@@ -583,7 +615,10 @@ mod tests {
     fn an_unreachable_budget_falls_back_to_plain_text() {
         // A single 5 000-byte attribute value cannot be cut at a tag boundary without dropping the
         // element entirely, so no prefix fits and the fallback has to end the loop.
-        let body = format!(r#"<p><img alt="{}" src="https://x/a.png"></p>"#, "y".repeat(5_000));
+        let body = format!(
+            r#"<p><img alt="{}" src="https://x/a.png"></p>"#,
+            "y".repeat(5_000)
+        );
         let out = sanitize_html(&body, &with_budget(30));
         assert!(out.len() <= 30, "{out:?} is {} bytes", out.len());
     }
