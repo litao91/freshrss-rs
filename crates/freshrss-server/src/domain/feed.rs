@@ -8,6 +8,7 @@ use crate::domain::filter_action::FilterAction;
 use crate::domain::kind::FeedKind;
 use crate::domain::priority::Priority;
 use crate::domain::ttl::Ttl;
+use freshrss_feed::http::ConditionalHeaders;
 
 pub const FEED_NAME_MAX_LEN: usize = 191;
 
@@ -102,6 +103,30 @@ impl Feed {
     pub fn set_simplepie_hash(&mut self, hash: Option<&str>) {
         self.attributes
             .set_str(keys::SIMPLEPIE_HASH, hash.map(str::to_string));
+    }
+
+    /// The conditional-GET validators from the last successful fetch.
+    ///
+    /// Replaying them is what turns a refresh of a quiet feed into a 304 and no parsing at all,
+    /// which is most of the bandwidth a reader with a hundred subscriptions spends.
+    pub fn conditional_headers(&self) -> ConditionalHeaders {
+        ConditionalHeaders {
+            etag: self.attributes.get_str(keys::ETAG).map(str::to_owned),
+            last_modified: self
+                .attributes
+                .get_str(keys::LAST_MODIFIED)
+                .map(str::to_owned),
+        }
+    }
+
+    /// Records what a fetch came back with, so the next one can be conditional.
+    ///
+    /// Both are cleared when the server stops sending them: replaying a validator the server has
+    /// forgotten is how a feed silently stops ever being re-read.
+    pub fn set_conditional_headers(&mut self, etag: Option<&str>, last_modified: Option<&str>) {
+        self.attributes
+            .set_str(keys::ETAG, etag.map(str::to_string))
+            .set_str(keys::LAST_MODIFIED, last_modified.map(str::to_string));
     }
 
     /// The GUID policy override, when the user set one.

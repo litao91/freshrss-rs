@@ -23,6 +23,12 @@ pub mod keys {
     pub const UNICITY_CRITERIA_FORCED: &str = "unicityCriteriaForced";
     /// Feed: SHA-1 of the last fetched body, with volatile elements stripped.
     pub const SIMPLEPIE_HASH: &str = "SimplePieHash";
+    /// Feed: the validators from the last successful fetch, replayed as a conditional GET.
+    ///
+    /// These keys are ours rather than FreshRSS's: it keeps them in the HTTP cache file beside the
+    /// cached body, and this port has no cache files.
+    pub const ETAG: &str = "etag";
+    pub const LAST_MODIFIED: &str = "lastModified";
     /// Feed/category/user: retention settings.
     pub const ARCHIVING: &str = "archiving";
     /// Feed/category/tag/user: `[{search, actions}]`.

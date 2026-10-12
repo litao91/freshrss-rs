@@ -6,5 +6,6 @@
 pub mod auth;
 pub mod entries;
 pub mod ingest;
+pub mod refresh;
 pub mod search;
 pub mod tree;
