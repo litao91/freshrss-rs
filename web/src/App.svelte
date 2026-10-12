@@ -4,13 +4,19 @@
   import { initPrefs, setNavOpen, toggleFocus, toggleNav } from './lib/prefs.svelte';
   import { bootstrap, isSignedIn, refreshTree, session, tree } from './lib/session.svelte';
   import { notifyError } from './lib/toast.svelte';
-  import { scopeTitle, selectScope, view, isReading, type Scope } from './lib/view.svelte';
+  import { scopeTitle, selectEntry, selectScope, toggleReadFilter, view, isReading, type Scope } from './lib/view.svelte';
 
   import Auth from './components/Auth.svelte';
+  import EntryList from './components/EntryList.svelte';
   import NavTree from './components/NavTree.svelte';
+  import ReadingPane from './components/ReadingPane.svelte';
   import Toast from './components/Toast.svelte';
   import TopBar from './components/TopBar.svelte';
   import FolderDialog from './components/dialogs/FolderDialog.svelte';
+
+  import { entries, loadMore, markAllRead, setRead, setStarred } from './lib/entries.svelte';
+  import { find as findShortcut } from './lib/keys';
+  import { nudgeSize } from './lib/prefs.svelte';
 
   let search = $state('');
   let refreshing = $state(false);
@@ -19,6 +25,11 @@
   let folderDialog = $state<CategoryNode | null | undefined>(undefined);
 
   let topBar: TopBar | undefined = $state();
+  let entryList: EntryList | undefined = $state();
+  let readingPane: ReadingPane | undefined = $state();
+
+  /** The row the keyboard is on, which is not necessarily the one that is open. */
+  let highlighted = $state<string | null>(null);
 
   /**
    * Reads the query string into a scope.
@@ -66,6 +77,36 @@
     selectScope(scopeFromLocation());
   }
 
+  /**
+   * Moves the keyboard cursor by `delta` rows, opening the article it lands on.
+   *
+   * The list is the source of truth for order, so `j` and `k` follow whatever sort is on screen rather
+   * than a separate notion of "next". At the end of the loaded pages the next one is fetched, which is
+   * what makes reading by keyboard work past the first screenful.
+   */
+  function move(delta: number): void {
+    const items = entries.items;
+    if (items.length === 0) return;
+    const current = items.findIndex((e) => e.id === (highlighted ?? view.selectedEntryId));
+    let next = current < 0 ? (delta > 0 ? 0 : items.length - 1) : current + delta;
+
+    if (next >= items.length) {
+      if (!entries.hasMore) return;
+      void loadMore().then(() => {
+        if (next < entries.items.length) select(entries.items[next].id);
+      });
+      return;
+    }
+    if (next < 0) next = 0;
+    select(items[next].id);
+  }
+
+  function select(id: string): void {
+    highlighted = id;
+    selectEntry(id);
+    void entryList?.revealSelected();
+  }
+
   function onKeydown(event: KeyboardEvent): void {
     const target = event.target as HTMLElement | null;
     const typing =
@@ -74,29 +115,84 @@
       target instanceof HTMLSelectElement ||
       target?.isContentEditable === true;
 
-    // Escape closes whatever is on top: an open <dialog> handles its own, so this covers the rest.
-    if (event.key === 'Escape') {
-      if (typing) (target as HTMLElement).blur();
+    // Escape closes whatever is on top. An open <dialog> handles its own, so this covers the rest.
+    if (event.key === 'Escape' && !typing) {
+      if (isReading()) {
+        event.preventDefault();
+        selectEntry(null);
+        highlighted = null;
+      }
       return;
     }
     if (typing) return;
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    switch (event.key) {
-      case 'b':
-        event.preventDefault();
-        toggleNav();
+    const shortcut = findShortcut(event);
+    if (!shortcut) return;
+
+    const reading = isReading();
+    if (reading && !shortcut.reading) return;
+    if (!reading && !shortcut.list) return;
+    event.preventDefault();
+
+    const ids = (): string[] => {
+      const id = view.selectedEntryId ?? highlighted;
+      return id ? [id] : [];
+    };
+
+    switch (shortcut.key) {
+      case 'j':
+        if (reading) readingPane?.goNext();
+        else move(1);
+        break;
+      case 'k':
+        if (reading) readingPane?.goPrev();
+        else move(-1);
+        break;
+      case 'Enter':
+        if (highlighted) selectEntry(highlighted);
+        break;
+      case 's': {
+        const list = ids();
+        if (list.length === 0) break;
+        const entry = entries.items.find((e) => e.id === list[0]);
+        void setStarred(list, !(entry?.is_favorite ?? false));
+        break;
+      }
+      case 'm': {
+        const list = ids();
+        if (list.length === 0) break;
+        const entry = entries.items.find((e) => e.id === list[0]);
+        void setRead(list, !(entry?.is_read ?? false));
+        break;
+      }
+      case 'v':
+        readingPane?.openOriginal();
+        break;
+      case 'u':
+        toggleReadFilter();
+        break;
+      case 'a':
+        void markAllRead().then(() => refreshTree().catch(() => undefined));
+        break;
+      case 'r':
+        onRefresh();
         break;
       case 'f':
-        event.preventDefault();
         toggleFocus();
         break;
+      case 'b':
+        toggleNav();
+        break;
+      case '+':
+        nudgeSize(1);
+        break;
+      case '-':
+        nudgeSize(-1);
+        break;
       case '/':
-        event.preventDefault();
         topBar?.focusSearch();
         break;
       case '?':
-        event.preventDefault();
         // The shortcuts dialog arrives in a later stage.
         break;
       default:
@@ -145,11 +241,7 @@
   }
 
   const title = $derived(scopeTitle(view.scope));
-  const feedCount = $derived(
-    tree.data
-      ? tree.data.categories.reduce((n, c) => n + c.feeds.length, 0) + tree.data.orphans.length
-      : 0,
-  );
+
 </script>
 
 <svelte:head>
@@ -184,24 +276,26 @@
 
     <div class="rd-scrim" role="presentation" onclick={() => setNavOpen(false)}></div>
 
-    <section id="icerik" class="rd-list">
-      <div class="rd-list-head">
-        <div class="rd-list-title-row">
-          <h1 id="rd-list-title" class="rd-list-title">{title}</h1>
-        </div>
-      </div>
-      <div id="rd-list-scroll" class="rd-list-body">
-        <div class="rd-list-empty">
-          <i class="ri-rss-line" aria-hidden="true"></i>
-          {#if feedCount === 0}
-            <p>No subscriptions yet.</p>
-            <p class="rd-hint">Add one from the sidebar to start reading.</p>
-          {:else}
-            <p>Articles appear here once feeds have been refreshed.</p>
-          {/if}
-        </div>
-      </div>
-    </section>
+    <EntryList
+      bind:this={entryList}
+      selectedId={view.selectedEntryId}
+      onOpen={(id) => {
+        highlighted = id;
+        selectEntry(id);
+      }}
+    />
+
+    {#if view.selectedEntryId}
+      <ReadingPane
+        bind:this={readingPane}
+        entryId={view.selectedEntryId}
+        onBack={() => {
+          selectEntry(null);
+          highlighted = null;
+        }}
+        onNavigate={select}
+      />
+    {/if}
 
     <FolderDialog folder={folderDialog} onclose={() => (folderDialog = undefined)} onChanged={reload} />
   </div>

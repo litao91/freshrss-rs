@@ -25,9 +25,27 @@ export type ReadFilter = 'unread' | 'all';
 /** Sort order for the list, matching the server's `order` parameter. */
 export type Order = 'desc' | 'asc';
 
+/**
+ * What the list is ordered by.
+ *
+ * Only the sorts a reader would pick from a segment control. The server supports more (`length`,
+ * `modified`, `rand`), and a saved query can name any of them, but the default listing is by ingestion
+ * order and the alternative people actually want is publication date.
+ */
+export type SortKey = 'id' | 'date' | 'title' | 'feed';
+
+/** The label each sort shows in the segment control. */
+export const SORT_LABELS: Record<SortKey, string> = {
+  id: 'Newest',
+  date: 'Published',
+  title: 'Title',
+  feed: 'Feed',
+};
+
 export const view = $state({
   scope: { kind: 'main' } as Scope,
   readFilter: 'unread' as ReadFilter,
+  sort: 'id' as SortKey,
   order: 'desc' as Order,
   /** The article open in the reading pane; `null` means the list is full width. */
   selectedEntryId: null as string | null,
@@ -102,6 +120,22 @@ export function toggleReadFilter(): void {
 
 export function toggleOrder(): void {
   view.order = view.order === 'desc' ? 'asc' : 'desc';
+  view.selectedEntryId = null;
+}
+
+/**
+ * Sets the sort, resetting the direction to the one that makes sense for it.
+ *
+ * Sorting by title ascending is what a person means by "by title"; the same is not true of the date
+ * sorts, where newest first is the default and oldest first is the deliberate choice.
+ */
+export function setSort(sort: SortKey): void {
+  if (view.sort === sort) {
+    toggleOrder();
+    return;
+  }
+  view.sort = sort;
+  view.order = sort === 'title' || sort === 'feed' ? 'asc' : 'desc';
   view.selectedEntryId = null;
 }
 

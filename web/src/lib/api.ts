@@ -184,6 +184,121 @@ export interface SessionInfo {
   current: boolean;
 }
 
+// --- entries ----------------------------------------------------------------
+
+export interface LabelRef {
+  id: string;
+  name: string;
+}
+
+export interface Enclosure {
+  url: string;
+  type?: string;
+  medium?: string;
+  length?: number;
+  title?: string;
+  description?: string;
+  height?: number;
+  width?: number;
+}
+
+/** One row of the list pane. Deliberately carries no body: a page of fifty full articles would be
+ * megabytes, and the reading pane fetches the one it needs. */
+export interface EntrySummary {
+  id: string;
+  feed_id: string;
+  feed_name: string;
+  category_id: string | null;
+  category_name: string | null;
+  title: string;
+  link: string;
+  author: string;
+  summary: string;
+  date: number;
+  last_modified: number | null;
+  last_seen: number;
+  is_read: boolean;
+  is_favorite: boolean;
+  tags: string[];
+  labels: LabelRef[];
+  thumbnail: string | null;
+  has_enclosures: boolean;
+  has_media: boolean;
+  is_updated: boolean;
+}
+
+export interface EntryPage {
+  items: EntrySummary[];
+  /** Opaque; send back unchanged for the next page. `null` when there is none. */
+  cursor: string | null;
+  has_more: boolean;
+  /** The snapshot fence. Send it back on later pages so articles arriving mid-scroll do not shift them. */
+  id_max: string;
+  unread_in_scope: number;
+}
+
+export interface EntryFull extends EntrySummary {
+  content_html: string;
+  content_text: string;
+  guid: string;
+  enclosures: Enclosure[];
+}
+
+export interface FeedRef {
+  id: string;
+  name: string;
+  website: string;
+}
+
+export interface EntryDetail {
+  entry: EntryFull;
+  prev_id: string | null;
+  next_id: string | null;
+  feed: FeedRef;
+}
+
+export interface SearchParse {
+  canonical: string;
+  ast: unknown;
+  warnings: string[];
+  min_priority: number | null;
+}
+
+export interface SearchPreview {
+  matches: boolean;
+  explain: { operator: string; matched: boolean; negated: boolean }[];
+}
+
+/** The listing parameters. Every one maps straight onto a `GET /entries` query parameter. */
+export interface EntryListParams {
+  scope?: string;
+  id?: string;
+  read?: 'unread' | 'read' | 'any';
+  starred?: 'yes' | 'no' | 'any';
+  or_unread?: boolean;
+  or_starred?: boolean;
+  search?: string;
+  sort?: string;
+  order?: 'asc' | 'desc';
+  secondary_sort?: string;
+  secondary_order?: 'asc' | 'desc';
+  id_max?: string;
+  id_min?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+/** Builds a query string, dropping anything undefined so absent parameters stay absent. */
+function query(params: EntryListParams): string {
+  const out = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    out.set(key, String(value));
+  }
+  const text = out.toString();
+  return text ? `?${text}` : '';
+}
+
 // --- endpoints -------------------------------------------------------------
 
 export const api = {
@@ -259,4 +374,44 @@ export const api = {
 
   truncateFeed: (id: string) =>
     request<{ deleted: number }>(`/feeds/${id}/entries`, { method: 'DELETE' }),
+
+  // --- entries ---
+
+  entries: (params: EntryListParams, signal?: AbortSignal) =>
+    request<EntryPage>(`/entries${query(params)}`, { signal }),
+
+  entry: (id: string, params: EntryListParams = {}, signal?: AbortSignal) =>
+    request<EntryDetail>(`/entries/${encodeURIComponent(id)}${query(params)}`, { signal }),
+
+  markRead: (ids: string[]) =>
+    request<{ marked: number }>('/entries/read', { method: 'POST', body: { ids } }),
+
+  markUnread: (ids: string[]) =>
+    request<{ marked: number }>('/entries/unread', { method: 'POST', body: { ids } }),
+
+  star: (ids: string[]) =>
+    request<{ marked: number }>('/entries/star', { method: 'POST', body: { ids } }),
+
+  unstar: (ids: string[]) =>
+    request<{ marked: number }>('/entries/unstar', { method: 'POST', body: { ids } }),
+
+  markAllRead: (body: EntryListParams & { star?: boolean }) =>
+    request<{ marked: number }>('/entries/mark-all-read', { method: 'POST', body }),
+
+  addLabels: (id: string, names: string[]) =>
+    request<LabelRef[]>(`/entries/${encodeURIComponent(id)}/labels`, {
+      method: 'POST',
+      body: { names },
+    }),
+
+  removeLabel: (id: string, name: string) =>
+    request<LabelRef[]>(
+      `/entries/${encodeURIComponent(id)}/labels/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    ),
+
+  parseSearch: (q: string) => request<SearchParse>('/search/parse', { method: 'POST', body: { q } }),
+
+  previewSearch: (q: string, entry_id: string) =>
+    request<SearchPreview>('/search/preview', { method: 'POST', body: { q, entry_id } }),
 };
