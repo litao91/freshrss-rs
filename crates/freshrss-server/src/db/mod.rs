@@ -8,7 +8,9 @@
 //! an in-process mutex. SQLite is single-writer; without this the scheduler and user mutations
 //! interleave into `SQLITE_BUSY` storms that `busy_timeout` only papers over.
 
+pub mod dao;
 pub mod migrate;
+pub mod sql;
 pub mod udf;
 
 use std::sync::Arc;
