@@ -19,8 +19,12 @@
 //! before binding and inside `matcher.rs` before comparing — both calling the same function, so
 //! the two backends agree by construction.
 
+pub mod ast;
 pub mod error;
 pub mod normalize;
+pub mod regex;
 
+pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, TextPat};
 pub use error::SearchError;
 pub use normalize::{fold, ilike};
+pub use regex::{Flags, Pattern};

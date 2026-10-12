@@ -963,6 +963,7 @@ dependencies = [
  "proptest",
  "regex",
  "serde",
+ "serde_json",
  "thiserror",
  "unicode-normalization",
 ]
