@@ -77,7 +77,7 @@ impl Expr {
     }
 
     /// Negation with the double-negative and constant cases collapsed.
-    pub fn not(child: Expr) -> Expr {
+    pub fn negate(child: Expr) -> Expr {
         match child {
             c if c.is_true() => Expr::FALSE,
             c if c.is_false() => Expr::TRUE,

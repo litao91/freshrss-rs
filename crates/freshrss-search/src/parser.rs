@@ -21,7 +21,7 @@
 //! handling `!`/`-` at the `unary` level. And **`OR` is the loosest operator**, so `a b OR c` groups
 //! as `(a AND b) OR c`, matching FreshRSS's top-level split on ` OR `.
 
-use crate::ast::{DateField, DateRange, Expr, IdSet, Pred, QueryRef, TextPat};
+use crate::ast::{DateField, Expr, IdSet, Pred, QueryRef, TextPat};
 use crate::dateinterval;
 use crate::error::SearchError;
 use crate::lexer::{tokenize, Token, Value};
@@ -134,7 +134,7 @@ impl Parser {
                 Token::LParen => {
                     flush(&mut preds, &mut branches);
                     let group = self.group()?;
-                    branches.push(if negated { Expr::not(group) } else { group });
+                    branches.push(if negated { Expr::negate(group) } else { group });
                 }
                 // Either ends the conjunction: `OR` hands control back to `or_expr`, `)` to `group`.
                 Token::RParen | Token::Or => break,
@@ -569,8 +569,8 @@ mod tests {
 
     #[test]
     fn negating_a_constant_folds() {
-        assert!(Expr::not(Expr::TRUE).is_false());
-        assert!(Expr::not(Expr::FALSE).is_true());
+        assert!(Expr::negate(Expr::TRUE).is_false());
+        assert!(Expr::negate(Expr::FALSE).is_true());
     }
 
     // --- operators ---------------------------------------------------------
