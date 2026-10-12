@@ -132,16 +132,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_route_is_404() {
+    async fn api_routes_take_precedence_over_the_spa_fallback() {
+        // The static handler is a `fallback`, so an exact route must win. If this ever returns
+        // HTML, the router has been shadowed by static serving.
+        let (status, body) = get_json(app(), "/healthz").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn unknown_client_routes_fall_through_to_static_serving() {
+        // Either the built SPA's index.html (200) or, when nothing is embedded and no static dir
+        // exists, the "run npm build" hint (404). What must never happen is a 500.
         let res = app()
             .oneshot(
                 Request::builder()
-                    .uri("/nope")
+                    .uri("/reader?feed=36")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .expect("request");
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert!(
+            matches!(res.status(), StatusCode::OK | StatusCode::NOT_FOUND),
+            "unexpected status {}",
+            res.status()
+        );
     }
 }

@@ -27,6 +27,7 @@ freshrss-feed.workspace = true
 freshrss-search.workspace = true
 futures.workspace = true
 hex.workspace = true
+html-escape.workspace = true
 http.workspace = true
 hyper.workspace = true
 jiff.workspace = true
