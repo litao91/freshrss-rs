@@ -11,8 +11,12 @@
 //! What is *asserted* differs, because the PHP providers assert on SQL text built against FreshRSS's
 //! MySQL/PostgreSQL/SQLite schemas (`e.title LIKE ?` with `%needle%`, `e.title ~ ?`,
 //! `REGEXP_LIKE(e.title,?,'mc')`, …) and this port deliberately emits none of that: one tree drives
-//! `frss_ilike`/`frss_ieq`/`frss_regexp` UDFs instead. So each row pins the three things that are
-//! portable:
+//! `instr()` over the accent-folded copy of each text column instead (`instr(e.title_folded, ?) > 0`),
+//! so a needle is a literal substring test rather than a `LIKE` pattern and the stored fold supplies
+//! the case- and accent-insensitivity a collation otherwise would. A regex has no spelling here at
+//! all — SQLite offers no regex operator without a user-defined function — so `compile` refuses it
+//! ([`SearchError::Unsupported`]) and the row asserts that refusal instead. So each row pins the
+//! three things that are portable:
 //!
 //! 1. the **tree shape** — which predicates, with which polarity, grouped under which operator
 //!    ([`shape`]);
@@ -67,6 +71,19 @@ fn params(query: &str) -> Vec<Param> {
 
 fn sql(query: &str) -> String {
     fragment(query).sql
+}
+
+/// The sibling of [`sql`]/[`fragment`] for a query that must be *refused* rather than compiled.
+///
+/// A regex predicate has no listing SQL — SQLite offers no regex operator without a user-defined
+/// function — so `compile` answers [`SearchError::Unsupported`]. This asserts that and hands back the
+/// reason, the way [`sql`] hands back the fragment text.
+fn refused(query: &str) -> String {
+    match compile(&parse_ok(query), &ctx()) {
+        Err(SearchError::Unsupported(what)) => what,
+        Ok(f) => panic!("{query:?} should be refused, but compiled to {}", f.sql),
+        Err(e) => panic!("{query:?} should be refused as Unsupported, got {e}"),
+    }
 }
 
 fn text(query: &str) -> String {
@@ -158,10 +175,11 @@ fn check_row(row: &Row) {
                 f.sql
             );
         }
-        // A row that still holds a saved-query reference is asserted through `expand` instead.
+        // A row `compile` refuses — an unexpanded saved-query reference, or a regex predicate that
+        // has no listing SQL — binds nothing; such a row asserts the refusal, not a value list.
         Err(SearchError::Unsupported(_)) => assert!(
             want_params.is_empty(),
-            "{input:?} binds nothing until it is expanded"
+            "{input:?} is refused and binds nothing"
         ),
         Err(e) => panic!("{input:?} should compile: {e}"),
     }
@@ -460,7 +478,7 @@ fn intitle_rows() {
         check_row(row);
     }
     // The operator really is the title column, and the needle is bound bare.
-    assert_eq!(sql("intitle:word1"), "frss_ilike(e.title, ?)");
+    assert_eq!(sql("intitle:word1"), "instr(e.title_folded, ?) > 0");
 }
 
 // --- provideIntextSearch -----------------------------------------------------
@@ -487,7 +505,7 @@ fn intext_rows() {
         check_row(row);
     }
     // `intext:` is the body only; conflating it with free text would match on the title.
-    assert_eq!(sql("intext:word1"), "frss_ilike(e.content, ?)");
+    assert_eq!(sql("intext:word1"), "instr(e.content_folded, ?) > 0");
     assert_ne!(
         sql("intext:word1"),
         sql("word1"),
@@ -607,7 +625,7 @@ fn author_rows() {
     for row in AUTHOR_ROWS {
         check_row(row);
     }
-    assert_eq!(sql("author:word1"), "frss_ilike(e.author, ?)");
+    assert_eq!(sql("author:word1"), "instr(e.author_folded, ?) > 0");
 }
 
 // --- provideInurlSearch ------------------------------------------------------
@@ -661,7 +679,7 @@ fn inurl_rows() {
     for row in INURL_ROWS {
         check_row(row);
     }
-    assert_eq!(sql("inurl:word1"), "frss_ilike(e.link, ?)");
+    assert_eq!(sql("inurl:word1"), "instr(e.link_folded, ?) > 0");
 }
 
 // --- provideDateSearch -------------------------------------------------------
@@ -884,7 +902,7 @@ fn tag_rows() {
     }
     assert_eq!(
         sql("#word1"),
-        "frss_ilike(TRIM(e.tags) || ' #', ?)",
+        "instr(TRIM(e.tags_folded) || ' #', ?) > 0",
         "both markers are load-bearing for a whole-tag match"
     );
 }
@@ -1426,43 +1444,42 @@ static PARENTHESES_ROWS: &[Row] = &[
             t("kl"),
         ],
     ),
-    // Divergence: plaintext needles, so `é & ' è` is bound accent-folded (`e & ' e`) rather than
-    // HTML-encoded (`é &amp; ' è`) the way PHP binds it.
+    // Divergence: plaintext needles, so `é & ' è` folds to `e & ' e` (accent-folded, pinned by the
+    // canonical text below) rather than PHP's HTML-encoded `é &amp; ' è`.
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         r#"intitle:"é & ' è" intext:/<&>/ '< & " >'"#,
         "Leaf[intitle,intext,free]",
         r#"intitle:"e & ' e" intext:/<&>/ "< & \" >""#,
-        &[
-            t("e & ' e"),
-            // Divergence: a pattern is bound with its flags inlined, never as `/…/`.
-            t("<&>"),
-            t("< & \" >"),
-            t("< & \" >"),
-        ],
+        &[],
     ),
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         r"/^(ab|cd) [(] \) (ef|gh)/",
         "Leaf[free]",
         r"/^(ab|cd) [(] \) (ef|gh)/",
-        &[t(r"^(ab|cd) [(] \) (ef|gh)"), t(r"^(ab|cd) [(] \) (ef|gh)")],
+        &[],
     ),
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         "!/^(ab|cd)/",
         "Leaf[!free]",
         "-/^(ab|cd)/",
-        &[t("^(ab|cd)"), t("^(ab|cd)")],
+        &[],
     ),
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         "intitle:/^(ab|cd)/",
         "Leaf[intitle]",
         "intitle:/^(ab|cd)/",
-        &[t("^(ab|cd)")],
+        &[],
     ),
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         "intext:/^(ab|cd)/",
         "Leaf[intext]",
         "intext:/^(ab|cd)/",
-        &[t("^(ab|cd)")],
+        &[],
     ),
     ("L:1 L:2", "Leaf[l,l]", "l:1 l:2", &[i(1), i(2)]),
     ("L:1,2", "Leaf[l]", "l:1,2", &[i(1), i(2)]),
@@ -1499,10 +1516,11 @@ fn parentheses_rows() {
         "{}",
         sql("L:1,2")
     );
-    // Divergence: a label *name* is a whole-name equality (`frss_ieq`), so `label:Bleu` cannot match
-    // a label called "Bleu ciel" the way PHP's `t.name IN (?)` — a `LIKE` in other dialects — can.
+    // Divergence: a label *name* is a whole-name equality on the stored fold (`t.name_folded = ?`),
+    // so `label:Bleu` cannot match a label called "Bleu ciel" the way PHP's `t.name IN (?)` — a
+    // `LIKE` in other dialects — can.
     assert!(
-        sql("label:Bleu").contains("frss_ieq(t.name, ?)"),
+        sql("label:Bleu").contains("t.name_folded = ?"),
         "{}",
         sql("label:Bleu")
     );
@@ -1516,7 +1534,8 @@ fn parentheses_rows() {
     // Free text binds the same needle twice: once for the title, once for the body.
     let f = fragment("ab");
     assert_eq!(
-        f.sql, "(frss_ilike(e.title, ?) OR frss_ilike(e.content, ?))",
+        f.sql,
+        "(instr(e.title_folded, ?) > 0 OR instr(e.content_folded, ?) > 0)",
         "{}",
         f.sql
     );
@@ -1740,7 +1759,7 @@ fn date_operator_rows() {
         // Complex combinations with other operators
         (
             "intitle:test date:2007-03-01/ pubdate:/2008-05-11",
-            "(frss_ilike(e.title, ?)) AND (e.id >= ?) AND (e.date <= ?)",
+            "(instr(e.title_folded, ?) > 0) AND (e.id >= ?) AND (e.date <= ?)",
             vec![
                 text_param("test"),
                 int(micros("2007-03-01T00:00:00Z")),
@@ -1749,7 +1768,7 @@ fn date_operator_rows() {
         ),
         (
             "author:john userdate:2007-03-01/2008-05-11",
-            "(frss_ilike(e.author, ?)) AND \
+            "(instr(e.author_folded, ?) > 0) AND \
              ((e.lastUserModified IS NOT NULL AND e.lastUserModified BETWEEN ? AND ?))",
             vec![
                 text_param("john"),
@@ -1779,58 +1798,33 @@ fn date_operator_rows() {
 // --- provideRegexPostreSQL ---------------------------------------------------
 // test__regex_postgresql
 //
-// The provider's SQL column is PostgreSQL-specific (`~`, `~*`, `REPLACE(author, ';', '\n')`), so
-// what is asserted is the portable part: which column, whether the value stayed a pattern, and what
-// pattern is bound.
+// The provider's SQL column is PostgreSQL-specific (`~`, `~*`, `REPLACE(author, ';', '\n')`), and
+// this port emits no regex SQL at all — `compile` refuses a regex predicate. So what is asserted is
+// the portable part: which column the pattern names and that the value stayed a pattern, pinned
+// through the tree shape and the canonical text, plus the refusal itself.
 
+// Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
+// So every `/…/` row below binds nothing — `check_row` asserts the `SearchError::Unsupported` refusal
+// and pins only the portable part (the column, the polarity and the flags) through the tree shape and
+// the canonical text. The rows that merely *look* like a regex (a URL, or a quoted `/…/`) are literal
+// needles and still bind.
 static REGEX_ROWS: &[Row] = &[
-    (
-        "intitle:/^ab$/",
-        "Leaf[intitle]",
-        "intitle:/^ab$/",
-        &[t("^ab$")],
-    ),
-    // Divergence: the `i` flag is inlined into the bound pattern (`(?i)^ab$`) rather than choosing
-    // a different operator (`~*`).
-    (
-        "intitle:/^ab$/i",
-        "Leaf[intitle]",
-        "intitle:/^ab$/i",
-        &[t("(?i)^ab$")],
-    ),
-    (
-        "intitle:/^ab$/m",
-        "Leaf[intitle]",
-        "intitle:/^ab$/m",
-        &[t("(?m)^ab$")],
-    ),
-    // Divergence: `\b` is bound verbatim; PHP rewrites it to PostgreSQL's `\y`.
-    (
-        r"intitle:/\b\d+/",
-        "Leaf[intitle]",
-        r"intitle:/\b\d+/",
-        &[t(r"\b\d+")],
-    ),
+    ("intitle:/^ab$/", "Leaf[intitle]", "intitle:/^ab$/", &[]),
+    // Divergence: the `i` flag survives in the canonical text (`/^ab$/i`) rather than choosing a
+    // different operator (`~*`).
+    ("intitle:/^ab$/i", "Leaf[intitle]", "intitle:/^ab$/i", &[]),
+    ("intitle:/^ab$/m", "Leaf[intitle]", "intitle:/^ab$/m", &[]),
+    // Divergence: `\b` is kept verbatim in the pattern; PHP rewrites it to PostgreSQL's `\y`.
+    (r"intitle:/\b\d+/", "Leaf[intitle]", r"intitle:/\b\d+/", &[]),
     // Divergence: PHP anchors a regex per author by rewriting `;` to a newline first. The port
-    // matches the whole `author` column, and its in-memory matcher does the same, so the two
-    // backends still agree.
-    (
-        "author:/^ab$/",
-        "Leaf[author]",
-        "author:/^ab$/",
-        &[t("^ab$")],
-    ),
-    ("inurl:/^ab$/", "Leaf[inurl]", "inurl:/^ab$/", &[t("^ab$")]),
-    ("/^ab$/", "Leaf[free]", "/^ab$/", &[t("^ab$"), t("^ab$")]),
-    ("!/^ab$/", "Leaf[!free]", "-/^ab$/", &[t("^ab$"), t("^ab$")]),
-    // Divergence: `(?m)` is forced on because the tags column is rewritten one tag per line, so `^`
-    // anchors a single tag. PHP relies on the same rewrite but spells the `i` flag as `~*`.
-    (
-        "#/^a(b|c)$/im",
-        "Leaf[#tag]",
-        "#/^a(b|c)$/im",
-        &[t("(?i)(?m)^a(b|c)$")],
-    ),
+    // matches the whole `author` column, which is what its in-memory matcher does too.
+    ("author:/^ab$/", "Leaf[author]", "author:/^ab$/", &[]),
+    ("inurl:/^ab$/", "Leaf[inurl]", "inurl:/^ab$/", &[]),
+    ("/^ab$/", "Leaf[free]", "/^ab$/", &[]),
+    ("!/^ab$/", "Leaf[!free]", "-/^ab$/", &[]),
+    // Divergence: `(?m)` is forced on for the matcher, which compares tags one per line so `^`
+    // anchors a single tag; PHP relies on the same rewrite but spells the `i` flag as `~*`.
+    ("#/^a(b|c)$/im", "Leaf[#tag]", "#/^a(b|c)$/im", &[]),
     // Not a regex: no closing delimiter before the whitespace, so the URL is a literal needle.
     (
         "inurl:https://example.net/test/",
@@ -1867,19 +1861,14 @@ static REGEX_ROWS: &[Row] = &[
         &[t("/shorts/"), t("/spam/")],
     ),
     // Regex with literal 'or'
-    (
-        "intitle:/^A or B/i",
-        "Leaf[intitle]",
-        "intitle:/^A or B/i",
-        &[t("(?i)^A or B")],
-    ),
+    ("intitle:/^A or B/i", "Leaf[intitle]", "intitle:/^A or B/i", &[]),
     // Regex with literal 'OR' — inside the delimiters it is not an operator, and the pattern's own
     // case is preserved because a regex is matched against the stored text, not its folded form.
     (
         "intitle:/^A B OR C D/i OR intitle:/^A B OR C D/i",
         "Or[Leaf[intitle], Leaf[intitle]]",
         "intitle:/^A B OR C D/i OR intitle:/^A B OR C D/i",
-        &[t("(?i)^A B OR C D"), t("(?i)^A B OR C D")],
+        &[],
     ),
     // Quote with literal 'OR' — and bound folded, which is what makes it case-insensitive.
     (
@@ -1895,11 +1884,16 @@ fn regex_rows() {
     for row in REGEX_ROWS {
         check_row(row);
     }
-    assert_eq!(sql("intitle:/^ab$/"), "frss_regexp(e.title, ?)");
-    assert_eq!(
-        sql("#/^a(b|c)$/im"),
-        "frss_regexp(REPLACE(REPLACE(e.tags, ' #', '#'), '#', CHAR(10)), ?)",
-        "one tag per line, so `^` and `$` anchor a single tag"
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
+    assert!(
+        refused("intitle:/^ab$/").contains("regular expression"),
+        "a title regex is refused rather than compiled"
+    );
+    // The one-tag-per-line rewrite existed only to give a regex something to anchor against; with
+    // regexes out of listing SQL there is nothing left to rewrite, so a tag regex is refused too.
+    assert!(
+        refused("#/^a(b|c)$/im").contains("regular expression"),
+        "a tag regex is refused rather than compiled"
     );
 
     // Divergence: `\M` is PostgreSQL's "end of word", which no portable engine has. It is a bad
@@ -1918,62 +1912,31 @@ fn regex_rows() {
 //
 // Omitted as written: all three providers exist only to pin a dialect's operator spelling
 // (`REGEXP`, `REGEXP_LIKE(e.title,?,'mc')`, `e.title REGEXP ?` with the PHP-style `/^ab$/i` bound
-// verbatim) and MariaDB's `UNCOMPRESS(e.content_bin)`. This port emits one `frss_regexp` UDF over
-// the plain column for every dialect, so there is nothing dialect-specific left to assert. What the
-// rows say beyond the spelling is covered here: the column, the negation, and the inlined flags.
+// verbatim) and MariaDB's `UNCOMPRESS(e.content_bin)`. This port refuses a regex in every dialect
+// alike, so all three providers reduce to one outcome — [`SearchError::Unsupported`] — and there is
+// nothing dialect-specific left to assert. The column, the negation and the inlined flags the rows
+// once spelled are still pinned, dialect-independently, by [`REGEX_ROWS`] above.
 
 #[test]
 fn regex_dialect_rows_reduce_to_one_form() {
-    // The union of the inputs of all three providers.
-    let rows: &[(&str, &str, &[Want])] = &[
-        ("intitle:/^ab$/", "frss_regexp(e.title, ?)", &[t("^ab$")]),
-        (
-            "intitle:/^ab$/i",
-            "frss_regexp(e.title, ?)",
-            &[t("(?i)^ab$")],
-        ),
-        (
-            "intitle:/^ab$/m",
-            "frss_regexp(e.title, ?)",
-            &[t("(?m)^ab$")],
-        ),
-        (
-            "intext:/^ab$/m",
-            "frss_regexp(e.content, ?)",
-            &[t("(?m)^ab$")],
-        ),
-        (
-            "-intext:/^ab$/m",
-            "NOT frss_regexp(e.content, ?)",
-            &[t("(?m)^ab$")],
-        ),
-        (
-            "-/^ab$/",
-            "(NOT frss_regexp(e.title, ?) AND NOT frss_regexp(e.content, ?))",
-            &[t("^ab$"), t("^ab$")],
-        ),
-        (
-            r"intitle:/^ab\b/",
-            "frss_regexp(e.title, ?)",
-            &[t(r"^ab\b")],
-        ),
-        (
-            r"intext:/^ab\b/",
-            "frss_regexp(e.content, ?)",
-            &[t(r"^ab\b")],
-        ),
-        // MariaDB spells the negation of a body pattern `NOT UNCOMPRESS(e.content_bin) REGEXP ?`;
-        // the port reads the plain column and pushes the `NOT` onto the UDF call.
-        (
-            r"intitle:/\b\d+/",
-            "frss_regexp(e.title, ?)",
-            &[t(r"\b\d+")],
-        ),
+    // The union of the inputs of all three providers. Every one is a regex, so every one is refused.
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
+    let rows: &[&str] = &[
+        "intitle:/^ab$/",
+        "intitle:/^ab$/i",
+        "intitle:/^ab$/m",
+        "intext:/^ab$/m",
+        "-intext:/^ab$/m",
+        "-/^ab$/",
+        r"intitle:/^ab\b/",
+        r"intext:/^ab\b/",
+        r"intitle:/\b\d+/",
     ];
-    for (input, want_sql, want_params) in rows {
-        let f = fragment(input);
-        assert_eq!(f.sql, *want_sql, "{input:?}");
-        assert_eq!(f.params, wanted(want_params), "{input:?}");
+    for input in rows {
+        assert!(
+            refused(input).contains("regular expression"),
+            "{input:?} should be refused in listing SQL"
+        );
     }
 }
 
@@ -2553,17 +2516,19 @@ fn the_port_specific_operator_spellings() {
     }
 
     // A substring needle is bound accent-folded and lowercased, which is how one comparison serves
-    // both backends; a regex keeps its own case because it is matched against the stored text.
+    // both backends.
     assert_eq!(
         params(r#"intitle:"Café ÉCOLE""#),
         vec![text_param("cafe ecole")]
     );
-    assert_eq!(params("intitle:/Café/"), vec![text_param("Café")]);
+    // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
+    // The tree keeps the pattern's own case (`Café`, never folded) for that matcher.
+    assert!(refused("intitle:/Café/").contains("regular expression"));
     assert!(matches!(
         only_pred("intitle:/Café/"),
         Pred::Title {
-            pat: TextPat::Regex(_),
+            pat: TextPat::Regex(re),
             ..
-        }
+        } if re.source == "Café"
     ));
 }
