@@ -18,19 +18,24 @@
 //! asserts that property of the corpus directly, so the generator cannot silently rot into testing
 //! nothing.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use freshrss_search::ast::{DateField, DateRange, Expr, IdSet, Pred, TextPat};
 use freshrss_search::matcher::{matches, SearchTarget};
 use freshrss_search::regex::Pattern;
-use freshrss_search::sql::{compile, Param, SqlCtx};
+use freshrss_search::sql::{compile, SqlCtx};
+use freshrss_server::db::sql::{bind_all, sql, SqlValue};
 use freshrss_server::db::Db;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::subsequence;
-use rusqlite::types::{ToSqlOutput, Value, ValueRef};
-use rusqlite::ToSql;
+use sqlx::sqlite::SqliteRow;
+use sqlx::Row as _;
+
+use common::{insert_entry, SeededEntry};
 
 /// The reference instant every generated date range is built around.
 const NOW: i64 = 1_700_000_000;
@@ -103,8 +108,26 @@ const TAGS: &[&str] = &[
 const LABELS: &[&str] = &["todo", "reading", "étiquette", "done"];
 
 const TEXT_NEEDLES: &[&str] = &[
-    "rust", "axum", "ecole", "école", "cafe", "café", "unicode", "ünïcödé", "100%", "a_b", "_",
-    "body", "ada", "lovelace", "hopper", "bot", "example.com", "other.test", "the", "",
+    "rust",
+    "axum",
+    "ecole",
+    "école",
+    "cafe",
+    "café",
+    "unicode",
+    "ünïcödé",
+    "100%",
+    "a_b",
+    "_",
+    "body",
+    "ada",
+    "lovelace",
+    "hopper",
+    "bot",
+    "example.com",
+    "other.test",
+    "the",
+    "",
 ];
 
 // ---------------------------------------------------------------------------
@@ -177,6 +200,12 @@ impl SearchTarget for Row {
 
 struct Harness {
     db: Db,
+    /// The runtime every database call in this file is driven on.
+    ///
+    /// The corpus is built once and shared by all 300 generated cases, and `proptest!` emits
+    /// synchronous test bodies, so there is no ambient runtime to `.await` on. Declared after `db`
+    /// so it outlives the pool that was opened on it.
+    rt: tokio::runtime::Runtime,
     id_user: i64,
     rows: Vec<Row>,
     feed_ids: Vec<i64>,
@@ -196,21 +225,23 @@ impl Harness {
     /// The ids the SQL backend returns, restricted to one user the way every listing query is.
     fn sql_ids(&self, expr: &Expr) -> BTreeSet<i64> {
         let fragment = compile(expr, &SqlCtx::default()).expect("compiles");
-        let sql = format!(
-            "SELECT e.id FROM entry e WHERE e.id_user = ?1 AND ({}) ORDER BY e.id",
+        // The user fence is a bare `?` too, not `?1`: sqlx resolves an anonymous placeholder by
+        // counting the anonymous ones it has seen, so numbering this one would hand it the
+        // fragment's first parameter as well. The compiler emits bare `?` throughout.
+        let statement = format!(
+            "SELECT e.id FROM entry e WHERE e.id_user = ? AND ({}) ORDER BY e.id",
             fragment.sql
         );
-        self.db
-            .blocking_with(|conn| {
-                let mut stmt = conn.prepare(&sql)?;
-                let mut bound = vec![SqlParam::Int(self.id_user)];
-                bound.extend(fragment.params.iter().map(SqlParam::from));
-                let refs: Vec<&dyn ToSql> = bound.iter().map(|p| p as &dyn ToSql).collect();
-                let ids = stmt
-                    .query_map(refs.as_slice(), |row| row.get::<_, i64>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(ids)
-            })
+        let mut params = vec![SqlValue::Int(self.id_user)];
+        params.extend(fragment.params.iter().map(SqlValue::from));
+
+        self.rt
+            .block_on(self.db.with(|mut conn| async move {
+                Ok(bind_all(sqlx::query(sql(statement)), params)
+                    .try_map(|row: SqliteRow| row.try_get::<i64, _>(0))
+                    .fetch_all(&mut *conn)
+                    .await?)
+            }))
             .expect("query runs")
             .into_iter()
             .collect()
@@ -258,43 +289,14 @@ impl Harness {
              \n  sql matched {} rows, matcher matched {}\n\
              \n  only in sql:     {:#?}\n\
              \n  only in matcher: {:#?}",
-            compile(expr, &SqlCtx::default()).map(|f| f.sql).unwrap_or_default(),
+            compile(expr, &SqlCtx::default())
+                .map(|f| f.sql)
+                .unwrap_or_default(),
             sql.len(),
             matcher.len(),
             describe(&sql, &matcher),
             describe(&matcher, &sql),
         );
-    }
-}
-
-/// Binds a [`Param`] to rusqlite.
-///
-/// `Param` is deliberately not `ToSql`: `freshrss-search` has no database dependency, which is what
-/// keeps it testable without SQLite.
-#[derive(Debug)]
-enum SqlParam {
-    Text(String),
-    Int(i64),
-    Null,
-}
-
-impl From<&Param> for SqlParam {
-    fn from(param: &Param) -> Self {
-        match param {
-            Param::Text(t) => SqlParam::Text(t.clone()),
-            Param::Int(i) => SqlParam::Int(*i),
-            Param::Null => SqlParam::Null,
-        }
-    }
-}
-
-impl ToSql for SqlParam {
-    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(match self {
-            SqlParam::Text(t) => ToSqlOutput::Borrowed(ValueRef::Text(t.as_bytes())),
-            SqlParam::Int(i) => ToSqlOutput::Borrowed(ValueRef::Integer(*i)),
-            SqlParam::Null => ToSqlOutput::Owned(Value::Null),
-        })
     }
 }
 
@@ -305,47 +307,74 @@ impl ToSql for SqlParam {
 /// the id *is* the `date:` operand, so the ranges below would be unpredictable. The staging pipeline
 /// has its own coverage in `tests/dao.rs`.
 fn build_harness() -> Harness {
-    let db = Db::in_memory().expect("in-memory db");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let (db, id_user, feed_ids, category_ids, label_ids, rows) =
+        rt.block_on(seed()).expect("seed corpus");
+
+    Harness {
+        db,
+        rt,
+        id_user,
+        rows,
+        feed_ids,
+        category_ids,
+        label_ids,
+    }
+}
+
+/// Builds the database and its 120-row corpus, on the harness's own runtime.
+async fn seed() -> freshrss_server::Result<(Db, i64, Vec<i64>, Vec<i64>, Vec<i64>, Vec<Row>)> {
+    use freshrss_server::db::dao::{category, feed, tag, user};
+    use freshrss_server::domain::attributes::Attributes;
+    use freshrss_server::domain::category::CategoryKind;
+    use freshrss_server::domain::feed::Feed;
+
+    let db = common::db().await;
 
     let (id_user, feed_ids, category_ids, label_ids, rows) = db
-        .blocking_with(|conn| {
-            use freshrss_server::db::dao::{category, feed, tag, user};
-            use freshrss_server::domain::attributes::Attributes;
-            use freshrss_server::domain::category::CategoryKind;
-            use freshrss_server::domain::feed::Feed;
-            use rusqlite::params;
-
+        .with(|mut conn| async move {
             let id_user = user::insert(
-                conn,
+                &mut conn,
                 &user::NewUser {
                     username: USER,
                     email: None,
                     password_hash: "argon2id$hash",
                     is_admin: false,
                 },
-            )?;
+            )
+            .await?;
             let other_user = user::insert(
-                conn,
+                &mut conn,
                 &user::NewUser {
                     username: OTHER,
                     email: None,
                     password_hash: "argon2id$hash",
                     is_admin: false,
                 },
-            )?;
+            )
+            .await?;
 
-            let mut category_ids = vec![user::default_category_id(conn, id_user)?.expect("seeded")];
+            let mut category_ids = vec![user::default_category_id(&mut conn, id_user)
+                .await?
+                .expect("seeded")];
             for (i, name) in ["Technology", "Etiquettes"].into_iter().enumerate() {
-                category_ids.push(category::insert(
-                    conn,
-                    &category::NewCategory {
-                        id_user,
-                        name,
-                        kind: CategoryKind::default(),
-                        position: i as i64 + 2,
-                        attributes: Attributes::new(),
-                    },
-                )?);
+                category_ids.push(
+                    category::insert(
+                        &mut conn,
+                        &category::NewCategory {
+                            id_user,
+                            name,
+                            kind: CategoryKind::default(),
+                            position: i as i64 + 2,
+                            attributes: Attributes::new(),
+                        },
+                    )
+                    .await?,
+                );
             }
 
             let mut feed_ids = Vec::new();
@@ -359,11 +388,11 @@ fn build_harness() -> Harness {
                     format!("https://example.com/feed{i}.xml"),
                     format!("Feed {i}"),
                 );
-                f.id = feed::insert(conn, &f)?;
+                f.id = feed::insert(&mut conn, &f).await?;
                 // The last feed is deliberately left without a folder, so the "no category" branch of
                 // `c:` is exercised against a real NULL rather than only against a missing id.
                 let category = (i < 3).then_some(category_ids[i % 3]);
-                feed::update_category(conn, f.id, id_user, category)?;
+                feed::update_category(&mut conn, f.id, id_user, category).await?;
                 feed_ids.push(f.id);
                 feed_categories.push(category);
             }
@@ -371,24 +400,17 @@ fn build_harness() -> Harness {
             // A second user's feed carrying the same vocabulary: any fragment that forgot its
             // `id_user` predicate would pick these rows up and the isolation test would fail.
             let mut foreign = Feed::new(other_user, "https://other.test/feed.xml", "Foreign");
-            foreign.id = feed::insert(conn, &foreign)?;
-            let foreign_category = user::default_category_id(conn, other_user)?.expect("seeded");
-            feed::update_category(conn, foreign.id, other_user, Some(foreign_category))?;
+            foreign.id = feed::insert(&mut conn, &foreign).await?;
+            let foreign_category = user::default_category_id(&mut conn, other_user)
+                .await?
+                .expect("seeded");
+            feed::update_category(&mut conn, foreign.id, other_user, Some(foreign_category))
+                .await?;
 
             let mut label_ids = Vec::new();
             for name in LABELS {
-                label_ids.push(tag::insert(conn, id_user, name)?);
+                label_ids.push(tag::insert(&mut conn, id_user, name).await?);
             }
-
-            let mut insert_entry = conn.prepare_cached(
-                // The folded columns are what the SQL backend compares against, so a harness that
-                // skipped them would be comparing the matcher against empty strings.
-                "INSERT INTO entry
-                   (id, id_user, guid, title, author, content, link, date, lastSeen,
-                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags,
-                    title_folded, content_folded, author_folded, link_folded, tags_folded)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
-            )?;
 
             let mut rows = Vec::new();
             for idx in 0..ROWS {
@@ -405,32 +427,31 @@ fn build_harness() -> Harness {
                 let tags = TAGS[(idx / 7) % TAGS.len()];
                 let feed_id = feed_ids[idx % feed_ids.len()];
                 let category_id = feed_categories[idx % feed_ids.len()];
-                let is_read = (idx % 5 == 0) as i64;
-                let is_favorite = (idx % 11 == 0) as i64;
 
-                insert_entry.execute(params![
-                    id,
-                    id_user,
-                    format!("guid-{idx}"),
-                    title,
-                    author,
-                    content,
-                    link,
-                    date,
-                    date,
-                    last_modified,
-                    last_user_modified,
-                    vec![7u8; 16],
-                    is_read,
-                    is_favorite,
-                    feed_id,
-                    tags,
-                    freshrss_search::fold(title),
-                    freshrss_search::fold(content),
-                    freshrss_search::fold(author),
-                    freshrss_search::fold(link),
-                    freshrss_search::fold(tags),
-                ])?;
+                // The folded columns are what the SQL backend compares against, so a harness that
+                // skipped them would be comparing the matcher against empty strings;
+                // `insert_entry` derives them from the plain text below.
+                insert_entry(
+                    &mut conn,
+                    &SeededEntry {
+                        id,
+                        id_user,
+                        guid: format!("guid-{idx}"),
+                        title: title.to_owned(),
+                        author: author.to_owned(),
+                        content: content.to_owned(),
+                        link: link.to_owned(),
+                        date,
+                        last_modified,
+                        last_user_modified,
+                        hash: vec![7u8; 16],
+                        is_read: idx % 5 == 0,
+                        is_favorite: idx % 11 == 0,
+                        id_feed: feed_id,
+                        tags: tags.to_owned(),
+                    },
+                )
+                .await?;
 
                 // Zero to four labels per row, with a fifth of the corpus carrying none at all so
                 // that `l:*` and `NOT l:*` both split it.
@@ -438,7 +459,7 @@ fn build_harness() -> Harness {
                 let mut attached_names = Vec::new();
                 for li in 0..(idx / 6) % 5 {
                     let label = (li + idx) % LABELS.len();
-                    tag::tag_entry(conn, label_ids[label], id, true)?;
+                    tag::tag_entry(&mut conn, label_ids[label], id, true).await?;
                     attached_ids.push(label_ids[label]);
                     attached_names.push(LABELS[label].to_owned());
                 }
@@ -459,14 +480,16 @@ fn build_harness() -> Harness {
                     last_user_modified,
                 });
             }
-            drop(insert_entry);
 
             // An entry has no category column: SQL resolves `c:` through `feed`, while the matcher is
             // handed the category by whoever implements `SearchTarget`. Seeding those two
             // independently would make the backends answer different questions and the property would
             // fail for a reason that has nothing to do with search.
             for row in &rows {
-                let slot = feed_ids.iter().position(|f| *f == row.feed_id).expect("feed");
+                let slot = feed_ids
+                    .iter()
+                    .position(|f| *f == row.feed_id)
+                    .expect("feed");
                 assert_eq!(
                     feed_categories[slot], row.category_id,
                     "entry {} disagrees with feed {} about its folder",
@@ -477,46 +500,33 @@ fn build_harness() -> Harness {
             // The other user gets rows whose titles also appear in Alice's corpus, and ids that
             // interleave with hers.
             for (i, title) in TITLES.iter().take(6).enumerate() {
-                conn.execute(
+                sqlx::query(
                     "INSERT INTO entry
                        (id, id_user, guid, title, author, content, link, date, lastSeen,
                         hash, is_read, is_favorite, id_feed, tags,
                         title_folded, content_folded, author_folded, link_folded, tags_folded)
                      VALUES (?1,?2,?3,?4,'Ada Lovelace',' ',?5,?6,?6,?7,0,0,?8,'#rust #todo',
                              ?9, '', 'ada lovelace', ?10, '#rust #todo')",
-                    params![
-                        NOW * 1_000_000 + (i as i64) * INGESTION_SPAN * 1_000_000 + 1,
-                        other_user,
-                        format!("foreign-{i}"),
-                        title,
-                        format!("https://other.test/{i}"),
-                        PUBLICATION_EPOCH + (i as i64) * PUBLICATION_SPAN,
-                        vec![8u8; 16],
-                        foreign.id,
-                        freshrss_search::fold(title),
-                        format!("https://other.test/{i}"),
-                    ],
-                )?;
+                )
+                .bind(NOW * 1_000_000 + (i as i64) * INGESTION_SPAN * 1_000_000 + 1)
+                .bind(other_user)
+                .bind(format!("foreign-{i}"))
+                .bind(*title)
+                .bind(format!("https://other.test/{i}"))
+                .bind(PUBLICATION_EPOCH + (i as i64) * PUBLICATION_SPAN)
+                .bind(vec![8u8; 16])
+                .bind(foreign.id)
+                .bind(freshrss_search::fold(title))
+                .bind(format!("https://other.test/{i}"))
+                .execute(&mut *conn)
+                .await?;
             }
 
-            Ok::<_, freshrss_server::Error>((
-                id_user,
-                feed_ids,
-                category_ids,
-                label_ids,
-                rows,
-            ))
+            Ok::<_, freshrss_server::Error>((id_user, feed_ids, category_ids, label_ids, rows))
         })
-        .expect("seed corpus");
+        .await?;
 
-    Harness {
-        db,
-        id_user,
-        rows,
-        feed_ids,
-        category_ids,
-        label_ids,
-    }
+    Ok((db, id_user, feed_ids, category_ids, label_ids, rows))
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +591,9 @@ fn date_range() -> BoxedStrategy<DateRange> {
 /// implement that distinction independently.
 fn subset(ids: Vec<i64>) -> BoxedStrategy<Vec<i64>> {
     let len = ids.len();
-    (0..=len).prop_flat_map(move |size| subsequence(ids.clone(), size)).boxed()
+    (0..=len)
+        .prop_flat_map(move |size| subsequence(ids.clone(), size))
+        .boxed()
 }
 
 fn id_set(ids: Vec<i64>) -> BoxedStrategy<IdSet> {
@@ -793,7 +805,9 @@ fn a_regex_is_refused_by_sql_but_answered_by_the_matcher() {
         // engine directly rather than against itself.
         let matched = h.matcher_ids(expr);
         if let Pred::Title { pat, negated } = &expr.preds()[0] {
-            let TextPat::Regex(re) = pat else { unreachable!() };
+            let TextPat::Regex(re) = pat else {
+                unreachable!()
+            };
             let expected: BTreeSet<i64> = h
                 .rows
                 .iter()
@@ -842,17 +856,16 @@ fn ingestion_and_publication_dates_are_distinct() {
 #[test]
 fn the_sql_backend_never_crosses_the_user_boundary() {
     let h = &HARNESS;
-    let foreign: BTreeSet<i64> = h
-        .db
-        .blocking_with(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT e.id FROM entry e WHERE e.id_user <> ?1 ORDER BY e.id",
-            )?;
-            let ids = stmt
-                .query_map([h.id_user], |r| r.get::<_, i64>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
+    let id_user = h.id_user;
+    let foreign: BTreeSet<i64> =
+        h.rt.block_on(h.db.with(|mut conn| async move {
+            let ids: Vec<i64> =
+                sqlx::query_scalar("SELECT e.id FROM entry e WHERE e.id_user <> ?1 ORDER BY e.id")
+                    .bind(id_user)
+                    .fetch_all(&mut *conn)
+                    .await?;
             Ok(ids)
-        })
+        }))
         .expect("query runs")
         .into_iter()
         .collect();
@@ -892,105 +905,334 @@ fn the_hard_cases_agree() {
     let contains = |pat: &str| TextPat::contains(pat);
     let cases: Vec<(&str, Expr)> = vec![
         // `_` and `%` are LIKE wildcards; `frss_ilike` must escape them or `a_b` matches `axum`.
-        ("underscore is not a wildcard", Expr::pred(Pred::Title { pat: contains("a_b"), negated: false })),
-        ("percent is not a wildcard", Expr::pred(Pred::Title { pat: contains("100%"), negated: false })),
+        (
+            "underscore is not a wildcard",
+            Expr::pred(Pred::Title {
+                pat: contains("a_b"),
+                negated: false,
+            }),
+        ),
+        (
+            "percent is not a wildcard",
+            Expr::pred(Pred::Title {
+                pat: contains("100%"),
+                negated: false,
+            }),
+        ),
         // Accent folding has to happen identically on both sides, in both directions.
-        ("folded needle vs accented text", Expr::pred(Pred::Title { pat: contains("ecole"), negated: false })),
-        ("accented needle vs accented text", Expr::pred(Pred::Title { pat: contains("école"), negated: false })),
-        ("accented needle against the body", Expr::pred(Pred::Content { pat: contains("École"), negated: false })),
+        (
+            "folded needle vs accented text",
+            Expr::pred(Pred::Title {
+                pat: contains("ecole"),
+                negated: false,
+            }),
+        ),
+        (
+            "accented needle vs accented text",
+            Expr::pred(Pred::Title {
+                pat: contains("école"),
+                negated: false,
+            }),
+        ),
+        (
+            "accented needle against the body",
+            Expr::pred(Pred::Content {
+                pat: contains("École"),
+                negated: false,
+            }),
+        ),
         // Whole-tag matching: `#rus` must not match `#rust`, but `#rust` must match `#rust #rss`.
-        ("whole tag, not a prefix", Expr::pred(Pred::Tag { pat: contains("rus"), negated: false })),
-        ("whole tag exact", Expr::pred(Pred::Tag { pat: contains("rust"), negated: false })),
-        ("negated whole tag", Expr::pred(Pred::Tag { pat: contains("axum"), negated: true })),
-        ("tag with no rows at all", Expr::pred(Pred::Tag { pat: contains("nonexistent"), negated: false })),
-        ("negated tag with no rows at all", Expr::pred(Pred::Tag { pat: contains("nonexistent"), negated: true })),
+        (
+            "whole tag, not a prefix",
+            Expr::pred(Pred::Tag {
+                pat: contains("rus"),
+                negated: false,
+            }),
+        ),
+        (
+            "whole tag exact",
+            Expr::pred(Pred::Tag {
+                pat: contains("rust"),
+                negated: false,
+            }),
+        ),
+        (
+            "negated whole tag",
+            Expr::pred(Pred::Tag {
+                pat: contains("axum"),
+                negated: true,
+            }),
+        ),
+        (
+            "tag with no rows at all",
+            Expr::pred(Pred::Tag {
+                pat: contains("nonexistent"),
+                negated: false,
+            }),
+        ),
+        (
+            "negated tag with no rows at all",
+            Expr::pred(Pred::Tag {
+                pat: contains("nonexistent"),
+                negated: true,
+            }),
+        ),
         // `l:*` is "has at least one label", which is not the same as an empty id list.
-        ("any label", Expr::pred(Pred::LabelIds { ids: IdSet::Any, negated: false })),
-        ("not any label", Expr::pred(Pred::LabelIds { ids: IdSet::Any, negated: true })),
-        ("empty label list matches nothing", Expr::pred(Pred::LabelIds { ids: IdSet::List(vec![]), negated: false })),
-        ("negated empty label list", Expr::pred(Pred::LabelIds { ids: IdSet::List(vec![]), negated: true })),
-        ("label by name, folded", Expr::pred(Pred::LabelNames { names: vec![contains("etiquette")], negated: false })),
-        ("label by name, accented", Expr::pred(Pred::LabelNames { names: vec![contains("étiquette")], negated: false })),
-        ("label name is a whole name, not a substring", Expr::pred(Pred::LabelNames { names: vec![contains("tod")], negated: false })),
-        ("two label names in one leaf", Expr::Leaf(vec![
-            Pred::LabelNames { names: vec![contains("todo"), contains("done")], negated: false },
-        ])),
+        (
+            "any label",
+            Expr::pred(Pred::LabelIds {
+                ids: IdSet::Any,
+                negated: false,
+            }),
+        ),
+        (
+            "not any label",
+            Expr::pred(Pred::LabelIds {
+                ids: IdSet::Any,
+                negated: true,
+            }),
+        ),
+        (
+            "empty label list matches nothing",
+            Expr::pred(Pred::LabelIds {
+                ids: IdSet::List(vec![]),
+                negated: false,
+            }),
+        ),
+        (
+            "negated empty label list",
+            Expr::pred(Pred::LabelIds {
+                ids: IdSet::List(vec![]),
+                negated: true,
+            }),
+        ),
+        (
+            "label by name, folded",
+            Expr::pred(Pred::LabelNames {
+                names: vec![contains("etiquette")],
+                negated: false,
+            }),
+        ),
+        (
+            "label by name, accented",
+            Expr::pred(Pred::LabelNames {
+                names: vec![contains("étiquette")],
+                negated: false,
+            }),
+        ),
+        (
+            "label name is a whole name, not a substring",
+            Expr::pred(Pred::LabelNames {
+                names: vec![contains("tod")],
+                negated: false,
+            }),
+        ),
+        (
+            "two label names in one leaf",
+            Expr::Leaf(vec![Pred::LabelNames {
+                names: vec![contains("todo"), contains("done")],
+                negated: false,
+            }]),
+        ),
         // Empty id lists must not produce `IN ()`, which is a SQLite syntax error.
-        ("empty feed list", Expr::pred(Pred::FeedIds { ids: vec![], negated: false })),
-        ("negated empty feed list", Expr::pred(Pred::FeedIds { ids: vec![], negated: true })),
-        ("empty category list", Expr::pred(Pred::CategoryIds { ids: vec![], negated: false })),
+        (
+            "empty feed list",
+            Expr::pred(Pred::FeedIds {
+                ids: vec![],
+                negated: false,
+            }),
+        ),
+        (
+            "negated empty feed list",
+            Expr::pred(Pred::FeedIds {
+                ids: vec![],
+                negated: true,
+            }),
+        ),
+        (
+            "empty category list",
+            Expr::pred(Pred::CategoryIds {
+                ids: vec![],
+                negated: false,
+            }),
+        ),
         // NULL `lastModified` / `lastUserModified` must be false in both polarities, not true-because-not-false.
-        ("modified date over nullable column", Expr::pred(Pred::Date {
-            field: DateField::Modified,
-            range: DateRange { min: Some(PUBLICATION_EPOCH), max: None },
-            negated: false,
-        })),
-        ("negated modified date over nullable column", Expr::pred(Pred::Date {
-            field: DateField::Modified,
-            range: DateRange { min: Some(PUBLICATION_EPOCH), max: None },
-            negated: true,
-        })),
-        ("user-modified date over nullable column", Expr::pred(Pred::Date {
-            field: DateField::UserModified,
-            range: DateRange { min: None, max: Some(NOW) },
-            negated: false,
-        })),
+        (
+            "modified date over nullable column",
+            Expr::pred(Pred::Date {
+                field: DateField::Modified,
+                range: DateRange {
+                    min: Some(PUBLICATION_EPOCH),
+                    max: None,
+                },
+                negated: false,
+            }),
+        ),
+        (
+            "negated modified date over nullable column",
+            Expr::pred(Pred::Date {
+                field: DateField::Modified,
+                range: DateRange {
+                    min: Some(PUBLICATION_EPOCH),
+                    max: None,
+                },
+                negated: true,
+            }),
+        ),
+        (
+            "user-modified date over nullable column",
+            Expr::pred(Pred::Date {
+                field: DateField::UserModified,
+                range: DateRange {
+                    min: None,
+                    max: Some(NOW),
+                },
+                negated: false,
+            }),
+        ),
         // A complemented range is the shape `-date:…` produces: the parser keeps the flag and the
         // two backends complement it in different places.
-        ("complemented date range", Expr::pred(Pred::Date {
-            field: DateField::Publication,
-            range: DateRange {
-                min: Some(PUBLICATION_EPOCH + 86_400 * 30),
-                max: Some(PUBLICATION_EPOCH + 86_400 * 10 - 1),
-            },
-            negated: true,
-        })),
+        (
+            "complemented date range",
+            Expr::pred(Pred::Date {
+                field: DateField::Publication,
+                range: DateRange {
+                    min: Some(PUBLICATION_EPOCH + 86_400 * 30),
+                    max: Some(PUBLICATION_EPOCH + 86_400 * 10 - 1),
+                },
+                negated: true,
+            }),
+        ),
         // Free text is title OR body, and negating it has to apply De Morgan rather than negate one arm.
-        ("free text spans title and body", Expr::pred(Pred::FreeText { pat: contains("rust"), negated: false })),
-        ("negated free text", Expr::pred(Pred::FreeText { pat: contains("axum"), negated: true })),
+        (
+            "free text spans title and body",
+            Expr::pred(Pred::FreeText {
+                pat: contains("rust"),
+                negated: false,
+            }),
+        ),
+        (
+            "negated free text",
+            Expr::pred(Pred::FreeText {
+                pat: contains("axum"),
+                negated: true,
+            }),
+        ),
         // Multiple predicates in one leaf are an implicit AND, evaluated without a `Node`.
-        ("implicit and in one leaf", Expr::Leaf(vec![
-            Pred::Title { pat: contains("rust"), negated: false },
-            Pred::Tag { pat: contains("rust"), negated: false },
-        ])),
-        ("implicit and with a negation inside", Expr::Leaf(vec![
-            Pred::Title { pat: contains("rust"), negated: false },
-            Pred::Author { pat: contains("bot"), negated: true },
-        ])),
+        (
+            "implicit and in one leaf",
+            Expr::Leaf(vec![
+                Pred::Title {
+                    pat: contains("rust"),
+                    negated: false,
+                },
+                Pred::Tag {
+                    pat: contains("rust"),
+                    negated: false,
+                },
+            ]),
+        ),
+        (
+            "implicit and with a negation inside",
+            Expr::Leaf(vec![
+                Pred::Title {
+                    pat: contains("rust"),
+                    negated: false,
+                },
+                Pred::Author {
+                    pat: contains("bot"),
+                    negated: true,
+                },
+            ]),
+        ),
         // The boolean shapes: nesting, double negation, and a negated disjunction.
-        ("and of two ors", Expr::and(vec![
-            Expr::or(vec![
-                Expr::pred(Pred::Title { pat: contains("rust"), negated: false }),
-                Expr::pred(Pred::Title { pat: contains("café"), negated: false }),
+        (
+            "and of two ors",
+            Expr::and(vec![
+                Expr::or(vec![
+                    Expr::pred(Pred::Title {
+                        pat: contains("rust"),
+                        negated: false,
+                    }),
+                    Expr::pred(Pred::Title {
+                        pat: contains("café"),
+                        negated: false,
+                    }),
+                ]),
+                Expr::or(vec![
+                    Expr::pred(Pred::Tag {
+                        pat: contains("rss"),
+                        negated: false,
+                    }),
+                    Expr::pred(Pred::LabelIds {
+                        ids: IdSet::Any,
+                        negated: false,
+                    }),
+                ]),
             ]),
-            Expr::or(vec![
-                Expr::pred(Pred::Tag { pat: contains("rss"), negated: false }),
-                Expr::pred(Pred::LabelIds { ids: IdSet::Any, negated: false }),
-            ]),
-        ])),
-        ("negated or", Expr::negate(Expr::or(vec![
-            Expr::pred(Pred::Title { pat: contains("rust"), negated: false }),
-            Expr::pred(Pred::Content { pat: contains("axum"), negated: false }),
-        ]))),
-        ("double negation", Expr::negate(Expr::negate(Expr::pred(Pred::Title {
-            pat: contains("école"),
-            negated: false,
-        })))),
-        ("negated and", Expr::negate(Expr::and(vec![
-            Expr::pred(Pred::FeedIds { ids: vec![h.feed_ids[0]], negated: false }),
-            Expr::pred(Pred::CategoryIds { ids: vec![h.category_ids[1]], negated: false }),
-        ]))),
+        ),
+        (
+            "negated or",
+            Expr::negate(Expr::or(vec![
+                Expr::pred(Pred::Title {
+                    pat: contains("rust"),
+                    negated: false,
+                }),
+                Expr::pred(Pred::Content {
+                    pat: contains("axum"),
+                    negated: false,
+                }),
+            ])),
+        ),
+        (
+            "double negation",
+            Expr::negate(Expr::negate(Expr::pred(Pred::Title {
+                pat: contains("école"),
+                negated: false,
+            }))),
+        ),
+        (
+            "negated and",
+            Expr::negate(Expr::and(vec![
+                Expr::pred(Pred::FeedIds {
+                    ids: vec![h.feed_ids[0]],
+                    negated: false,
+                }),
+                Expr::pred(Pred::CategoryIds {
+                    ids: vec![h.category_ids[1]],
+                    negated: false,
+                }),
+            ])),
+        ),
         // A category predicate compiles to a subquery over `feed`, not a join — a join would
         // multiply rows and change the id set.
-        ("category via subquery", Expr::pred(Pred::CategoryIds { ids: vec![h.category_ids[1]], negated: false })),
-        ("negated category via subquery", Expr::pred(Pred::CategoryIds { ids: vec![h.category_ids[1]], negated: true })),
+        (
+            "category via subquery",
+            Expr::pred(Pred::CategoryIds {
+                ids: vec![h.category_ids[1]],
+                negated: false,
+            }),
+        ),
+        (
+            "negated category via subquery",
+            Expr::pred(Pred::CategoryIds {
+                ids: vec![h.category_ids[1]],
+                negated: true,
+            }),
+        ),
         // TRUE and FALSE have to survive as distinct shapes.
         ("empty leaf is true", Expr::TRUE),
         ("empty or is false", Expr::FALSE),
-        ("and with a true child", Expr::and(vec![
-            Expr::TRUE,
-            Expr::pred(Pred::Title { pat: contains("rust"), negated: false }),
-        ])),
+        (
+            "and with a true child",
+            Expr::and(vec![
+                Expr::TRUE,
+                Expr::pred(Pred::Title {
+                    pat: contains("rust"),
+                    negated: false,
+                }),
+            ]),
+        ),
     ];
 
     let mut matched_something = 0usize;

@@ -307,7 +307,12 @@ impl AppConfig {
         fig = fig.merge(
             figment::providers::Env::prefixed("FRESHRSS_")
                 .split("_")
-                .map(|k| k.as_str().replace("__", ".").into()),
+                .map(|k| k.as_str().replace("__", ".").into())
+                // `FRESHRSS_CONFIG` says which file to read, and is consumed by clap and by
+                // [`Self::load`] before this layer runs. Left in it, the variable arrives as a
+                // `config` field that `AppConfig` does not have, and serde's `deny_unknown_fields`
+                // turns the documented way of pointing at a config file into a startup failure.
+                .ignore(&["config"]),
         );
 
         let cfg: AppConfig = fig.extract()?;

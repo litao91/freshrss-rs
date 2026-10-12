@@ -8,21 +8,28 @@
 //! The boundary values a cursor carries are read back with hand-written SQL rather than with the
 //! builder's own expressions, so a mistake in one is not reproduced in the other.
 
+mod common;
+
 use freshrss_search::parser::parse;
-use freshrss_server::db::dao::entry_query::{
-    count_unread, list, Cursor, CursorValue, EntryQuery,
+use freshrss_server::db::dao::entry_query::{count_unread, list, Cursor, CursorValue, EntryQuery};
+use freshrss_server::db::dao::{
+    category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao,
 };
-use freshrss_server::db::dao::{category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao};
+use freshrss_server::db::sql::sql;
 use freshrss_server::db::Db;
 use freshrss_server::domain::attributes::Attributes;
 use freshrss_server::domain::category::CategoryKind;
+use freshrss_server::domain::entry::Entry;
 use freshrss_server::domain::feed::Feed;
 use freshrss_server::domain::ids::EntryId;
 use freshrss_server::domain::list_type::ListType;
 use freshrss_server::domain::priority::Priority;
 use freshrss_server::domain::sort::{Order, SecondarySort, Sort};
 use freshrss_server::domain::state::EntryState;
-use rusqlite::params;
+use freshrss_server::{Error, Result};
+use sqlx::{Row as _, TypeInfo as _, ValueRef as _};
+
+use common::{insert_entry, SeededEntry};
 
 const NOW: i64 = 1_700_000_000;
 const PAGE: usize = 7;
@@ -39,42 +46,49 @@ struct Corpus {
 
 /// Seeds one user's articles across four feeds in three folders, plus a second user whose articles use
 /// the same vocabulary and an overlapping id range.
-fn corpus() -> Corpus {
-    let db = Db::in_memory().expect("in-memory db");
+async fn corpus() -> Corpus {
+    let db = common::db().await;
 
     let (id_user, other_user, feeds, categories, labels) = db
-        .blocking_with(|conn| {
+        .with(|mut conn| async move {
             let id_user = user_dao::insert(
-                conn,
+                &mut conn,
                 &user_dao::NewUser {
                     username: "alice",
                     email: None,
                     password_hash: "argon2id$hash",
                     is_admin: false,
                 },
-            )?;
+            )
+            .await?;
             let other_user = user_dao::insert(
-                conn,
+                &mut conn,
                 &user_dao::NewUser {
                     username: "bob",
                     email: None,
                     password_hash: "argon2id$hash",
                     is_admin: false,
                 },
-            )?;
+            )
+            .await?;
 
-            let mut categories = vec![user_dao::default_category_id(conn, id_user)?.expect("seeded")];
+            let mut categories = vec![user_dao::default_category_id(&mut conn, id_user)
+                .await?
+                .expect("seeded")];
             for (i, name) in ["News", "Technology"].into_iter().enumerate() {
-                categories.push(cat_dao::insert(
-                    conn,
-                    &cat_dao::NewCategory {
-                        id_user,
-                        name,
-                        kind: CategoryKind::default(),
-                        position: i as i64 + 2,
-                        attributes: Attributes::new(),
-                    },
-                )?);
+                categories.push(
+                    cat_dao::insert(
+                        &mut conn,
+                        &cat_dao::NewCategory {
+                            id_user,
+                            name,
+                            kind: CategoryKind::default(),
+                            position: i as i64 + 2,
+                            attributes: Attributes::new(),
+                        },
+                    )
+                    .await?,
+                );
             }
 
             // Four feeds at three different priorities, so the scope floors have something to filter.
@@ -96,26 +110,16 @@ fn corpus() -> Corpus {
                     format!("Feed {i}")
                 };
                 let mut f = Feed::new(id_user, format!("https://example.com/feed{i}.xml"), name);
-                f.id = feed_dao::insert(conn, &f)?;
-                feed_dao::update_category(conn, f.id, id_user, Some(category))?;
-                feed_dao::update_priority(conn, f.id, id_user, priority)?;
+                f.id = feed_dao::insert(&mut conn, &f).await?;
+                feed_dao::update_category(&mut conn, f.id, id_user, Some(category)).await?;
+                feed_dao::update_priority(&mut conn, f.id, id_user, priority).await?;
                 feeds.push(f.id);
             }
 
             let mut labels = Vec::new();
             for name in ["todo", "reading"] {
-                labels.push(tag_dao::insert(conn, id_user, name)?);
+                labels.push(tag_dao::insert(&mut conn, id_user, name).await?);
             }
-
-            let mut insert = conn.prepare_cached(
-                // The folded columns are what the search SQL reads, so the seed has to write them the
-                // way the DAOs would.
-                "INSERT INTO entry
-                   (id, id_user, guid, title, author, content, link, date, lastSeen,
-                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags,
-                    title_folded, content_folded, author_folded, link_folded, tags_folded)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
-            )?;
 
             for i in 0..ARTICLES {
                 let feed = feeds[(i % 4) as usize];
@@ -125,73 +129,73 @@ fn corpus() -> Corpus {
                 let date = NOW - 86_400 * 60 + i * 3_600;
                 // Titles repeat in a short cycle so every sort has real ties to break.
                 let title = format!("Article {:03}", i % 17);
-                let read = i % 3 == 0;
-                let favorite = i % 11 == 0;
                 let modified = (i % 5 != 0).then_some(date + 3_600);
 
-                insert.execute(params![
-                    id.micros(),
-                    id_user,
-                    format!("guid-{i}"),
-                    title,
-                    if i % 2 == 0 { "Ada Lovelace" } else { "bot" },
-                    format!("<p>body {i} with {} words</p>", "filler ".repeat((i % 23) as usize)),
-                    format!("https://example.com/post/{i}"),
-                    date,
-                    date,
-                    modified,
-                    modified.map(|m| m + 60),
-                    vec![7u8; 16],
-                    read as i64,
-                    favorite as i64,
-                    feed,
-                    if i % 4 == 0 { "#rust #rss" } else { "#rust" },
-                    freshrss_search::fold(&title),
-                    freshrss_search::fold(&format!(
-                        "<p>body {i} with {} words</p>",
-                        "filler ".repeat((i % 23) as usize)
-                    )),
-                    freshrss_search::fold(if i % 2 == 0 { "Ada Lovelace" } else { "bot" }),
-                    freshrss_search::fold(&format!("https://example.com/post/{i}")),
-                    freshrss_search::fold(if i % 4 == 0 { "#rust #rss" } else { "#rust" }),
-                ])?;
+                // The folded columns are what the search SQL reads, so the seed has to write them the
+                // way the DAOs would; `insert_entry` derives them from the plain text below.
+                insert_entry(
+                    &mut conn,
+                    &SeededEntry {
+                        id: id.micros(),
+                        id_user,
+                        guid: format!("guid-{i}"),
+                        author: if i % 2 == 0 { "Ada Lovelace" } else { "bot" }.to_owned(),
+                        content: format!(
+                            "<p>body {i} with {} words</p>",
+                            "filler ".repeat((i % 23) as usize)
+                        ),
+                        link: format!("https://example.com/post/{i}"),
+                        title,
+                        date,
+                        last_modified: modified,
+                        last_user_modified: modified.map(|m| m + 60),
+                        hash: vec![7u8; 16],
+                        is_read: i % 3 == 0,
+                        is_favorite: i % 11 == 0,
+                        id_feed: feed,
+                        tags: if i % 4 == 0 { "#rust #rss" } else { "#rust" }.to_owned(),
+                    },
+                )
+                .await?;
 
                 if i % 6 == 0 {
-                    tag_dao::tag_entry(conn, labels[(i % 2) as usize], id.micros(), true)?;
+                    tag_dao::tag_entry(&mut conn, labels[(i % 2) as usize], id.micros(), true)
+                        .await?;
                 }
             }
-            drop(insert);
 
             // Bob's articles sit in Alice's id range and use the same titles, so a missing `id_user`
             // fence shows up as extra rows rather than as an obviously foreign record.
             let mut bob_feed = Feed::new(other_user, "https://other.test/feed.xml", "Shared name");
-            bob_feed.id = feed_dao::insert(conn, &bob_feed)?;
+            bob_feed.id = feed_dao::insert(&mut conn, &bob_feed).await?;
             for i in 0..40 {
                 let id = EntryId::from_unix(NOW - 86_400 * 30 + i * 900 + 1);
-                conn.execute(
+                let title = format!("Article {:03}", i % 17);
+                sqlx::query(
                     "INSERT INTO entry
                        (id, id_user, guid, title, author, content, link, date, lastSeen,
                         hash, is_read, is_favorite, id_feed, tags,
                         title_folded, content_folded, author_folded, link_folded, tags_folded)
                      VALUES (?1,?2,?3,?4,'Ada Lovelace','<p>body</p>',?5,?6,?6,?7,0,1,?8,'#rust',
                              ?9, '<p>body</p>', 'ada lovelace', ?10, '#rust')",
-                    params![
-                        id.micros(),
-                        other_user,
-                        format!("bob-{i}"),
-                        format!("Article {:03}", i % 17),
-                        format!("https://other.test/{i}"),
-                        NOW - 86_400 * 60 + i * 3_600,
-                        vec![8u8; 16],
-                        bob_feed.id,
-                        freshrss_search::fold(&format!("Article {:03}", i % 17)),
-                        format!("https://other.test/{i}"),
-                    ],
-                )?;
+                )
+                .bind(id.micros())
+                .bind(other_user)
+                .bind(format!("bob-{i}"))
+                .bind(&title)
+                .bind(format!("https://other.test/{i}"))
+                .bind(NOW - 86_400 * 60 + i * 3_600)
+                .bind(vec![8u8; 16])
+                .bind(bob_feed.id)
+                .bind(freshrss_search::fold(&title))
+                .bind(format!("https://other.test/{i}"))
+                .execute(&mut *conn)
+                .await?;
             }
 
             Ok::<_, freshrss_server::Error>((id_user, other_user, feeds, categories, labels))
         })
+        .await
         .expect("seed corpus");
 
     Corpus {
@@ -214,7 +218,7 @@ fn base(c: &Corpus) -> EntryQuery {
 }
 
 /// Reads the boundary values a cursor needs for the last row of a page, with hand-written SQL.
-fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
+async fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
     // The id sort *is* the keyset, so its cursor carries no boundary values at all.
     if q.sort == Sort::Id {
         return Cursor {
@@ -247,7 +251,7 @@ fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
     selects.extend(middle.map(str::to_owned));
     selects.extend(secondary.map(str::to_owned));
 
-    let sql = format!(
+    let statement = format!(
         "SELECT {} FROM entry e
            INNER JOIN feed f ON f.id = e.id_feed
            LEFT JOIN category c ON c.id = f.category
@@ -255,47 +259,48 @@ fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
         selects.join(", ")
     );
 
-    let values = c
-        .db
-        .blocking_with(|conn| {
-            let mut stmt = conn.prepare(&sql)?;
-            let row = stmt.query_row(params![id.micros()], |row| {
-                (0..selects.len())
-                    .map(|i| {
-                        // Numeric expressions come back as integers and everything else as text, which
-                        // is the distinction `CursorValue` exists to preserve.
-                        Ok(match row.get_ref(i)? {
-                            rusqlite::types::ValueRef::Integer(v) => CursorValue::Int(v),
-                            rusqlite::types::ValueRef::Text(t) => {
-                                CursorValue::Text(String::from_utf8_lossy(t).into_owned())
-                            }
-                            rusqlite::types::ValueRef::Null => CursorValue::Text(String::new()),
-                            rusqlite::types::ValueRef::Real(_)
-                            | rusqlite::types::ValueRef::Blob(_) => {
-                                unreachable!("no sort column in this corpus is a real or a blob")
-                            }
-                        })
+    let values =
+        c.db.with(|mut conn| async move {
+            let row = sqlx::query(sql(statement))
+                .bind(id.micros())
+                .fetch_one(&mut *conn)
+                .await?;
+            (0..selects.len())
+                .map(|i| {
+                    // Numeric expressions come back as integers and everything else as text, which
+                    // is the distinction `CursorValue` exists to preserve. The type is read from the
+                    // value rather than assumed, so a column that changed affinity is a loud failure.
+                    let raw = row.try_get_raw(i)?;
+                    let info = raw.type_info();
+                    Ok(match info.name() {
+                        "INTEGER" => CursorValue::Int(row.try_get(i)?),
+                        "TEXT" => CursorValue::Text(row.try_get(i)?),
+                        "NULL" => CursorValue::Text(String::new()),
+                        found => unreachable!(
+                            "no sort column in this corpus is a real or a blob, got {found}"
+                        ),
                     })
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })?;
-            Ok(row)
+                })
+                .collect::<Result<Vec<_>>>()
         })
+        .await
         .expect("boundary");
 
     Cursor { id, values }
 }
 
 /// Pages all the way through and returns every id in the order the pages arrived.
-fn page_through(c: &Corpus, mut q: EntryQuery) -> Vec<EntryId> {
+async fn page_through(c: &Corpus, mut q: EntryQuery) -> Vec<EntryId> {
     let mut seen = Vec::new();
     q.cursor = None;
     // One more iteration than could possibly be needed, so a cursor that stops making progress fails
     // the test instead of hanging.
     for _ in 0..(ARTICLES as usize / PAGE + 8) {
-        let page = c
-            .db
-            .blocking_with(|conn| list(conn, &q))
-            .expect("lists");
+        let query = &q;
+        let page =
+            c.db.with(|mut conn| async move { list(&mut conn, query).await })
+                .await
+                .expect("lists");
         if page.is_empty() {
             return seen;
         }
@@ -310,22 +315,74 @@ fn page_through(c: &Corpus, mut q: EntryQuery) -> Vec<EntryId> {
         if page.len() < q.limit {
             return seen;
         }
-        q.cursor = Some(boundary(c, &q, last));
+        q.cursor = Some(boundary(c, &q, last).await);
     }
     panic!("paging did not terminate after {} ids", seen.len());
 }
 
 /// Every article in the scope, in one query, for comparison.
-fn whole_scope(c: &Corpus, q: &EntryQuery) -> Vec<EntryId> {
+async fn whole_scope(c: &Corpus, q: &EntryQuery) -> Vec<EntryId> {
     let mut all = q.clone();
     all.limit = ARTICLES as usize * 2;
     all.cursor = None;
-    c.db
-        .blocking_with(|conn| list(conn, &all))
+    c.db.with(|mut conn| async move { list(&mut conn, &all).await })
+        .await
         .expect("lists")
         .into_iter()
         .map(|e| e.id)
         .collect()
+}
+
+/// One listing, unwrapped.
+async fn list_page(c: &Corpus, q: &EntryQuery) -> Vec<Entry> {
+    c.db.with(|mut conn| async move { list(&mut conn, q).await })
+        .await
+        .expect("lists")
+}
+
+/// One listing that the builder is expected to reject before it ever reaches the database.
+async fn list_err(c: &Corpus, q: &EntryQuery, expected: &str) -> Error {
+    match c
+        .db
+        .with(|mut conn| async move { Ok(list(&mut conn, q).await) })
+        .await
+        .expect("the connection is borrowed whether or not the query is rejected")
+    {
+        Ok(rows) => panic!("{expected}: not rejected, it returned {} rows", rows.len()),
+        Err(err) => err,
+    }
+}
+
+/// One unread count, unwrapped.
+async fn unread_count(c: &Corpus, q: &EntryQuery) -> i64 {
+    c.db.with(|mut conn| async move { count_unread(&mut conn, q).await })
+        .await
+        .expect("counts")
+}
+
+/// One `COUNT(*)` from hand-written SQL, so a listing is never checked against its own query.
+async fn count(c: &Corpus, statement: &str, params: Vec<i64>) -> i64 {
+    let owned = statement.to_owned();
+    c.db.with(|mut conn| async move {
+        let mut query = sqlx::query_scalar(sql(owned));
+        for value in params {
+            query = query.bind(value);
+        }
+        let total: i64 = query.fetch_one(&mut *conn).await?;
+        Ok(total)
+    })
+    .await
+    .expect("count")
+}
+
+/// How many articles one feed holds.
+async fn articles_in_feed(c: &Corpus, feed: i64) -> i64 {
+    count(
+        c,
+        "SELECT COUNT(*) FROM entry WHERE id_feed = ?1",
+        vec![feed],
+    )
+    .await
 }
 
 /// The sort/order combinations worth paging through: every shape of ladder the builder can emit.
@@ -339,16 +396,46 @@ fn paged_sorts() -> Vec<(Sort, Order, SecondarySort, Order)> {
         (Sort::Title, Order::Asc, SecondarySort::Id, Order::Desc),
         (Sort::Link, Order::Desc, SecondarySort::Id, Order::Desc),
         (Sort::Length, Order::Desc, SecondarySort::Id, Order::Desc),
-        (Sort::LastModified, Order::Desc, SecondarySort::Id, Order::Desc),
-        (Sort::LastModified, Order::Asc, SecondarySort::Id, Order::Desc),
+        (
+            Sort::LastModified,
+            Order::Desc,
+            SecondarySort::Id,
+            Order::Desc,
+        ),
+        (
+            Sort::LastModified,
+            Order::Asc,
+            SecondarySort::Id,
+            Order::Desc,
+        ),
         // The name sorts carry a secondary ladder, so they get both an id secondary (which the builder
         // folds into the final rung) and a real one.
         (Sort::FeedName, Order::Desc, SecondarySort::Id, Order::Desc),
-        (Sort::FeedName, Order::Asc, SecondarySort::Title, Order::Desc),
+        (
+            Sort::FeedName,
+            Order::Asc,
+            SecondarySort::Title,
+            Order::Desc,
+        ),
         (Sort::FeedName, Order::Desc, SecondarySort::Date, Order::Asc),
-        (Sort::CategoryName, Order::Desc, SecondarySort::Id, Order::Desc),
-        (Sort::CategoryName, Order::Asc, SecondarySort::Title, Order::Asc),
-        (Sort::CategoryName, Order::Desc, SecondarySort::Link, Order::Desc),
+        (
+            Sort::CategoryName,
+            Order::Desc,
+            SecondarySort::Id,
+            Order::Desc,
+        ),
+        (
+            Sort::CategoryName,
+            Order::Asc,
+            SecondarySort::Title,
+            Order::Asc,
+        ),
+        (
+            Sort::CategoryName,
+            Order::Desc,
+            SecondarySort::Link,
+            Order::Desc,
+        ),
     ]
 }
 
@@ -356,9 +443,9 @@ fn paged_sorts() -> Vec<(Sort, Order, SecondarySort, Order)> {
 // Pagination
 // ---------------------------------------------------------------------------
 
-#[test]
-fn paging_neither_repeats_nor_skips() {
-    let c = corpus();
+#[tokio::test]
+async fn paging_neither_repeats_nor_skips() {
+    let c = corpus().await;
     for (sort, order, secondary, secondary_order) in paged_sorts() {
         let q = EntryQuery {
             sort,
@@ -369,8 +456,8 @@ fn paging_neither_repeats_nor_skips() {
         };
         let label = format!("{sort:?}/{order:?}+{secondary:?}/{secondary_order:?}");
 
-        let paged = page_through(&c, q.clone());
-        let expected = whole_scope(&c, &q);
+        let paged = page_through(&c, q.clone()).await;
+        let expected = whole_scope(&c, &q).await;
 
         assert_eq!(
             paged.len(),
@@ -397,69 +484,70 @@ fn paging_neither_repeats_nor_skips() {
     }
 }
 
-#[test]
-fn paging_respects_the_state_filter_on_every_page() {
-    let c = corpus();
+#[tokio::test]
+async fn paging_respects_the_state_filter_on_every_page() {
+    let c = corpus().await;
     let q = EntryQuery {
         state: EntryState::unread(),
         sort: Sort::Date,
         ..base(&c)
     };
-    let paged = page_through(&c, q.clone());
-    assert_eq!(paged, whole_scope(&c, &q));
+    let paged = page_through(&c, q.clone()).await;
+    assert_eq!(paged, whole_scope(&c, &q).await);
 
     // The default scope is the main stream, which excludes the hidden feed, so the comparison has to
     // exclude it too.
-    let unread = c
-        .db
-        .blocking_with(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*) FROM entry e
-                   INNER JOIN feed f ON f.id = e.id_feed
-                  WHERE e.id_user = ?1 AND e.is_read = 0 AND e.id <= ?2 AND f.priority >= 10",
-                params![c.id_user, EntryId::from_unix(NOW).micros()],
-                |r| r.get::<_, i64>(0),
-            )?)
-        })
-        .expect("count");
+    let unread = count(
+        &c,
+        "SELECT COUNT(*) FROM entry e
+           INNER JOIN feed f ON f.id = e.id_feed
+          WHERE e.id_user = ?1 AND e.is_read = 0 AND e.id <= ?2 AND f.priority >= 10",
+        vec![c.id_user, EntryId::from_unix(NOW).micros()],
+    )
+    .await;
     assert_eq!(paged.len() as i64, unread, "every unread article, once");
-    assert!(unread > 0 && unread < ARTICLES, "the corpus splits on read state");
+    assert!(
+        unread > 0 && unread < ARTICLES,
+        "the corpus splits on read state"
+    );
 }
 
-#[test]
-fn an_article_arriving_mid_scroll_does_not_shift_the_pages() {
-    let c = corpus();
+#[tokio::test]
+async fn an_article_arriving_mid_scroll_does_not_shift_the_pages() {
+    let c = corpus().await;
     let mut q = EntryQuery {
         sort: Sort::Date,
         ..base(&c)
     };
 
-    let first = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let first = list_page(&c, &q).await;
     assert_eq!(first.len(), PAGE);
-    q.cursor = Some(boundary(&c, &q, first.last().expect("non-empty").id));
+    q.cursor = Some(boundary(&c, &q, first.last().expect("non-empty").id).await);
 
     // A refresh lands between two pages. Without the `id_max` snapshot fence the new article would be
     // the newest in the scope and every following page would shift by one, repeating a row.
     let newcomer = EntryId::from_unix(NOW + 60);
+    let (id_user, feed, newcomer_micros) = (c.id_user, c.feeds[0], newcomer.micros());
     c.db
-        .blocking_with(|conn| {
-            conn.execute(
+        .with(|mut conn| async move {
+            sqlx::query(
                 "INSERT INTO entry (id, id_user, guid, title, author, content, link, date, lastSeen,
                                      hash, is_read, is_favorite, id_feed, tags)
                  VALUES (?1,?2,'late','Late arrival','','<p>x</p>','https://example.com/late',?3,?3,?4,0,0,?5,'')",
-                params![
-                    newcomer.micros(),
-                    c.id_user,
-                    NOW + 60,
-                    vec![9u8; 16],
-                    c.feeds[0],
-                ],
-            )?;
+            )
+            .bind(newcomer_micros)
+            .bind(id_user)
+            .bind(NOW + 60)
+            .bind(vec![9u8; 16])
+            .bind(feed)
+            .execute(&mut *conn)
+            .await?;
             Ok(())
         })
+        .await
         .expect("insert");
 
-    let second = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let second = list_page(&c, &q).await;
     assert!(
         !second.iter().any(|e| e.id == newcomer),
         "the snapshot fence should have excluded the article that arrived mid-scroll"
@@ -472,7 +560,7 @@ fn an_article_arriving_mid_scroll_does_not_shift_the_pages() {
     // Raising the fence is how the reader chooses to pick up new articles.
     q.id_max = Some(newer_id(newcomer));
     q.cursor = None;
-    let with_new = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let with_new = list_page(&c, &q).await;
     assert_eq!(with_new.first().expect("non-empty").id, newcomer);
 }
 
@@ -480,14 +568,14 @@ fn newer_id(id: EntryId) -> EntryId {
     EntryId::from_micros(id.micros() + 1)
 }
 
-#[test]
-fn a_random_sort_can_be_listed_but_not_resumed() {
-    let c = corpus();
+#[tokio::test]
+async fn a_random_sort_can_be_listed_but_not_resumed() {
+    let c = corpus().await;
     let q = EntryQuery {
         sort: Sort::Rand,
         ..base(&c)
     };
-    let page = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let page = list_page(&c, &q).await;
     assert_eq!(page.len(), PAGE);
 
     let resumed = EntryQuery {
@@ -497,10 +585,7 @@ fn a_random_sort_can_be_listed_but_not_resumed() {
         }),
         ..q
     };
-    let e = c
-        .db
-        .blocking_with(|conn| list(conn, &resumed))
-        .expect_err("a random sort has nothing to resume from");
+    let e = list_err(&c, &resumed, "a random sort has nothing to resume from").await;
     assert!(e.to_string().contains("cannot be resumed"), "{e}");
 }
 
@@ -508,148 +593,160 @@ fn a_random_sort_can_be_listed_but_not_resumed() {
 // Scopes
 // ---------------------------------------------------------------------------
 
-#[test]
-fn each_scope_admits_exactly_its_articles() {
-    let c = corpus();
-    let all = |q: EntryQuery| -> Vec<EntryId> {
-        let mut q = q;
-        q.limit = ARTICLES as usize * 2;
-        c.db
-            .blocking_with(|conn| list(conn, &q))
-            .expect("lists")
-            .into_iter()
-            .map(|e| e.id)
-            .collect()
-    };
-
+#[tokio::test]
+async fn each_scope_admits_exactly_its_articles() {
+    let c = corpus().await;
     let hidden_feed = c.feeds[3];
-    let expected_in = |feed: i64| -> i64 {
-        c.db
-            .blocking_with(|conn| {
-                Ok(conn.query_row(
-                    "SELECT COUNT(*) FROM entry WHERE id_feed = ?1",
-                    params![feed],
-                    |r| r.get(0),
-                )?)
-            })
-            .expect("count")
-    };
+    let in_hidden = articles_in_feed(&c, hidden_feed).await;
+    let in_important = articles_in_feed(&c, c.feeds[2]).await;
+    let in_second_feed = articles_in_feed(&c, c.feeds[1]).await;
 
     // The main stream excludes the hidden feed.
-    let main = all(EntryQuery {
-        scope: ListType::MainStream,
-        ..base(&c)
-    });
-    assert_eq!(main.len() as i64, ARTICLES - expected_in(hidden_feed));
+    let main = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::MainStream,
+            ..base(&c)
+        },
+    )
+    .await;
+    assert_eq!(main.len() as i64, ARTICLES - in_hidden);
 
     // Everything-but-hidden does too, but a search naming the hidden feed lifts it back in.
     let expr = parse(&format!("f:{hidden_feed}"), NOW).unwrap();
-    let lifted = all(EntryQuery {
-        scope: ListType::AllButHidden,
-        search: Some(expr.clone()),
-        ..base(&c)
-    });
-    assert_eq!(lifted.len() as i64, expected_in(hidden_feed));
+    let lifted = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::AllButHidden,
+            search: Some(expr.clone()),
+            ..base(&c)
+        },
+    )
+    .await;
+    assert_eq!(lifted.len() as i64, in_hidden);
 
-    let everything = all(EntryQuery {
-        scope: ListType::IncludingHidden,
-        ..base(&c)
-    });
+    let everything = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::IncludingHidden,
+            ..base(&c)
+        },
+    )
+    .await;
     assert_eq!(everything.len() as i64, ARTICLES);
 
-    let important = all(EntryQuery {
-        scope: ListType::Important,
-        ..base(&c)
-    });
-    assert_eq!(important.len() as i64, expected_in(c.feeds[2]));
+    let important = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::Important,
+            ..base(&c)
+        },
+    )
+    .await;
+    assert_eq!(important.len() as i64, in_important);
 
-    let feed = all(EntryQuery {
-        scope: ListType::Feed,
-        scope_id: hidden_feed,
-        ..base(&c)
-    });
-    assert_eq!(feed.len() as i64, expected_in(hidden_feed), "a feed scope reaches its own feed whatever its priority");
+    let feed = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::Feed,
+            scope_id: hidden_feed,
+            ..base(&c)
+        },
+    )
+    .await;
+    assert_eq!(
+        feed.len() as i64,
+        in_hidden,
+        "a feed scope reaches its own feed whatever its priority"
+    );
 
-    let category = all(EntryQuery {
-        scope: ListType::Category,
-        scope_id: c.categories[1],
-        ..base(&c)
-    });
+    let category = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::Category,
+            scope_id: c.categories[1],
+            ..base(&c)
+        },
+    )
+    .await;
     assert_eq!(
         category.len() as i64,
-        expected_in(c.feeds[1]),
+        in_second_feed,
         "the hidden feed in this folder is below the folder's floor"
     );
 
-    let starred = all(EntryQuery {
-        scope: ListType::Starred,
-        ..base(&c)
-    });
+    let starred = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::Starred,
+            ..base(&c)
+        },
+    )
+    .await;
     assert!(!starred.is_empty());
-    let favourites = c
-        .db
-        .blocking_with(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*) FROM entry WHERE id_user = ?1 AND is_favorite = 1",
-                params![c.id_user],
-                |r| r.get::<_, i64>(0),
-            )?)
-        })
-        .expect("count");
+    let favourites = count(
+        &c,
+        "SELECT COUNT(*) FROM entry WHERE id_user = ?1 AND is_favorite = 1",
+        vec![c.id_user],
+    )
+    .await;
     assert_eq!(starred.len() as i64, favourites, "starred ignores priority");
 }
 
-#[test]
-fn the_label_scopes_count_an_article_once() {
-    let c = corpus();
-    let count = |q: EntryQuery| -> usize {
-        let mut q = q;
-        q.limit = ARTICLES as usize * 2;
-        c.db
-            .blocking_with(|conn| list(conn, &q))
-            .expect("lists")
-            .len()
-    };
+#[tokio::test]
+async fn the_label_scopes_count_an_article_once() {
+    let c = corpus().await;
 
-    let tagged = count(EntryQuery {
-        scope: ListType::AnyTag,
-        ..base(&c)
-    });
-    let expected = c
-        .db
-        .blocking_with(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*) FROM entry e WHERE e.id_user = ?1
-                   AND EXISTS (SELECT 1 FROM entrytag et WHERE et.id_entry = e.id)",
-                params![c.id_user],
-                |r| r.get::<_, i64>(0),
-            )?)
-        })
-        .expect("count");
+    let tagged = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::AnyTag,
+            ..base(&c)
+        },
+    )
+    .await
+    .len();
+    let expected = count(
+        &c,
+        "SELECT COUNT(*) FROM entry e WHERE e.id_user = ?1
+           AND EXISTS (SELECT 1 FROM entrytag et WHERE et.id_entry = e.id)",
+        vec![c.id_user],
+    )
+    .await;
     assert_eq!(tagged, expected as usize);
     assert!(tagged > 0, "the corpus needs labelled articles");
 
-    let one_label = count(EntryQuery {
-        scope: ListType::Tag,
-        scope_id: c.labels[0],
-        ..base(&c)
-    });
+    let one_label = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::Tag,
+            scope_id: c.labels[0],
+            ..base(&c)
+        },
+    )
+    .await
+    .len();
     assert!(one_label <= tagged, "{one_label} vs {tagged}");
     assert!(one_label > 0);
 
-    let starred_or_tagged = count(EntryQuery {
-        scope: ListType::StarredOrTagged,
-        ..base(&c)
-    });
+    let starred_or_tagged = whole_scope(
+        &c,
+        &EntryQuery {
+            scope: ListType::StarredOrTagged,
+            ..base(&c)
+        },
+    )
+    .await
+    .len();
     assert!(
         starred_or_tagged >= tagged,
         "starred-or-tagged is a superset of tagged: {starred_or_tagged} vs {tagged}"
     );
 }
 
-#[test]
-fn no_scope_reaches_another_users_articles() {
-    let c = corpus();
+#[tokio::test]
+async fn no_scope_reaches_another_users_articles() {
+    let c = corpus().await;
     let scopes = [
         (ListType::IncludingHidden, 0),
         (ListType::MainStream, 0),
@@ -666,7 +763,7 @@ fn no_scope_reaches_another_users_articles() {
             limit: ARTICLES as usize * 4,
             ..base(&c)
         };
-        let rows = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+        let rows = list_page(&c, &q).await;
         assert!(
             rows.iter().all(|e| e.id_user == c.id_user),
             "{scope:?} leaked another user's rows"
@@ -679,10 +776,7 @@ fn no_scope_reaches_another_users_articles() {
             rows.len(),
             ARTICLES
         );
-        assert_eq!(
-            rows.iter().filter(|e| e.id_user == c.other_user).count(),
-            0
-        );
+        assert_eq!(rows.iter().filter(|e| e.id_user == c.other_user).count(), 0);
     }
 }
 
@@ -690,16 +784,16 @@ fn no_scope_reaches_another_users_articles() {
 // Search and counts
 // ---------------------------------------------------------------------------
 
-#[test]
-fn a_search_narrows_the_listing() {
-    let c = corpus();
+#[tokio::test]
+async fn a_search_narrows_the_listing() {
+    let c = corpus().await;
     let expr = parse("intitle:003 author:bot", NOW).unwrap();
     let q = EntryQuery {
         search: Some(expr.clone()),
         limit: ARTICLES as usize * 2,
         ..base(&c)
     };
-    let rows = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let rows = list_page(&c, &q).await;
     assert!(!rows.is_empty(), "the corpus should contain a match");
     assert!(rows.iter().all(|e| e.title.contains("003")), "{rows:?}");
     assert!(
@@ -708,9 +802,9 @@ fn a_search_narrows_the_listing() {
     );
 }
 
-#[test]
-fn the_unread_count_agrees_with_the_listing_it_describes() {
-    let c = corpus();
+#[tokio::test]
+async fn the_unread_count_agrees_with_the_listing_it_describes() {
+    let c = corpus().await;
     let expr = parse("#rust", NOW).unwrap();
     let queries = vec![
         base(&c),
@@ -740,32 +834,22 @@ fn the_unread_count_agrees_with_the_listing_it_describes() {
     ];
 
     for q in &queries {
-        let counted = c
-            .db
-            .blocking_with(|conn| count_unread(conn, q))
-            .expect("counts");
+        let counted = unread_count(&c, q).await;
         let mut all = q.clone();
         all.state = EntryState::unread();
         all.limit = ARTICLES as usize * 2;
         all.cursor = None;
-        let listed = c
-            .db
-            .blocking_with(|conn| list(conn, &all))
-            .expect("lists")
-            .len() as i64;
+        let listed = list_page(&c, &all).await.len() as i64;
         assert_eq!(counted, listed, "the badge and the list disagree for {q:?}");
         assert!(counted >= 0);
     }
 }
 
-#[test]
-fn the_unread_count_ignores_the_cursor_but_keeps_the_fence() {
-    let c = corpus();
+#[tokio::test]
+async fn the_unread_count_ignores_the_cursor_but_keeps_the_fence() {
+    let c = corpus().await;
     let first = base(&c);
-    let whole = c
-        .db
-        .blocking_with(|conn| count_unread(conn, &first))
-        .expect("counts");
+    let whole = unread_count(&c, &first).await;
 
     let after_a_page = EntryQuery {
         cursor: Some(Cursor {
@@ -774,10 +858,7 @@ fn the_unread_count_ignores_the_cursor_but_keeps_the_fence() {
         }),
         ..base(&c)
     };
-    let counted = c
-        .db
-        .blocking_with(|conn| count_unread(conn, &after_a_page))
-        .expect("counts");
+    let counted = unread_count(&c, &after_a_page).await;
     assert_eq!(
         counted, whole,
         "the count describes the scope, not the page after a cursor"
@@ -788,25 +869,22 @@ fn the_unread_count_ignores_the_cursor_but_keeps_the_fence() {
         id_max: Some(EntryId::from_unix(NOW - 86_400 * 30 + 900 * 120)),
         ..base(&c)
     };
-    let counted = c
-        .db
-        .blocking_with(|conn| count_unread(conn, &fenced))
-        .expect("counts");
+    let counted = unread_count(&c, &fenced).await;
     assert!(
         counted < whole,
         "a narrower snapshot must count fewer: {counted} vs {whole}"
     );
 }
 
-#[test]
-fn a_nullable_sort_skips_the_rows_it_cannot_order() {
-    let c = corpus();
+#[tokio::test]
+async fn a_nullable_sort_skips_the_rows_it_cannot_order() {
+    let c = corpus().await;
     let q = EntryQuery {
         sort: Sort::LastModified,
         limit: ARTICLES as usize * 2,
         ..base(&c)
     };
-    let rows = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let rows = list_page(&c, &q).await;
     assert!(rows.iter().all(|e| e.last_modified.is_some()));
     assert!(
         rows.len() < ARTICLES as usize,
@@ -819,21 +897,22 @@ fn a_nullable_sort_skips_the_rows_it_cannot_order() {
             sort: Sort::LastModified,
             ..base(&c)
         },
-    );
+    )
+    .await;
     assert_eq!(paged.len(), rows.len());
 }
 
-#[test]
-fn the_rows_come_back_fully_populated() {
+#[tokio::test]
+async fn the_rows_come_back_fully_populated() {
     // The late-row-lookup fetches ids first and the wide columns second; a column missing from the
     // outer select would read back as a default rather than as an error.
-    let c = corpus();
+    let c = corpus().await;
     let q = EntryQuery {
         sort: Sort::Title,
         limit: 1,
         ..base(&c)
     };
-    let rows = c.db.blocking_with(|conn| list(conn, &q)).expect("lists");
+    let rows = list_page(&c, &q).await;
     let row = rows.first().expect("one row");
     assert!(row.content.starts_with("<p>body "), "{}", row.content);
     assert!(!row.title.is_empty());
@@ -844,34 +923,30 @@ fn the_rows_come_back_fully_populated() {
     assert_eq!(row.id_user, c.id_user);
 
     // And it is the same row the direct lookup returns.
-    let direct = c
-        .db
-        .blocking_with(|conn| Ok(entry_dao::find_by_id(conn, row.id, c.id_user)?))
-        .expect("finds")
-        .expect("exists");
+    let (id, id_user) = (row.id, c.id_user);
+    let direct =
+        c.db.with(|mut conn| async move { entry_dao::find_by_id(&mut conn, id, id_user).await })
+            .await
+            .expect("finds")
+            .expect("exists");
     assert_eq!(direct, *row);
 }
 
-#[test]
-fn an_empty_page_is_not_an_error() {
-    let c = corpus();
+#[tokio::test]
+async fn an_empty_page_is_not_an_error() {
+    let c = corpus().await;
     let expr = parse("intitle:nothing-in-the-corpus-matches-this", NOW).unwrap();
     let q = EntryQuery {
         search: Some(expr.clone()),
         ..base(&c)
     };
-    assert!(c.db.blocking_with(|conn| list(conn, &q)).expect("lists").is_empty());
-    assert_eq!(
-        c.db
-            .blocking_with(|conn| count_unread(conn, &q))
-            .expect("counts"),
-        0
-    );
+    assert!(list_page(&c, &q).await.is_empty());
+    assert_eq!(unread_count(&c, &q).await, 0);
 }
 
-#[test]
-fn a_rejected_query_never_reaches_the_database() {
-    let c = corpus();
+#[tokio::test]
+async fn a_rejected_query_never_reaches_the_database() {
+    let c = corpus().await;
     for q in [
         EntryQuery {
             scope: ListType::Feed,
@@ -892,7 +967,7 @@ fn a_rejected_query_never_reaches_the_database() {
             ..base(&c)
         },
     ] {
-        let e = c.db.blocking_with(|conn| list(conn, &q)).expect_err("rejected");
+        let e = list_err(&c, &q, "rejected").await;
         assert!(
             e.to_string().contains("scope") || e.to_string().contains("resumed"),
             "{e}"

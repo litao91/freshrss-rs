@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use freshrss_server::config::{AppConfig, LogFormat};
-use freshrss_server::db::{migrate, Db};
+use freshrss_server::db::Db;
 use freshrss_server::router::{router, AppState};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
@@ -53,17 +53,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Migrate => {
-            let db = Db::open(&config.database)?;
-            // Db::open already migrated; report the state explicitly for the operator.
-            let report = db.blocking_with(|conn| Ok(migrate::run(conn)?))?;
-            if report.applied.is_empty() {
-                println!("schema already at version {}", report.schema_version);
-            } else {
-                println!(
-                    "applied migrations {:?}, schema now at version {}",
-                    report.applied, report.schema_version
-                );
-            }
+            // Db::open already migrated; report the resulting state explicitly for the operator.
+            let db = Db::open(&config.database).await?;
+            println!("schema at version {}", db.schema_version().await?);
         }
         Command::Serve => serve(config).await?,
         Command::Parse(_) => unreachable!("handled above, before configuration is loaded"),
@@ -73,7 +65,7 @@ async fn main() -> Result<()> {
 
 async fn serve(config: AppConfig) -> Result<()> {
     let bind = config.server.bind;
-    let db = Db::open(&config.database)?;
+    let db = Db::open(&config.database).await?;
     tracing::info!(
         database = %config.database.path.display(),
         pool_size = config.database.pool_size,
@@ -91,7 +83,7 @@ async fn serve(config: AppConfig) -> Result<()> {
         .await
         .context("server error")?;
 
-    db.optimize()?;
+    db.optimize().await?;
     tracing::info!("shut down cleanly");
     Ok(())
 }
@@ -137,7 +129,7 @@ fn init_tracing(config: &AppConfig) {
             EnvFilter::new("info")
         })
         // The SQL emitted by the search compiler is useful but far too loud by default.
-        .add_directive("rusqlite=warn".parse().expect("static directive"));
+        .add_directive("sqlx=warn".parse().expect("static directive"));
 
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)

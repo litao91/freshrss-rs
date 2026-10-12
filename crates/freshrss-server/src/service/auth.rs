@@ -8,9 +8,9 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use rusqlite::Connection;
+use sqlx::SqliteConnection;
 
-use crate::config::{AppConfig, RegistrationMode};
+use crate::config::{AppConfig, RegistrationConfig, RegistrationMode};
 use crate::db::dao::{session as session_dao, user as user_dao};
 use crate::db::Db;
 use crate::domain::user::User;
@@ -70,7 +70,7 @@ pub struct RegisterRequest {
 ///
 /// The first account becomes an administrator when `registration.first_user_is_admin` is set, which
 /// is how a fresh install bootstraps itself without a separate setup flow.
-pub fn register(db: &Db, config: &AppConfig, req: RegisterRequest) -> Result<User> {
+pub async fn register(db: &Db, config: &AppConfig, req: RegisterRequest) -> Result<User> {
     let username = req.username.trim().to_string();
     User::validate_username(&username).map_err(validation_error)?;
     User::validate_password(&req.password).map_err(validation_error)?;
@@ -83,9 +83,10 @@ pub fn register(db: &Db, config: &AppConfig, req: RegisterRequest) -> Result<Use
         .map(str::to_string);
     User::validate_email(email.as_deref()).map_err(validation_error)?;
 
-    db.blocking_with(|conn| {
-        let existing = user_dao::count(conn)?;
-        match config.registration.mode {
+    let registration: RegistrationConfig = config.registration.clone();
+    db.with(move |mut conn| async move {
+        let existing = user_dao::count(&mut conn).await?;
+        match registration.mode {
             RegistrationMode::Closed => return Err(Error::RegistrationClosed),
             RegistrationMode::FirstUserOnly if existing > 0 => {
                 return Err(Error::RegistrationClosed);
@@ -99,31 +100,37 @@ pub fn register(db: &Db, config: &AppConfig, req: RegisterRequest) -> Result<Use
         // This does reveal whether a username exists, which is a deliberate trade: a registration
         // form that says "try again" with no reason is unusable. The login path, where enumeration
         // actually matters, is timing-equalized and says only "invalid credentials".
-        if user_dao::find_by_username(conn, &username)?.is_some() {
+        if user_dao::find_by_username(&mut conn, &username)
+            .await?
+            .is_some()
+        {
             return Err(Error::Conflict("that username is already taken".into()));
         }
         if let Some(addr) = email.as_deref() {
-            if user_dao::find_by_email(conn, addr)?.is_some() {
+            if user_dao::find_by_email(&mut conn, addr).await?.is_some() {
                 return Err(Error::Conflict(
                     "that email address is already registered".into(),
                 ));
             }
         }
 
-        let is_admin = existing == 0 && config.registration.first_user_is_admin;
+        let is_admin = existing == 0 && registration.first_user_is_admin;
         let password_hash = hash_password(&req.password)?;
         let id = user_dao::insert(
-            conn,
+            &mut conn,
             &user_dao::NewUser {
                 username: &username,
                 email: email.as_deref(),
                 password_hash: &password_hash,
                 is_admin,
             },
-        )?;
-        user_dao::find_by_id(conn, id)?
+        )
+        .await?;
+        user_dao::find_by_id(&mut conn, id)
+            .await?
             .ok_or_else(|| Error::Internal("user vanished immediately after insert".into()))
     })
+    .await
 }
 
 /// Adapts the domain validators' `&'static str` reasons to the crate error type.
@@ -149,7 +156,7 @@ pub struct ClientInfo<'a> {
 ///
 /// The username may be given as either the username or the email, because people do not remember
 /// which one they signed up with.
-pub fn login(
+pub async fn login(
     db: &Db,
     config: &AppConfig,
     req: LoginRequest,
@@ -160,31 +167,43 @@ pub fn login(
         return Err(Error::BadCredentials);
     }
 
-    let (user, session) = db.blocking_with(|conn| {
-        let user = authenticate(conn, identifier, &req.password)?;
-        let ttl = i64::from(config.session.max_age_days) * 86_400;
-        let session = session_dao::create(conn, user.id, ttl, client.ip, client.user_agent)?;
-        user_dao::touch_last_seen(conn, user.id)?;
+    let ttl = i64::from(config.session.max_age_days) * 86_400;
+    let ip = client.ip.map(str::to_owned);
+    let user_agent = client.user_agent.map(str::to_owned);
+    db.with(move |mut conn| async move {
+        let user = authenticate(&mut conn, identifier, &req.password).await?;
+        let session = session_dao::create(
+            &mut conn,
+            user.id,
+            ttl,
+            ip.as_deref(),
+            user_agent.as_deref(),
+        )
+        .await?;
+        user_dao::touch_last_seen(&mut conn, user.id).await?;
 
         // Upgrade a hash stored under older parameters while we have the plaintext anyway. This is
         // the only moment it is possible, so skipping it would leave the hash weak forever.
         if needs_rehash(&user.password_hash) {
             let fresh = hash_password(&req.password)?;
-            user_dao::update_password(conn, user.id, &fresh)?;
+            user_dao::update_password(&mut conn, user.id, &fresh).await?;
         }
         Ok((user, session))
-    })?;
-
-    Ok((user, session))
+    })
+    .await
 }
 
 /// The shared credential check, so `login` and any future token-based path agree.
-fn authenticate(conn: &Connection, identifier: &str, password: &str) -> Result<User> {
+async fn authenticate(
+    conn: &mut SqliteConnection,
+    identifier: &str,
+    password: &str,
+) -> Result<User> {
     // The username may be given as either the username or the email, because people do not
     // remember which one they signed up with.
-    let user = match user_dao::find_by_username(conn, identifier)? {
+    let user = match user_dao::find_by_username(conn, identifier).await? {
         Some(user) => Some(user),
-        None => user_dao::find_by_email(conn, identifier)?,
+        None => user_dao::find_by_email(conn, identifier).await?,
     };
 
     let Some(user) = user else {
@@ -216,28 +235,30 @@ fn dummy_hash() -> &'static str {
         .as_str()
 }
 
-pub fn logout(db: &Db, session_id: &str) -> Result<()> {
-    db.blocking_with(|conn| {
-        session_dao::revoke(conn, session_id)?;
+pub async fn logout(db: &Db, session_id: &str) -> Result<()> {
+    db.with(move |mut conn| async move {
+        session_dao::revoke(&mut conn, session_id).await?;
         Ok(())
     })
+    .await
 }
 
 /// Resolves a session cookie to a user, or `None` when absent, expired or revoked.
-pub fn resolve_session(db: &Db, session_id: &str) -> Result<Option<User>> {
-    db.blocking_with(|conn| {
-        let Some(session) = session_dao::find_valid(conn, session_id)? else {
+pub async fn resolve_session(db: &Db, session_id: &str) -> Result<Option<User>> {
+    db.with(move |mut conn| async move {
+        let Some(session) = session_dao::find_valid(&mut conn, session_id).await? else {
             return Ok(None);
         };
-        Ok(user_dao::find_by_id(conn, session.id_user)?)
+        user_dao::find_by_id(&mut conn, session.id_user).await
     })
+    .await
 }
 
 /// Changes a password and signs out every other session.
 ///
 /// Revoking the others is what makes "I think my password leaked" actionable: changing it alone
 /// leaves any stolen session cookie working until it expires.
-pub fn change_password(
+pub async fn change_password(
     db: &Db,
     id_user: i64,
     current: &str,
@@ -245,19 +266,26 @@ pub fn change_password(
     keep_session: Option<&str>,
 ) -> Result<usize> {
     User::validate_password(next).map_err(validation_error)?;
+    let current = current.to_owned();
+    let next = next.to_owned();
+    let keep_session = keep_session.map(str::to_owned);
 
-    db.blocking_with(|conn| {
-        let user = user_dao::find_by_id(conn, id_user)?
+    db.with(move |mut conn| async move {
+        let user = user_dao::find_by_id(&mut conn, id_user)
+            .await?
             .ok_or_else(|| Error::NotFound(format!("user {id_user}")))?;
-        if !verify_password(current, &user.password_hash) {
+        if !verify_password(&current, &user.password_hash) {
             return Err(Error::BadCredentials);
         }
-        let hash = hash_password(next)?;
-        user_dao::update_password(conn, id_user, &hash)?;
-        let revoked = match keep_session {
-            Some(sid) => session_dao::revoke_others(conn, id_user, sid)?,
-            None => session_dao::revoke_for_user(conn, id_user)?,
+        // Hashed only once the old password has been proved, so a wrong `current` costs no argon2
+        // run — the same reason `register` checks for a taken username before hashing.
+        let hash = hash_password(&next)?;
+        user_dao::update_password(&mut conn, id_user, &hash).await?;
+        let revoked = match keep_session.as_deref() {
+            Some(sid) => session_dao::revoke_others(&mut conn, id_user, sid).await?,
+            None => session_dao::revoke_for_user(&mut conn, id_user).await?,
         };
         Ok(revoked)
     })
+    .await
 }

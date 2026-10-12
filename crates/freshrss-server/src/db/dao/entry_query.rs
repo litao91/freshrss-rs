@@ -39,15 +39,16 @@
 //! `id_min`/`id_max` are a different thing and stay inclusive: they bound the *snapshot*, so an article
 //! ingested while the reader scrolls cannot shift the pages underneath them.
 
-use rusqlite::{Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Row as _, SqliteConnection, TypeInfo as _, ValueRef as _};
 
 use freshrss_search::ast::Expr;
 use freshrss_search::sql::{compile, SqlCtx};
 use freshrss_search::visibility::min_priority;
 
 use crate::db::dao::entry;
-use crate::db::sql::SqlValue;
+use crate::db::sql::{bind_all, sql, SqlValue};
 use crate::domain::entry::Entry;
 use crate::domain::ids::EntryId;
 use crate::domain::list_type::ListType;
@@ -665,7 +666,11 @@ fn order_by(q: &EntryQuery, a: &Aliases) -> String {
 /// the article beside the one it is showing, and "beside" means beside *in the current listing order*.
 /// Building it needs the boundary row's sort values, so they are read back with the same expressions the
 /// `ORDER BY` uses — one row, by primary key.
-pub fn cursor_after(conn: &Connection, q: &EntryQuery, id: EntryId) -> Result<Cursor> {
+pub async fn cursor_after(
+    conn: &mut SqliteConnection,
+    q: &EntryQuery,
+    id: EntryId,
+) -> Result<Cursor> {
     q.validate()?;
     if q.sort == Sort::Id {
         // The id sort carries no boundary values, and the ladder would be a single rung anyway.
@@ -686,7 +691,7 @@ pub fn cursor_after(conn: &Connection, q: &EntryQuery, id: EntryId) -> Result<Cu
         ));
     }
 
-    let mut sql = format!(
+    let mut statement = format!(
         "SELECT {} FROM entry {} INNER JOIN feed {} ON {f}.id = {e}.id_feed ",
         selects
             .iter()
@@ -699,60 +704,66 @@ pub fn cursor_after(conn: &Connection, q: &EntryQuery, id: EntryId) -> Result<Cu
         f = a.feed
     );
     if q.sort.joins_category() {
-        sql.push_str(&format!(
+        statement.push_str(&format!(
             "LEFT JOIN category {c} ON {c}.id = {f}.category ",
             c = a.category,
             f = a.feed
         ));
     }
-    sql.push_str(&format!("WHERE {} = ?", col(&a, "id")));
+    statement.push_str(&format!("WHERE {} = ?", col(&a, "id")));
 
     let numeric: Vec<bool> = selects.iter().map(|(_, n)| *n).collect();
-    let values = conn
-        .query_row(&sql, [id.micros()], |row| {
-            (0..numeric.len())
-                .map(|i| {
-                    // The type has to match the column's, because SQLite orders every INTEGER below
-                    // every TEXT and a mismatched bind would resume from the wrong end of the list.
-                    Ok(match row.get_ref(i)? {
-                        rusqlite::types::ValueRef::Integer(v) if numeric[i] => CursorValue::Int(v),
-                        rusqlite::types::ValueRef::Integer(v) => CursorValue::Text(v.to_string()),
-                        rusqlite::types::ValueRef::Text(t) => {
-                            CursorValue::Text(String::from_utf8_lossy(t).into_owned())
-                        }
-                        rusqlite::types::ValueRef::Null => CursorValue::Text(String::new()),
-                        rusqlite::types::ValueRef::Real(v) => CursorValue::Text(v.to_string()),
-                        rusqlite::types::ValueRef::Blob(_) => CursorValue::Text(String::new()),
-                    })
-                })
-                .collect::<SqlResult<Vec<_>>>()
-        })
-        .map_err(Error::from)?;
+    let row = sqlx::query(sql(statement))
+        .bind(id.micros())
+        .fetch_one(&mut *conn)
+        .await?;
+
+    let mut values = Vec::with_capacity(numeric.len());
+    for (i, is_numeric) in numeric.iter().enumerate() {
+        values.push(boundary(&row, i, *is_numeric)?);
+    }
 
     Ok(Cursor { id, values })
 }
 
+/// Reads one boundary value back in the type its column actually holds.
+///
+/// The type has to match, because SQLite orders every INTEGER below every TEXT and a mismatched
+/// bind would resume from the wrong end of the list. A NULL or a blob has no usable ordering value
+/// at all, so it comes back as the empty string: the ladder then compares it as less than
+/// everything, which is where SQLite's own `ORDER BY` puts it.
+fn boundary(row: &SqliteRow, index: usize, numeric: bool) -> Result<CursorValue> {
+    let raw = row.try_get_raw(index)?;
+    let info = raw.type_info();
+    if info.is_null() {
+        return Ok(CursorValue::Text(String::new()));
+    }
+    Ok(match info.name() {
+        "INTEGER" if numeric => CursorValue::Int(row.try_get(index)?),
+        "INTEGER" => CursorValue::Text(row.try_get::<i64, _>(index)?.to_string()),
+        "REAL" => CursorValue::Text(row.try_get::<f64, _>(index)?.to_string()),
+        "BLOB" => CursorValue::Text(String::new()),
+        _ => CursorValue::Text(row.try_get(index)?),
+    })
+}
+
 /// Runs the listing and reads the rows.
-pub fn list(conn: &Connection, q: &EntryQuery) -> Result<Vec<Entry>> {
+pub async fn list(conn: &mut SqliteConnection, q: &EntryQuery) -> Result<Vec<Entry>> {
     let built = q.build_rows()?;
-    let mut stmt = conn.prepare(&built.sql)?;
-    let rows = stmt
-        .query_map(
-            rusqlite::params_from_iter(built.params.iter()),
-            entry::from_row,
-        )?
-        .collect::<SqlResult<Vec<_>>>()?;
-    Ok(rows)
+    Ok(bind_all(sqlx::query(sql(built.sql)), built.params)
+        .try_map(entry::from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 /// How many unread articles the same scope, fences and search admit.
-pub fn count_unread(conn: &Connection, q: &EntryQuery) -> Result<i64> {
+pub async fn count_unread(conn: &mut SqliteConnection, q: &EntryQuery) -> Result<i64> {
     let built = q.build_unread_count()?;
-    Ok(conn.query_row(
-        &built.sql,
-        rusqlite::params_from_iter(built.params.iter()),
-        |r| r.get(0),
-    )?)
+    Ok(bind_all(sqlx::query(sql(built.sql)), built.params)
+        // The statement selects one unnamed `COUNT(*)`, so there is no column name to read it by.
+        .try_map(|row: SqliteRow| row.try_get::<i64, _>(0))
+        .fetch_one(&mut *conn)
+        .await?)
 }
 
 #[cfg(test)]
@@ -792,11 +803,7 @@ mod tests {
         // statements rather than only on the listing.
         let q = base();
         for built in [ids(&q), q.build_unread_count().unwrap()] {
-            assert!(
-                built.sql.contains("WHERE e.id_user = ?"),
-                "{}",
-                built.sql
-            );
+            assert!(built.sql.contains("WHERE e.id_user = ?"), "{}", built.sql);
             assert_eq!(built.params[0], SqlValue::Int(7));
         }
         assert!(rows(&q).sql.contains("e0.id_user"), "{}", rows(&q).sql);
@@ -811,7 +818,11 @@ mod tests {
             ..base()
         };
         let built = ids(&q);
-        assert!(built.sql.contains("INNER JOIN entrytag et ON"), "{}", built.sql);
+        assert!(
+            built.sql.contains("INNER JOIN entrytag et ON"),
+            "{}",
+            built.sql
+        );
         assert!(
             built.sql.contains("FROM entrytag etx"),
             "the label subquery must not shadow the scope's join: {}",
@@ -844,7 +855,11 @@ mod tests {
             let built = ids(&q);
             match floor {
                 Some(v) => {
-                    assert!(built.sql.contains("f.priority >= ?"), "{scope:?}: {}", built.sql);
+                    assert!(
+                        built.sql.contains("f.priority >= ?"),
+                        "{scope:?}: {}",
+                        built.sql
+                    );
                     assert!(
                         built.params.contains(&SqlValue::Int(v)),
                         "{scope:?} should floor at {v}: {:?}",
@@ -871,7 +886,9 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.params.contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
+            built
+                .params
+                .contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
             "{:?}",
             built.params
         );
@@ -886,7 +903,9 @@ mod tests {
             ..base()
         };
         assert!(
-            !ids(&q).params.contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
+            !ids(&q)
+                .params
+                .contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
             "{:?}",
             ids(&q).params
         );
@@ -926,7 +945,9 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.sql.contains("(e.is_favorite = 1 OR EXISTS (SELECT 1 FROM entrytag et2"),
+            built
+                .sql
+                .contains("(e.is_favorite = 1 OR EXISTS (SELECT 1 FROM entrytag et2"),
             "{}",
             built.sql
         );
@@ -942,7 +963,11 @@ mod tests {
             ..base()
         });
         assert!(tag.sql.contains("INNER JOIN entrytag et"), "{}", tag.sql);
-        assert!(!tag.sql.contains("DISTINCT"), "one id_tag cannot yield two rows: {}", tag.sql);
+        assert!(
+            !tag.sql.contains("DISTINCT"),
+            "one id_tag cannot yield two rows: {}",
+            tag.sql
+        );
 
         let any = ids(&EntryQuery {
             scope: ListType::AnyTag,
@@ -969,7 +994,11 @@ mod tests {
             scope: ListType::AnyTag,
             ..base()
         });
-        assert!(by_id.sql.starts_with("SELECT DISTINCT e.id FROM"), "{}", by_id.sql);
+        assert!(
+            by_id.sql.starts_with("SELECT DISTINCT e.id FROM"),
+            "{}",
+            by_id.sql
+        );
         let random = ids(&EntryQuery {
             scope: ListType::AnyTag,
             sort: Sort::Rand,
@@ -1039,7 +1068,13 @@ mod tests {
         .build_unread_count()
         .unwrap();
         assert!(!built.sql.contains("INNER JOIN entrytag"), "{}", built.sql);
-        assert!(built.sql.contains("WHERE EXISTS (SELECT 1 FROM entrytag et2"), "{}", built.sql);
+        assert!(
+            built
+                .sql
+                .contains("WHERE EXISTS (SELECT 1 FROM entrytag et2"),
+            "{}",
+            built.sql
+        );
     }
 
     // --- fences and cursors ------------------------------------------------
@@ -1099,7 +1134,9 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.sql.contains("((e.date < ?) OR (e.date = ? AND e.id < ?))"),
+            built
+                .sql
+                .contains("((e.date < ?) OR (e.date = ? AND e.id < ?))"),
             "{}",
             built.sql
         );
@@ -1178,7 +1215,9 @@ mod tests {
             built.sql
         );
         assert!(
-            built.sql.contains("(c.name = ? AND f.name = ? AND e.date = ? AND e.id < ?)"),
+            built
+                .sql
+                .contains("(c.name = ? AND f.name = ? AND e.date = ? AND e.id < ?)"),
             "{}",
             built.sql
         );
@@ -1203,7 +1242,9 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.sql.contains("((f.name < ?) OR (f.name = ? AND e.id < ?))"),
+            built
+                .sql
+                .contains("((f.name < ?) OR (f.name = ? AND e.id < ?))"),
             "{}",
             built.sql
         );
@@ -1241,13 +1282,20 @@ mod tests {
         for sort in [Sort::LastModified, Sort::LastUserModified] {
             let built = ids(&EntryQuery { sort, ..base() });
             assert!(
-                built.sql.contains(&format!("{} IS NOT NULL", sort_column(sort))),
+                built
+                    .sql
+                    .contains(&format!("{} IS NOT NULL", sort_column(sort))),
                 "{sort:?}: {}",
                 built.sql
             );
         }
         // `entry.date` and `entry.id` are NOT NULL, so the guard would be noise.
-        assert!(!ids(&EntryQuery { sort: Sort::Date, ..base() }).sql.contains("IS NOT NULL"));
+        assert!(!ids(&EntryQuery {
+            sort: Sort::Date,
+            ..base()
+        })
+        .sql
+        .contains("IS NOT NULL"));
     }
 
     fn sort_column(sort: Sort) -> &'static str {
@@ -1272,7 +1320,10 @@ mod tests {
         ] {
             let sql = ids(&EntryQuery { sort, ..base() }).sql;
             assert!(
-                sql.ends_with(&format!("ORDER BY {} DESC, e.id DESC LIMIT ?", order_head(sort))),
+                sql.ends_with(&format!(
+                    "ORDER BY {} DESC, e.id DESC LIMIT ?",
+                    order_head(sort)
+                )),
                 "{sort:?}: {sql}"
             );
         }
@@ -1313,7 +1364,9 @@ mod tests {
             ..base()
         });
         assert!(
-            built.sql.contains("ORDER BY c.name DESC, f.name DESC, e.title ASC, e.id DESC"),
+            built
+                .sql
+                .contains("ORDER BY c.name DESC, f.name DESC, e.title ASC, e.id DESC"),
             "{}",
             built.sql
         );
@@ -1334,7 +1387,11 @@ mod tests {
     #[test]
     fn the_random_sort_has_no_tiebreaker() {
         // `RANDOM(), e.id` would defeat the point, and the sort cannot be resumed anyway.
-        let sql = ids(&EntryQuery { sort: Sort::Rand, ..base() }).sql;
+        let sql = ids(&EntryQuery {
+            sort: Sort::Rand,
+            ..base()
+        })
+        .sql;
         assert!(sql.contains("ORDER BY RANDOM()"), "{sql}");
         assert!(!sql.contains("RANDOM() DESC, e.id"), "{sql}");
     }
@@ -1350,15 +1407,35 @@ mod tests {
             ..base()
         });
         assert_eq!(built.sql.matches("ORDER BY").count(), 2, "{}", built.sql);
-        assert!(built.sql.contains("INNER JOIN (SELECT e.id"), "{}", built.sql);
-        assert!(built.sql.ends_with("ORDER BY e0.title DESC, e0.id DESC"), "{}", built.sql);
+        assert!(
+            built.sql.contains("INNER JOIN (SELECT e.id"),
+            "{}",
+            built.sql
+        );
+        assert!(
+            built.sql.ends_with("ORDER BY e0.title DESC, e0.id DESC"),
+            "{}",
+            built.sql
+        );
     }
 
     #[test]
     fn the_outer_query_selects_the_wide_columns_once() {
         let built = rows(&base());
-        for column in ["title", "author", "content", "link", "date", "tags", "attributes"] {
-            assert!(built.sql.contains(&format!("e0.{column}")), "{column}: {}", built.sql);
+        for column in [
+            "title",
+            "author",
+            "content",
+            "link",
+            "date",
+            "tags",
+            "attributes",
+        ] {
+            assert!(
+                built.sql.contains(&format!("e0.{column}")),
+                "{column}: {}",
+                built.sql
+            );
         }
         // And the inner query does not, which is the whole point of the shape.
         let inner = ids(&base());
@@ -1371,9 +1448,15 @@ mod tests {
             sort: Sort::CategoryName,
             ..base()
         });
-        assert!(category.sql.contains("INNER JOIN feed f0"), "{}", category.sql);
         assert!(
-            category.sql.contains("INNER JOIN category c0 ON c0.id = f0.category"),
+            category.sql.contains("INNER JOIN feed f0"),
+            "{}",
+            category.sql
+        );
+        assert!(
+            category
+                .sql
+                .contains("INNER JOIN category c0 ON c0.id = f0.category"),
             "{}",
             category.sql
         );
@@ -1417,7 +1500,9 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.sql.contains("AND ((instr(e.title_folded, ?) > 0) AND (e.id_feed IN (?)))"),
+            built
+                .sql
+                .contains("AND ((instr(e.title_folded, ?) > 0) AND (e.id_feed IN (?)))"),
             "{}",
             built.sql
         );
@@ -1462,7 +1547,10 @@ mod tests {
     fn a_scoped_query_without_its_id_is_rejected() {
         for scope in [ListType::Category, ListType::Feed, ListType::Tag] {
             let e = err(&EntryQuery { scope, ..base() });
-            assert!(matches!(&e, Error::Validation(m) if m.contains("needs an id")), "{e}");
+            assert!(
+                matches!(&e, Error::Validation(m) if m.contains("needs an id")),
+                "{e}"
+            );
         }
     }
 
@@ -1489,7 +1577,10 @@ mod tests {
             }),
             ..base()
         });
-        assert!(matches!(&e, Error::Validation(m) if m.contains("cannot be resumed")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("cannot be resumed")),
+            "{e}"
+        );
     }
 
     #[test]
@@ -1606,7 +1697,10 @@ mod tests {
         // Folded, because that is what a containment needle is — which is itself worth knowing: the
         // statement text still never sees it.
         assert!(
-            built.params.iter().any(|p| matches!(p, SqlValue::Text(t) if t.contains("drop table entry"))),
+            built
+                .params
+                .iter()
+                .any(|p| matches!(p, SqlValue::Text(t) if t.contains("drop table entry"))),
             "{:?}",
             built.params
         );
@@ -1630,10 +1724,7 @@ mod tests {
         // stable and its numbers have to stay numbers.
         let cursor = Cursor {
             id: EntryId::from_micros(1_700_000_000_123_456),
-            values: vec![
-                CursorValue::Text("News".into()),
-                CursorValue::Int(42),
-            ],
+            values: vec![CursorValue::Text("News".into()), CursorValue::Int(42)],
         };
         let json = serde_json::to_string(&cursor).unwrap();
         assert_eq!(serde_json::from_str::<Cursor>(&json).unwrap(), cursor);

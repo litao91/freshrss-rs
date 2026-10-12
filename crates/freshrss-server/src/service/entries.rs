@@ -13,13 +13,13 @@
 use std::collections::HashMap;
 
 use base64::Engine as _;
-use rusqlite::Connection;
+use sqlx::SqliteConnection;
 
 use crate::api::dto::{EntryFullDto, EntrySummaryDto, FeedRefDto, LabelRefDto};
+use crate::db::dao::entry_query::Cursor;
 use crate::db::dao::{category as cat_dao, feed as feed_dao, tag as tag_dao};
 use crate::domain::entry::Entry;
 use crate::domain::feed::Feed;
-use crate::db::dao::entry_query::Cursor;
 use crate::error::{Error, Result};
 
 /// How much of the body the list pane shows.
@@ -40,7 +40,7 @@ struct Lookups {
 }
 
 impl Lookups {
-    fn load(conn: &Connection, id_user: i64, entries: &[Entry]) -> Result<Self> {
+    async fn load(conn: &mut SqliteConnection, id_user: i64, entries: &[Entry]) -> Result<Self> {
         let feed_ids: Vec<i64> = unique(entries.iter().map(|e| e.id_feed));
         let entry_ids: Vec<i64> = entries.iter().map(|e| e.id.micros()).collect();
 
@@ -49,7 +49,7 @@ impl Lookups {
         for id in feed_ids {
             // One primary-key seek per feed rather than a single `IN` query: a page touches a handful
             // of feeds at most, and this keeps the folder ids to look up in the same pass.
-            if let Some(feed) = feed_dao::find_by_id(conn, id, id_user)? {
+            if let Some(feed) = feed_dao::find_by_id(conn, id, id_user).await? {
                 category_ids.extend(feed.category);
                 feeds.insert(id, feed);
             }
@@ -57,12 +57,13 @@ impl Lookups {
 
         let mut categories = HashMap::with_capacity(category_ids.len());
         for id in unique(category_ids.into_iter()) {
-            if let Some(cat) = cat_dao::find_by_id(conn, id, id_user)? {
+            if let Some(cat) = cat_dao::find_by_id(conn, id, id_user).await? {
                 categories.insert(id, cat.name);
             }
         }
 
-        let labels = tag_dao::labels_for_entries(conn, &entry_ids)?
+        let labels = tag_dao::labels_for_entries(conn, &entry_ids)
+            .await?
             .into_iter()
             .map(|(entry, tags)| {
                 (
@@ -90,17 +91,21 @@ impl Lookups {
 }
 
 /// Renders a page of entries as summaries, in the order given.
-pub fn summaries(conn: &Connection, id_user: i64, entries: &[Entry]) -> Result<Vec<EntrySummaryDto>> {
-    let lookups = Lookups::load(conn, id_user, entries)?;
-    Ok(entries
-        .iter()
-        .map(|e| summary_of(e, &lookups))
-        .collect())
+pub async fn summaries(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+    entries: &[Entry],
+) -> Result<Vec<EntrySummaryDto>> {
+    let lookups = Lookups::load(conn, id_user, entries).await?;
+    Ok(entries.iter().map(|e| summary_of(e, &lookups)).collect())
 }
 
 /// Renders one entry with its body, for the reading pane.
-pub fn full(conn: &Connection, entry: &Entry) -> Result<(EntryFullDto, FeedRefDto)> {
-    let lookups = Lookups::load(conn, entry.id_user, std::slice::from_ref(entry))?;
+pub async fn full(
+    conn: &mut SqliteConnection,
+    entry: &Entry,
+) -> Result<(EntryFullDto, FeedRefDto)> {
+    let lookups = Lookups::load(conn, entry.id_user, std::slice::from_ref(entry)).await?;
     let summary = summary_of(entry, &lookups);
     let feed = feed_ref(entry.id_feed, lookups.feed(entry.id_feed));
     Ok((
@@ -121,7 +126,8 @@ fn summary_of(entry: &Entry, lookups: &Lookups) -> EntrySummaryDto {
     EntrySummaryDto {
         id: entry.id,
         feed_id: entry.id_feed,
-        feed_name: feed.map(|f| f.display_name().to_owned())
+        feed_name: feed
+            .map(|f| f.display_name().to_owned())
             .unwrap_or_default(),
         category_id: feed.and_then(|f| f.category),
         category_name: feed
@@ -137,7 +143,11 @@ fn summary_of(entry: &Entry, lookups: &Lookups) -> EntrySummaryDto {
         is_read: entry.is_read,
         is_favorite: entry.is_favorite,
         tags: entry.tags.clone(),
-        labels: lookups.labels.get(&entry.id.micros()).cloned().unwrap_or_default(),
+        labels: lookups
+            .labels
+            .get(&entry.id.micros())
+            .cloned()
+            .unwrap_or_default(),
         thumbnail: entry.thumbnail().map(|t| t.url),
         has_enclosures: entry.has_enclosures(),
         has_media: playable.is_some_and(|e| e.is_audio() || e.is_video()),
@@ -150,14 +160,16 @@ fn summary_of(entry: &Entry, lookups: &Lookups) -> EntrySummaryDto {
 fn feed_ref(id: i64, feed: Option<&Feed>) -> FeedRefDto {
     FeedRefDto {
         id,
-        name: feed.map(|f| f.display_name().to_owned()).unwrap_or_default(),
+        name: feed
+            .map(|f| f.display_name().to_owned())
+            .unwrap_or_default(),
         website: feed.map(|f| f.website.clone()).unwrap_or_default(),
     }
 }
 
 /// The feed a single entry belongs to, for the reading pane's header.
-pub fn feed_of(conn: &Connection, entry: &Entry) -> Result<FeedRefDto> {
-    let feed = feed_dao::find_by_id(conn, entry.id_feed, entry.id_user)?;
+pub async fn feed_of(conn: &mut SqliteConnection, entry: &Entry) -> Result<FeedRefDto> {
+    let feed = feed_dao::find_by_id(conn, entry.id_feed, entry.id_user).await?;
     Ok(feed_ref(entry.id_feed, feed.as_ref()))
 }
 
@@ -182,7 +194,8 @@ fn unique<I: Iterator<Item = i64>>(iter: I) -> Vec<i64> {
 
 /// Base64url without padding: the cursor goes into a query string, so `+` and `/` would have to be
 /// escaped and a trailing `=` reads like a typo.
-const CURSOR_ENGINE: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+const CURSOR_ENGINE: base64::engine::GeneralPurpose =
+    base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 /// Encodes a cursor for the wire.
 pub fn encode_cursor(cursor: &Cursor) -> Result<String> {
@@ -217,10 +230,7 @@ mod tests {
     fn cursor() -> Cursor {
         Cursor {
             id: EntryId::from_micros(1_700_000_000_123_456),
-            values: vec![
-                CursorValue::Text("News".into()),
-                CursorValue::Int(42),
-            ],
+            values: vec![CursorValue::Text("News".into()), CursorValue::Int(42)],
         }
     }
 
@@ -235,7 +245,10 @@ mod tests {
     fn the_wire_form_is_url_safe_and_unpadded() {
         // It goes into a query string, so `+`, `/` and `=` would all have to be escaped.
         let encoded = encode_cursor(&cursor()).expect("encodes");
-        assert!(!encoded.contains('+') && !encoded.contains('/') && !encoded.contains('='), "{encoded}");
+        assert!(
+            !encoded.contains('+') && !encoded.contains('/') && !encoded.contains('='),
+            "{encoded}"
+        );
         // A cursor with no values is the id sort's, and it is the common case.
         let bare = encode_cursor(&Cursor {
             id: EntryId::from_micros(1),

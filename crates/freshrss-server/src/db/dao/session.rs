@@ -4,11 +4,13 @@
 //! revoked individually, and swept when it expires. A signed-JWT cookie would be stateless but
 //! then "sign out everywhere" and the account menu's session list are both impossible.
 
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use sqlx::SqliteConnection;
 
+use crate::db::sql::sql;
 use crate::domain::ids::now_unix;
+use crate::error::Result;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Session {
     pub id: String,
     pub id_user: i64,
@@ -25,13 +27,13 @@ impl Session {
 }
 
 /// Creates a session with a random id and returns it.
-pub fn create(
-    conn: &Connection,
+pub async fn create(
+    conn: &mut SqliteConnection,
     id_user: i64,
     ttl_secs: i64,
     ip: Option<&str>,
     user_agent: Option<&str>,
-) -> SqlResult<Session> {
+) -> Result<Session> {
     let now = now_unix();
     let session = Session {
         // v4 is 122 bits of entropy, which is plenty for a bearer token that is only ever
@@ -43,18 +45,18 @@ pub fn create(
         ip: ip.map(str::to_string),
         user_agent: user_agent.map(str::to_string),
     };
-    conn.execute(
+    sqlx::query(
         "INSERT INTO session (id, id_user, created_at, expires_at, ip, user_agent)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            session.id,
-            session.id_user,
-            session.created_at,
-            session.expires_at,
-            session.ip,
-            session.user_agent,
-        ],
-    )?;
+    )
+    .bind(&session.id)
+    .bind(session.id_user)
+    .bind(session.created_at)
+    .bind(session.expires_at)
+    .bind(&session.ip)
+    .bind(&session.user_agent)
+    .execute(&mut *conn)
+    .await?;
     Ok(session)
 }
 
@@ -63,74 +65,77 @@ const COLUMNS: &str = "id, id_user, created_at, expires_at, ip, user_agent";
 /// The same list qualified with the `s.` alias, for the join in [`find_valid`].
 const COLUMNS_ALIASED: &str = "s.id, s.id_user, s.created_at, s.expires_at, s.ip, s.user_agent";
 
-fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Session> {
-    Ok(Session {
-        id: row.get(0)?,
-        id_user: row.get(1)?,
-        created_at: row.get(2)?,
-        expires_at: row.get(3)?,
-        ip: row.get(4)?,
-        user_agent: row.get(5)?,
-    })
-}
-
 /// Looks a session up, returning `None` when it does not exist, has expired, or belongs to a
 /// disabled account.
 ///
 /// Expiry is enforced here rather than only by the cookie's `Max-Age`, because a cookie can be
 /// replayed after the account was disabled and because the sweep is opportunistic.
-pub fn find_valid(conn: &Connection, id: &str) -> SqlResult<Option<Session>> {
+pub async fn find_valid(conn: &mut SqliteConnection, id: &str) -> Result<Option<Session>> {
     let now = now_unix();
-    conn.query_row(
-        &format!(
-            "SELECT {COLUMNS_ALIASED} FROM session s
-             INNER JOIN user u ON u.id = s.id_user
-             WHERE s.id = ?1 AND s.expires_at > ?2 AND u.enabled = 1"
-        ),
-        params![id, now],
-        from_row,
-    )
-    .optional()
+    Ok(sqlx::query_as(sql(format!(
+        "SELECT {COLUMNS_ALIASED} FROM session s
+         INNER JOIN user u ON u.id = s.id_user
+         WHERE s.id = ?1 AND s.expires_at > ?2 AND u.enabled = 1"
+    )))
+    .bind(id)
+    .bind(now)
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
-pub fn find(conn: &Connection, id: &str) -> SqlResult<Option<Session>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM session WHERE id = ?1"),
-        params![id],
-        from_row,
+pub async fn find(conn: &mut SqliteConnection, id: &str) -> Result<Option<Session>> {
+    Ok(
+        sqlx::query_as(sql(format!("SELECT {COLUMNS} FROM session WHERE id = ?1")))
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?,
     )
-    .optional()
 }
 
-pub fn list_for_user(conn: &Connection, id_user: i64) -> SqlResult<Vec<Session>> {
-    let mut stmt = conn.prepare(&format!(
+pub async fn list_for_user(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Session>> {
+    Ok(sqlx::query_as(sql(format!(
         "SELECT {COLUMNS} FROM session WHERE id_user = ?1 ORDER BY created_at DESC"
-    ))?;
-    let rows = stmt.query_map(params![id_user], from_row)?;
-    rows.collect()
+    )))
+    .bind(id_user)
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
-pub fn revoke(conn: &Connection, id: &str) -> SqlResult<bool> {
-    Ok(conn.execute("DELETE FROM session WHERE id = ?1", params![id])? > 0)
+pub async fn revoke(conn: &mut SqliteConnection, id: &str) -> Result<bool> {
+    Ok(sqlx::query("DELETE FROM session WHERE id = ?1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
-pub fn revoke_for_user(conn: &Connection, id_user: i64) -> SqlResult<usize> {
-    conn.execute("DELETE FROM session WHERE id_user = ?1", params![id_user])
+pub async fn revoke_for_user(conn: &mut SqliteConnection, id_user: i64) -> Result<usize> {
+    Ok(sqlx::query("DELETE FROM session WHERE id_user = ?1")
+        .bind(id_user)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected() as usize)
 }
 
 /// Signs out every session except `keep`, for "sign out other devices" after a password change.
-pub fn revoke_others(conn: &Connection, id_user: i64, keep: &str) -> SqlResult<usize> {
-    conn.execute(
-        "DELETE FROM session WHERE id_user = ?1 AND id <> ?2",
-        params![id_user, keep],
+pub async fn revoke_others(conn: &mut SqliteConnection, id_user: i64, keep: &str) -> Result<usize> {
+    Ok(
+        sqlx::query("DELETE FROM session WHERE id_user = ?1 AND id <> ?2")
+            .bind(id_user)
+            .bind(keep)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected() as usize,
     )
 }
 
 /// Deletes expired sessions. Runs opportunistically from the scheduler rather than on a timer of
 /// its own; a stale row is inert, so an occasional skip costs nothing.
-pub fn sweep_expired(conn: &Connection) -> SqlResult<usize> {
-    conn.execute(
-        "DELETE FROM session WHERE expires_at <= ?1",
-        params![now_unix()],
-    )
+pub async fn sweep_expired(conn: &mut SqliteConnection) -> Result<usize> {
+    Ok(sqlx::query("DELETE FROM session WHERE expires_at <= ?1")
+        .bind(now_unix())
+        .execute(&mut *conn)
+        .await?
+        .rows_affected() as usize)
 }

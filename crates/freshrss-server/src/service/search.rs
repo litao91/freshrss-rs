@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::Connection;
+use sqlx::SqliteConnection;
 
 use freshrss_search::ast::Expr;
 use freshrss_search::expand::{expand, QueryResolver};
@@ -15,8 +15,8 @@ use freshrss_search::parser::parse;
 
 use crate::db::dao::user_query as query_dao;
 use crate::db::Db;
-use crate::error::Result;
 use crate::domain::ids::now_unix;
+use crate::error::Result;
 
 /// Resolves `S:`/`search:` against one user's saved searches.
 ///
@@ -31,13 +31,13 @@ pub struct SavedSearches {
 
 impl SavedSearches {
     /// Loads a user's saved searches.
-    pub fn load(conn: &Connection, id_user: i64) -> Result<Self> {
+    pub async fn load(conn: &mut SqliteConnection, id_user: i64) -> Result<Self> {
         let mut out = Self {
             by_id: HashMap::new(),
             by_name: HashMap::new(),
             ids: Vec::new(),
         };
-        for query in query_dao::list(conn, id_user)? {
+        for query in query_dao::list(conn, id_user).await? {
             // Blank ones are dropped here rather than by the resolver, so `S:*` does not have to skip
             // them one at a time and a name lookup cannot resolve to nothing.
             if !query.is_usable() {
@@ -89,24 +89,21 @@ impl QueryResolver for SavedSearches {
 /// Any [`freshrss_search::SearchError`]: a syntax error, a bad regex, an unknown saved search, a cycle.
 /// The API maps all of them to `400` with the code `bad_search`.
 pub async fn compile(text: &str, id_user: i64, db: &Db) -> Result<Expr> {
+    compile_at(text, id_user, db, now_unix()).await
+}
+
+/// [`compile`] against a caller-supplied instant.
+///
+/// Tests need one fixed `now`, or a relative interval would resolve against a wall clock that moves
+/// between the assertion and the value it is compared with.
+pub async fn compile_at(text: &str, id_user: i64, db: &Db, now: i64) -> Result<Expr> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(Expr::TRUE);
     }
-    // Owned, because `spawn_blocking` requires `'static` and a query is short enough that the copy
-    // costs less than reasoning about the borrow would.
-    let text = trimmed.to_owned();
-    let db = db.clone();
-    tokio::task::spawn_blocking(move || compile_sync(&text, id_user, &db, now_unix()))
-        .await
-        .map_err(crate::error::Error::from)?
-}
-
-/// The synchronous form, for the CLI and for anything already on a blocking thread.
-pub fn compile_sync(text: &str, id_user: i64, db: &Db, now: i64) -> Result<Expr> {
-    let expr = db.blocking_with(|conn| {
-        let saved = SavedSearches::load(conn, id_user)?;
-        let parsed = parse(text, now)?;
+    db.with(|mut conn| async move {
+        let saved = SavedSearches::load(&mut conn, id_user).await?;
+        let parsed = parse(trimmed, now)?;
         // No saved searches means no reference can resolve, so skip the walk: the common case is a
         // plain query and this keeps it to one database round trip.
         Ok(if saved.is_empty() && !names_a_saved_query(&parsed) {
@@ -114,18 +111,15 @@ pub fn compile_sync(text: &str, id_user: i64, db: &Db, now: i64) -> Result<Expr>
         } else {
             expand(&parsed, &saved, now)?
         })
-    })?;
-    Ok(expr)
+    })
+    .await
 }
 
 /// True when the tree still holds a `S:`/`search:` reference.
 fn names_a_saved_query(expr: &Expr) -> bool {
-    expr.preds().iter().any(|p| {
-        matches!(
-            p,
-            freshrss_search::ast::Pred::SavedQuery { .. }
-        )
-    })
+    expr.preds()
+        .iter()
+        .any(|p| matches!(p, freshrss_search::ast::Pred::SavedQuery { .. }))
 }
 
 #[cfg(test)]
@@ -134,30 +128,37 @@ mod tests {
 
     use super::*;
     use crate::db::dao::user as user_dao;
-    use crate::error::Error;
+    use crate::db::support::db as test_db;
     use crate::domain::user_query::SavedQuery;
+    use crate::error::Error;
 
     const NOW: i64 = 1_700_000_000;
 
-    fn setup() -> (Db, i64) {
-        let db = Db::in_memory().expect("in-memory db");
-        let id_user = db
-            .blocking_with(|conn| {
-                Ok(user_dao::insert(
-                    conn,
-                    &user_dao::NewUser {
-                        username: "alice",
-                        email: None,
-                        password_hash: "argon2id$hash",
-                        is_admin: false,
-                    },
-                )?)
-            })
-            .expect("create user");
-        (db, id_user)
+    async fn setup() -> (Db, i64) {
+        let store = test_db().await;
+        let id_user = user(&store, "alice").await;
+        (store, id_user)
     }
 
-    /// Unwraps the search error, which `compile_sync` boxes into the crate's own `Error`.
+    async fn user(db: &Db, username: &str) -> i64 {
+        let username = username.to_owned();
+        db.with(|mut conn| async move {
+            user_dao::insert(
+                &mut conn,
+                &user_dao::NewUser {
+                    username: &username,
+                    email: None,
+                    password_hash: "argon2id$hash",
+                    is_admin: false,
+                },
+            )
+            .await
+        })
+        .await
+        .expect("create user")
+    }
+
+    /// Unwraps the search error, which `compile_at` boxes into the crate's own `Error`.
     fn search_error(e: &Error) -> &freshrss_search::SearchError {
         match e {
             Error::Search(inner) => inner,
@@ -165,76 +166,90 @@ mod tests {
         }
     }
 
-    fn save(db: &Db, id_user: i64, name: &str, search: &str) -> i64 {
-        db.blocking_with(|conn| Ok(query_dao::insert(conn, &SavedQuery::new(id_user, name, search))?))
+    async fn save(db: &Db, id_user: i64, name: &str, search: &str) -> i64 {
+        let query = SavedQuery::new(id_user, name, search);
+        db.with(move |mut conn| async move { query_dao::insert(&mut conn, &query).await })
+            .await
             .expect("save")
     }
 
-    #[test]
-    fn a_plain_query_needs_no_lookup() {
-        let (db, id_user) = setup();
-        let expr = compile_sync("intitle:rust", id_user, &db, NOW).expect("compiles");
+    #[tokio::test]
+    async fn a_plain_query_needs_no_lookup() {
+        let (store, id_user) = setup().await;
+        let expr = compile_at("intitle:rust", id_user, &store, NOW)
+            .await
+            .expect("compiles");
         assert_eq!(expr.preds().len(), 1);
-        assert!(expr.preds().iter().all(|p| !matches!(p, Pred::SavedQuery { .. })));
+        assert!(expr
+            .preds()
+            .iter()
+            .all(|p| !matches!(p, Pred::SavedQuery { .. })));
     }
 
-    #[test]
-    fn an_empty_query_is_true_rather_than_an_error() {
-        let (db, id_user) = setup();
+    #[tokio::test]
+    async fn an_empty_query_is_true_rather_than_an_error() {
+        let (store, id_user) = setup().await;
         for text in ["", "   ", "\n"] {
-            assert!(compile_sync(text, id_user, &db, NOW).expect("compiles").is_true(), "{text:?}");
+            assert!(
+                compile_at(text, id_user, &store, NOW)
+                    .await
+                    .expect("compiles")
+                    .is_true(),
+                "{text:?}"
+            );
         }
     }
 
-    #[test]
-    fn a_saved_search_is_expanded_by_name_and_by_id() {
-        let (db, id_user) = setup();
-        let id = save(&db, id_user, "unread rust", "intitle:rust -author:bot");
+    #[tokio::test]
+    async fn a_saved_search_is_expanded_by_name_and_by_id() {
+        let (store, id_user) = setup().await;
+        let id = save(&store, id_user, "unread rust", "intitle:rust -author:bot").await;
 
         // A bare value ends at the space, so the space in the name has to be quoted or escaped.
         assert!(matches!(
-            search_error(&compile_sync("search:unread rust", id_user, &db, NOW).expect_err("rejected")),
+            search_error(
+                &compile_at("search:unread rust", id_user, &store, NOW)
+                    .await
+                    .expect_err("rejected")
+            ),
             freshrss_search::SearchError::QueryNotFound { .. }
         ));
 
-        let by_id = compile_sync(&format!("S:{id}"), id_user, &db, NOW).expect("compiles");
+        let by_id = compile_at(&format!("S:{id}"), id_user, &store, NOW)
+            .await
+            .expect("compiles");
         assert_eq!(
             freshrss_search::render::render(&by_id),
             "intitle:rust -author:bot"
         );
     }
 
-    #[test]
-    fn a_missing_saved_search_is_a_400_not_a_silent_match_everything() {
-        let (db, id_user) = setup();
-        save(&db, id_user, "real", "intitle:x");
-        let e = compile_sync("S:999", id_user, &db, NOW).expect_err("rejected");
-        assert!(matches!(
-            search_error(&e),
-            freshrss_search::SearchError::QueryNotFound { .. }
-        ), "{e}");
+    #[tokio::test]
+    async fn a_missing_saved_search_is_a_400_not_a_silent_match_everything() {
+        let (store, id_user) = setup().await;
+        save(&store, id_user, "real", "intitle:x").await;
+        let e = compile_at("S:999", id_user, &store, NOW)
+            .await
+            .expect_err("rejected");
+        assert!(
+            matches!(
+                search_error(&e),
+                freshrss_search::SearchError::QueryNotFound { .. }
+            ),
+            "{e}"
+        );
         assert!(e.is_client_error());
     }
 
-    #[test]
-    fn a_user_never_sees_another_users_saved_search() {
-        let (db, id_user) = setup();
-        let other = db
-            .blocking_with(|conn| {
-                Ok(user_dao::insert(
-                    conn,
-                    &user_dao::NewUser {
-                        username: "bob",
-                        email: None,
-                        password_hash: "argon2id$hash",
-                        is_admin: false,
-                    },
-                )?)
-            })
-            .expect("create user");
-        let foreign = save(&db, other, "private", "intitle:secret");
+    #[tokio::test]
+    async fn a_user_never_sees_another_users_saved_search() {
+        let (store, id_user) = setup().await;
+        let other = user(&store, "bob").await;
+        let foreign = save(&store, other, "private", "intitle:secret").await;
 
-        let e = compile_sync(&format!("S:{foreign}"), id_user, &db, NOW).expect_err("rejected");
+        let e = compile_at(&format!("S:{foreign}"), id_user, &store, NOW)
+            .await
+            .expect_err("rejected");
         assert!(
             matches!(
                 search_error(&e),
@@ -244,100 +259,132 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_blank_saved_search_counts_as_missing() {
-        let (db, id_user) = setup();
-        let id = save(&db, id_user, "blank", "   ");
-        let e = compile_sync(&format!("S:{id}"), id_user, &db, NOW).expect_err("rejected");
-        assert!(matches!(
-            search_error(&e),
-            freshrss_search::SearchError::QueryNotFound { .. }
-        ), "{e}");
+    #[tokio::test]
+    async fn a_blank_saved_search_counts_as_missing() {
+        let (store, id_user) = setup().await;
+        let id = save(&store, id_user, "blank", "   ").await;
+        let e = compile_at(&format!("S:{id}"), id_user, &store, NOW)
+            .await
+            .expect_err("rejected");
+        assert!(
+            matches!(
+                search_error(&e),
+                freshrss_search::SearchError::QueryNotFound { .. }
+            ),
+            "{e}"
+        );
 
         // And `S:*` skips it rather than failing the whole query.
-        save(&db, id_user, "real", "intitle:x");
-        let expr = compile_sync("S:*", id_user, &db, NOW).expect("compiles");
+        save(&store, id_user, "real", "intitle:x").await;
+        let expr = compile_at("S:*", id_user, &store, NOW)
+            .await
+            .expect("compiles");
         assert_eq!(freshrss_search::render::render(&expr), "intitle:x");
     }
 
-    #[test]
-    fn a_saved_search_may_reference_another() {
-        let (db, id_user) = setup();
-        let inner = save(&db, id_user, "inner", "intitle:deep");
-        save(&db, id_user, "outer", &format!("S:{inner} f:4"));
-        let outer = db
-            .blocking_with(|conn| {
-                Ok(query_dao::find_by_name(conn, id_user, "outer")?
+    #[tokio::test]
+    async fn a_saved_search_may_reference_another() {
+        let (store, id_user) = setup().await;
+        let inner = save(&store, id_user, "inner", "intitle:deep").await;
+        save(&store, id_user, "outer", &format!("S:{inner} f:4")).await;
+        let outer = store
+            .with(move |mut conn| async move {
+                Ok(query_dao::find_by_name(&mut conn, id_user, "outer")
+                    .await?
                     .expect("exists")
                     .id)
             })
+            .await
             .expect("lookup");
-        let expr = compile_sync(&format!("S:{outer}"), id_user, &db, NOW).expect("compiles");
+        let expr = compile_at(&format!("S:{outer}"), id_user, &store, NOW)
+            .await
+            .expect("compiles");
         assert_eq!(freshrss_search::render::render(&expr), "intitle:deep f:4");
     }
 
-    #[test]
-    fn a_saved_search_that_references_itself_is_reported_as_a_cycle() {
-        let (db, id_user) = setup();
-        let id = save(&db, id_user, "loop", "intitle:x");
-        db.blocking_with(|conn| {
-            let mut q = query_dao::find_by_id(conn, id, id_user)?.expect("exists");
-            q.search = format!("S:{id}");
-            Ok(query_dao::update(conn, &q)?)
-        })
-        .expect("rewrite");
+    #[tokio::test]
+    async fn a_saved_search_that_references_itself_is_reported_as_a_cycle() {
+        let (store, id_user) = setup().await;
+        let id = save(&store, id_user, "loop", "intitle:x").await;
+        store
+            .with(move |mut conn| async move {
+                let mut q = query_dao::find_by_id(&mut conn, id, id_user)
+                    .await?
+                    .expect("exists");
+                q.search = format!("S:{id}");
+                query_dao::update(&mut conn, &q).await
+            })
+            .await
+            .expect("rewrite");
 
-        let e = compile_sync(&format!("S:{id}"), id_user, &db, NOW).expect_err("rejected");
-        assert!(matches!(
-            search_error(&e),
-            freshrss_search::SearchError::QueryCycle { .. }
-        ), "{e}");
+        let e = compile_at(&format!("S:{id}"), id_user, &store, NOW)
+            .await
+            .expect_err("rejected");
+        assert!(
+            matches!(
+                search_error(&e),
+                freshrss_search::SearchError::QueryCycle { .. }
+            ),
+            "{e}"
+        );
         assert!(e.is_client_error());
     }
 
-    #[test]
-    fn a_relative_interval_inside_a_saved_search_uses_the_request_instant() {
+    #[tokio::test]
+    async fn a_relative_interval_inside_a_saved_search_uses_the_request_instant() {
         // A saved `date:P1W` has to mean "this week" when it runs, not when it was saved — and it has
         // to mean the same week as the `date:P1W` typed beside it in the same request.
-        let (db, id_user) = setup();
-        let id = save(&db, id_user, "recent", "date:P1W");
-        let via_saved = compile_sync(&format!("S:{id}"), id_user, &db, NOW).expect("compiles");
-        let inline = compile_sync("date:P1W", id_user, &db, NOW).expect("compiles");
+        let (store, id_user) = setup().await;
+        let id = save(&store, id_user, "recent", "date:P1W").await;
+        let via_saved = compile_at(&format!("S:{id}"), id_user, &store, NOW)
+            .await
+            .expect("compiles");
+        let inline = compile_at("date:P1W", id_user, &store, NOW)
+            .await
+            .expect("compiles");
         assert_eq!(via_saved, inline);
     }
 
-    #[test]
-    fn a_syntax_error_is_reported_wherever_it_is() {
-        let (db, id_user) = setup();
-        assert!(matches!(
-            search_error(&compile_sync("intitle:a OR", id_user, &db, NOW).expect_err("rejected")),
-            freshrss_search::SearchError::UnexpectedEnd { .. }
-        ));
-        let id = save(&db, id_user, "broken", "(intitle:a");
+    #[tokio::test]
+    async fn a_syntax_error_is_reported_wherever_it_is() {
+        let (store, id_user) = setup().await;
         assert!(matches!(
             search_error(
-                &compile_sync(&format!("S:{id}"), id_user, &db, NOW).expect_err("rejected")
+                &compile_at("intitle:a OR", id_user, &store, NOW)
+                    .await
+                    .expect_err("rejected")
+            ),
+            freshrss_search::SearchError::UnexpectedEnd { .. }
+        ));
+        let id = save(&store, id_user, "broken", "(intitle:a").await;
+        assert!(matches!(
+            search_error(
+                &compile_at(&format!("S:{id}"), id_user, &store, NOW)
+                    .await
+                    .expect_err("rejected")
             ),
             freshrss_search::SearchError::UnbalancedParen { .. }
         ));
     }
 
-    #[test]
-    fn the_resolver_reports_what_it_loaded() {
-        let (db, id_user) = setup();
-        db.blocking_with(|conn| {
-            assert!(SavedSearches::load(conn, id_user)?.is_empty());
-            query_dao::insert(conn, &SavedQuery::new(id_user, "a", "intitle:x"))?;
-            query_dao::insert(conn, &SavedQuery::new(id_user, "blank", "  "))?;
-            let saved = SavedSearches::load(conn, id_user)?;
-            // The blank one is dropped at load time, so `S:*` never has to consider it.
-            assert_eq!(saved.all_ids().len(), 1);
-            assert!(saved.by_name("a").is_some());
-            assert!(saved.by_name("blank").is_none());
-            assert!(!saved.is_empty());
-            Ok(())
-        })
-        .expect("resolver");
+    #[tokio::test]
+    async fn the_resolver_reports_what_it_loaded() {
+        let (store, id_user) = setup().await;
+        store
+            .with(move |mut conn| async move {
+                assert!(SavedSearches::load(&mut conn, id_user).await?.is_empty());
+                query_dao::insert(&mut conn, &SavedQuery::new(id_user, "a", "intitle:x")).await?;
+                query_dao::insert(&mut conn, &SavedQuery::new(id_user, "blank", "  ")).await?;
+                let saved = SavedSearches::load(&mut conn, id_user).await?;
+                // The blank one is dropped at load time, so `S:*` never has to consider it.
+                assert_eq!(saved.all_ids().len(), 1);
+                assert!(saved.by_name("a").is_some());
+                assert!(saved.by_name("blank").is_none());
+                assert!(!saved.is_empty());
+                Ok(())
+            })
+            .await
+            .expect("resolver");
     }
 
     #[test]

@@ -3,27 +3,30 @@
 //! Every query is scoped by `id_user`. That is not defensive redundancy: `category.name` is only
 //! unique per user, so an unscoped lookup by name would return another user's folder.
 
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Connection as _, Row as _, SqliteConnection};
 
 use crate::db::dao::row_attributes;
+use crate::db::sql::sql;
 use crate::domain::attributes::Attributes;
 use crate::domain::category::{Category, CategoryKind};
+use crate::error::Result;
 
 pub const COLUMNS: &str = "id, id_user, name, kind, lastUpdate, error, position, attributes";
 
-fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Category> {
-    let kind_raw: i64 = row.get(3)?;
+fn from_row(row: SqliteRow) -> std::result::Result<Category, sqlx::Error> {
+    let kind_raw: i64 = row.try_get("kind")?;
     Ok(Category {
-        id: row.get(0)?,
-        id_user: row.get(1)?,
-        name: row.get(2)?,
+        id: row.try_get("id")?,
+        id_user: row.try_get("id_user")?,
+        name: row.try_get("name")?,
         // An unrecognised kind degrades to a normal folder rather than failing the listing; the
         // value is preserved on the next write because `update_*` never touches `kind`.
         kind: CategoryKind::from_i16(kind_raw as i16).unwrap_or(CategoryKind::Normal),
-        last_update: row.get(4)?,
-        error: row.get(5)?,
-        position: row.get(6)?,
-        attributes: row_attributes(row, 7)?,
+        last_update: row.try_get("lastUpdate")?,
+        error: row.try_get("error")?,
+        position: row.try_get("position")?,
+        attributes: row_attributes(&row, "attributes")?,
     })
 }
 
@@ -35,132 +38,210 @@ pub struct NewCategory<'a> {
     pub attributes: Attributes,
 }
 
-pub fn insert(conn: &Connection, new: &NewCategory<'_>) -> SqlResult<i64> {
-    conn.execute(
+pub async fn insert(conn: &mut SqliteConnection, new: &NewCategory<'_>) -> Result<i64> {
+    let id = sqlx::query(
         "INSERT INTO category (id_user, name, kind, position, attributes)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            new.id_user,
-            new.name,
-            i64::from(new.kind.as_i16()),
-            new.position,
-            new.attributes.to_db(),
-        ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    )
+    .bind(new.id_user)
+    .bind(new.name)
+    .bind(i64::from(new.kind.as_i16()))
+    .bind(new.position)
+    .bind(new.attributes.to_db())
+    .execute(&mut *conn)
+    .await?
+    .last_insert_rowid();
+    Ok(id)
 }
 
-pub fn find_by_id(conn: &Connection, id: i64, id_user: i64) -> SqlResult<Option<Category>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM category WHERE id = ?1 AND id_user = ?2"),
-        params![id, id_user],
-        from_row,
-    )
-    .optional()
+pub async fn find_by_id(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+) -> Result<Option<Category>> {
+    Ok(sqlx::query(sql(format!(
+        "SELECT {COLUMNS} FROM category WHERE id = ?1 AND id_user = ?2"
+    )))
+    .bind(id)
+    .bind(id_user)
+    .try_map(from_row)
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
 /// Looks a folder up by name, for "add this feed to the folder called X" during OPML import.
-pub fn find_by_name(conn: &Connection, id_user: i64, name: &str) -> SqlResult<Option<Category>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM category WHERE id_user = ?1 AND name = ?2"),
-        params![id_user, name],
-        from_row,
-    )
-    .optional()
+pub async fn find_by_name(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+    name: &str,
+) -> Result<Option<Category>> {
+    Ok(sqlx::query(sql(format!(
+        "SELECT {COLUMNS} FROM category WHERE id_user = ?1 AND name = ?2"
+    )))
+    .bind(id_user)
+    .bind(name)
+    .try_map(from_row)
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
 /// All folders for a user, in sidebar order.
-pub fn list(conn: &Connection, id_user: i64) -> SqlResult<Vec<Category>> {
-    let mut stmt = conn.prepare(&format!(
+pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Category>> {
+    Ok(sqlx::query(sql(format!(
         "SELECT {COLUMNS} FROM category WHERE id_user = ?1 ORDER BY position, name COLLATE NOCASE"
-    ))?;
-    let rows = stmt.query_map(params![id_user], from_row)?;
-    rows.collect()
+    )))
+    .bind(id_user)
+    .try_map(from_row)
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
-pub fn count(conn: &Connection, id_user: i64) -> SqlResult<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM category WHERE id_user = ?1",
-        params![id_user],
-        |r| r.get(0),
+pub async fn count(conn: &mut SqliteConnection, id_user: i64) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM category WHERE id_user = ?1")
+            .bind(id_user)
+            .fetch_one(&mut *conn)
+            .await?,
     )
 }
 
 /// The next free sidebar position.
-pub fn next_position(conn: &Connection, id_user: i64) -> SqlResult<i64> {
-    let max: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(position) FROM category WHERE id_user = ?1",
-            params![id_user],
-            |r| r.get(0),
-        )
-        .optional()?;
+pub async fn next_position(conn: &mut SqliteConnection, id_user: i64) -> Result<i64> {
+    let max: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(position) FROM category WHERE id_user = ?1")
+            .bind(id_user)
+            .fetch_one(&mut *conn)
+            .await?;
     Ok(max.unwrap_or(-1) + 1)
 }
 
-pub fn update_name(conn: &Connection, id: i64, id_user: i64, name: &str) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE category SET name = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, name],
-    )? > 0)
+pub async fn update_name(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    name: &str,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE category SET name = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(name)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
-pub fn update_position(conn: &Connection, id: i64, id_user: i64, position: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE category SET position = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, position],
-    )? > 0)
+pub async fn update_position(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    position: i64,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE category SET position = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(position)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
-pub fn update_attributes(
-    conn: &Connection,
+pub async fn update_attributes(
+    conn: &mut SqliteConnection,
     id: i64,
     id_user: i64,
     attributes: &Attributes,
-) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE category SET attributes = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, attributes.to_db()],
-    )? > 0)
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE category SET attributes = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(attributes.to_db())
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Records a refresh failure. `error` is a timestamp, not a boolean, so the sidebar can say how
 /// stale the problem is.
-pub fn update_error(conn: &Connection, id: i64, id_user: i64, error: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE category SET error = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, error],
-    )? > 0)
+pub async fn update_error(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    error: i64,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE category SET error = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(error)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
-pub fn update_last_update(conn: &Connection, id: i64, id_user: i64, mtime: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE category SET lastUpdate = ?3, error = 0 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, mtime],
-    )? > 0)
+pub async fn update_last_update(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    mtime: i64,
+) -> Result<bool> {
+    Ok(
+        sqlx::query(
+            "UPDATE category SET lastUpdate = ?3, error = 0 WHERE id = ?1 AND id_user = ?2",
+        )
+        .bind(id)
+        .bind(id_user)
+        .bind(mtime)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+            > 0,
+    )
 }
 
 /// Deletes a folder. Feeds inside it are **not** deleted — `feed.category` is
 /// `ON DELETE SET NULL`, so they become orphans, which the reader lists separately. That matches
 /// FreshRSS and avoids a folder rename going wrong destroying someone's subscriptions.
-pub fn delete(conn: &Connection, id: i64, id_user: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "DELETE FROM category WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user],
-    )? > 0)
+pub async fn delete(conn: &mut SqliteConnection, id: i64, id_user: i64) -> Result<bool> {
+    Ok(
+        sqlx::query("DELETE FROM category WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Applies a new sidebar ordering. Positions are assigned from the slice index, so the caller
 /// supplies the complete desired order.
-pub fn reorder(conn: &Connection, id_user: i64, ordered_ids: &[i64]) -> SqlResult<usize> {
-    let tx = conn.unchecked_transaction()?;
+pub async fn reorder(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+    ordered_ids: &[i64],
+) -> Result<usize> {
+    let mut tx = conn.begin().await?;
     let mut updated = 0;
     for (position, id) in ordered_ids.iter().enumerate() {
-        updated += tx.execute(
-            "UPDATE category SET position = ?3 WHERE id = ?1 AND id_user = ?2",
-            params![id, id_user, position as i64],
-        )?;
+        updated += sqlx::query("UPDATE category SET position = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(*id)
+            .bind(id_user)
+            .bind(position as i64)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
     }
-    tx.commit()?;
+    tx.commit().await?;
     Ok(updated)
 }

@@ -1,18 +1,23 @@
 //! `user` table access.
 
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Connection as _, Row as _, SqliteConnection};
 
 use crate::db::dao::row_attributes;
+use crate::db::sql::sql;
 use crate::domain::attributes::Attributes;
 use crate::domain::ids::now_unix;
 use crate::domain::user::{User, UserConfig};
+use crate::error::Result;
 
-/// Column order used by every `SELECT` in this module, so row indexes stay in one place.
+/// Column list used by every `SELECT` in this module, so the shape of a row lives in one place.
 pub const COLUMNS: &str = "id, username, email, password_hash, is_admin, enabled, \
                            created_at, last_seen_at, config, attributes";
 
-fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<User> {
-    let config_raw: Option<String> = row.get(8)?;
+fn from_row(row: SqliteRow) -> std::result::Result<User, sqlx::Error> {
+    let config_raw: Option<String> = row.try_get("config")?;
+    let is_admin: i64 = row.try_get("is_admin")?;
+    let enabled: i64 = row.try_get("enabled")?;
     // A corrupt config must not lock a user out of their own account; fall back to defaults and
     // let the next write repair it.
     let config = config_raw
@@ -21,16 +26,16 @@ fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<User> {
         .unwrap_or_default();
 
     Ok(User {
-        id: row.get(0)?,
-        username: row.get(1)?,
-        email: row.get(2)?,
-        password_hash: row.get(3)?,
-        is_admin: row.get::<_, i64>(4)? != 0,
-        enabled: row.get::<_, i64>(5)? != 0,
-        created_at: row.get(6)?,
-        last_seen_at: row.get(7)?,
+        id: row.try_get("id")?,
+        username: row.try_get("username")?,
+        email: row.try_get("email")?,
+        password_hash: row.try_get("password_hash")?,
+        is_admin: is_admin != 0,
+        enabled: enabled != 0,
+        created_at: row.try_get("created_at")?,
+        last_seen_at: row.try_get("last_seen_at")?,
         config,
-        attributes: row_attributes(row, 9)?,
+        attributes: row_attributes(&row, "attributes")?,
     })
 }
 
@@ -47,140 +52,181 @@ pub struct NewUser<'a> {
 ///
 /// FreshRSS inserts one global `category(id=1,'Uncategorized')` at install; with a shared database
 /// the folder has to be per-user, and creating it here means no other code path can forget.
-pub fn insert(conn: &Connection, new: &NewUser<'_>) -> SqlResult<i64> {
-    let tx = conn.unchecked_transaction()?;
-    let config_json = serde_json::to_string(&UserConfig::default())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+pub async fn insert(conn: &mut SqliteConnection, new: &NewUser<'_>) -> Result<i64> {
+    let mut tx = conn.begin().await?;
+    let config_json = serde_json::to_string(&UserConfig::default())?;
 
-    tx.execute(
+    let id = sqlx::query(
         "INSERT INTO user (username, email, password_hash, is_admin, enabled, created_at, config)
          VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)",
-        params![
-            new.username,
-            new.email,
-            new.password_hash,
-            i64::from(new.is_admin),
-            now_unix(),
-            config_json,
-        ],
-    )?;
-    let id = tx.last_insert_rowid();
+    )
+    .bind(new.username)
+    .bind(new.email)
+    .bind(new.password_hash)
+    .bind(i64::from(new.is_admin))
+    .bind(now_unix())
+    .bind(config_json)
+    .execute(&mut *tx)
+    .await?
+    .last_insert_rowid();
 
-    tx.execute(
-        "INSERT INTO category (id_user, name, position) VALUES (?1, ?2, 0)",
-        params![id, crate::domain::category::DEFAULT_CATEGORY_NAME],
-    )?;
+    sqlx::query("INSERT INTO category (id_user, name, position) VALUES (?1, ?2, 0)")
+        .bind(id)
+        .bind(crate::domain::category::DEFAULT_CATEGORY_NAME)
+        .execute(&mut *tx)
+        .await?;
 
-    tx.commit()?;
+    tx.commit().await?;
     Ok(id)
 }
 
-pub fn find_by_id(conn: &Connection, id: i64) -> SqlResult<Option<User>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM user WHERE id = ?1"),
-        params![id],
-        from_row,
+pub async fn find_by_id(conn: &mut SqliteConnection, id: i64) -> Result<Option<User>> {
+    Ok(
+        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user WHERE id = ?1")))
+            .bind(id)
+            .try_map(from_row)
+            .fetch_optional(&mut *conn)
+            .await?,
     )
-    .optional()
 }
 
 /// Looks a user up by username. The column is `COLLATE NOCASE`, so this matches regardless of the
 /// case the visitor typed at the login form.
-pub fn find_by_username(conn: &Connection, username: &str) -> SqlResult<Option<User>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM user WHERE username = ?1"),
-        params![username],
-        from_row,
+pub async fn find_by_username(conn: &mut SqliteConnection, username: &str) -> Result<Option<User>> {
+    Ok(sqlx::query(sql(format!(
+        "SELECT {COLUMNS} FROM user WHERE username = ?1"
+    )))
+    .bind(username)
+    .try_map(from_row)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+pub async fn find_by_email(conn: &mut SqliteConnection, email: &str) -> Result<Option<User>> {
+    Ok(
+        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user WHERE email = ?1")))
+            .bind(email)
+            .try_map(from_row)
+            .fetch_optional(&mut *conn)
+            .await?,
     )
-    .optional()
 }
 
-pub fn find_by_email(conn: &Connection, email: &str) -> SqlResult<Option<User>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM user WHERE email = ?1"),
-        params![email],
-        from_row,
+pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<User>> {
+    Ok(
+        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user ORDER BY username")))
+            .try_map(from_row)
+            .fetch_all(&mut *conn)
+            .await?,
     )
-    .optional()
 }
 
-pub fn list(conn: &Connection) -> SqlResult<Vec<User>> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM user ORDER BY username"))?;
-    let rows = stmt.query_map([], from_row)?;
-    rows.collect()
+pub async fn count(conn: &mut SqliteConnection) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM user")
+        .fetch_one(&mut *conn)
+        .await?)
 }
 
-pub fn count(conn: &Connection) -> SqlResult<i64> {
-    conn.query_row("SELECT COUNT(*) FROM user", [], |r| r.get(0))
+pub async fn update_password(
+    conn: &mut SqliteConnection,
+    id: i64,
+    password_hash: &str,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE user SET password_hash = ?2 WHERE id = ?1")
+            .bind(id)
+            .bind(password_hash)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
-pub fn update_password(conn: &Connection, id: i64, password_hash: &str) -> SqlResult<bool> {
-    let n = conn.execute(
-        "UPDATE user SET password_hash = ?2 WHERE id = ?1",
-        params![id, password_hash],
-    )?;
-    Ok(n > 0)
+pub async fn update_email(
+    conn: &mut SqliteConnection,
+    id: i64,
+    email: Option<&str>,
+) -> Result<bool> {
+    Ok(sqlx::query("UPDATE user SET email = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(email)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
-pub fn update_email(conn: &Connection, id: i64, email: Option<&str>) -> SqlResult<bool> {
-    let n = conn.execute(
-        "UPDATE user SET email = ?2 WHERE id = ?1",
-        params![id, email],
-    )?;
-    Ok(n > 0)
+pub async fn update_config(
+    conn: &mut SqliteConnection,
+    id: i64,
+    config: &UserConfig,
+) -> Result<bool> {
+    let json = serde_json::to_string(config)?;
+    Ok(sqlx::query("UPDATE user SET config = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(json)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
-pub fn update_config(conn: &Connection, id: i64, config: &UserConfig) -> SqlResult<bool> {
-    let json = serde_json::to_string(config)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let n = conn.execute(
-        "UPDATE user SET config = ?2 WHERE id = ?1",
-        params![id, json],
-    )?;
-    Ok(n > 0)
+pub async fn update_attributes(
+    conn: &mut SqliteConnection,
+    id: i64,
+    attributes: &Attributes,
+) -> Result<bool> {
+    Ok(sqlx::query("UPDATE user SET attributes = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(attributes.to_db())
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
-pub fn update_attributes(conn: &Connection, id: i64, attributes: &Attributes) -> SqlResult<bool> {
-    let n = conn.execute(
-        "UPDATE user SET attributes = ?2 WHERE id = ?1",
-        params![id, attributes.to_db()],
-    )?;
-    Ok(n > 0)
-}
-
-pub fn set_enabled(conn: &Connection, id: i64, enabled: bool) -> SqlResult<bool> {
-    let n = conn.execute(
-        "UPDATE user SET enabled = ?2 WHERE id = ?1",
-        params![id, i64::from(enabled)],
-    )?;
-    Ok(n > 0)
+pub async fn set_enabled(conn: &mut SqliteConnection, id: i64, enabled: bool) -> Result<bool> {
+    Ok(sqlx::query("UPDATE user SET enabled = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(i64::from(enabled))
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
 /// Records activity. Called on authenticated requests, throttled by the caller so it is not a
 /// write on every single hit.
-pub fn touch_last_seen(conn: &Connection, id: i64) -> SqlResult<()> {
-    conn.execute(
-        "UPDATE user SET last_seen_at = ?2 WHERE id = ?1",
-        params![id, now_unix()],
-    )?;
+pub async fn touch_last_seen(conn: &mut SqliteConnection, id: i64) -> Result<()> {
+    sqlx::query("UPDATE user SET last_seen_at = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(now_unix())
+        .execute(&mut *conn)
+        .await?;
     Ok(())
 }
 
 /// Deletes a user. `ON DELETE CASCADE` removes their categories, feeds, entries, labels and
-/// sessions; the schema test in `db::migrate` asserts that.
-pub fn delete(conn: &Connection, id: i64) -> SqlResult<bool> {
-    let n = conn.execute("DELETE FROM user WHERE id = ?1", params![id])?;
-    Ok(n > 0)
+/// sessions; the schema tests in `crate::db` assert that.
+pub async fn delete(conn: &mut SqliteConnection, id: i64) -> Result<bool> {
+    Ok(sqlx::query("DELETE FROM user WHERE id = ?1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
 /// The id of the folder a new feed lands in when the caller does not name one.
-pub fn default_category_id(conn: &Connection, id_user: i64) -> SqlResult<Option<i64>> {
-    conn.query_row(
+pub async fn default_category_id(conn: &mut SqliteConnection, id_user: i64) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
         "SELECT id FROM category
          WHERE id_user = ?1 AND name = ?2
          ORDER BY position, id LIMIT 1",
-        params![id_user, crate::domain::category::DEFAULT_CATEGORY_NAME],
-        |r| r.get(0),
     )
-    .optional()
+    .bind(id_user)
+    .bind(crate::domain::category::DEFAULT_CATEGORY_NAME)
+    .fetch_optional(&mut *conn)
+    .await?)
 }

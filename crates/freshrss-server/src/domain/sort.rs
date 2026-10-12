@@ -107,7 +107,6 @@ impl Order {
             Order::Desc => "<",
         }
     }
-
 }
 
 impl Sort {
@@ -402,7 +401,10 @@ mod tests {
             assert_eq!(serde_json::from_str::<SecondarySort>(&json).unwrap(), s);
         }
         for o in [Order::Asc, Order::Desc] {
-            assert_eq!(serde_json::to_string(&o).unwrap(), format!("\"{}\"", o.as_str().to_ascii_lowercase()));
+            assert_eq!(
+                serde_json::to_string(&o).unwrap(),
+                format!("\"{}\"", o.as_str().to_ascii_lowercase())
+            );
         }
     }
 }

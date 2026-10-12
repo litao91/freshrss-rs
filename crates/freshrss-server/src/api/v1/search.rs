@@ -20,7 +20,7 @@ use crate::api::extract::CurrentUser;
 use crate::db::dao::{entry as entry_dao, feed as feed_dao, tag as tag_dao};
 use crate::domain::entry::Entry;
 use crate::domain::ids::EntryId;
-use crate::error::{Error, Result};
+use crate::error::Error;
 use crate::router::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -121,52 +121,54 @@ pub async fn preview(
     Json(body): Json<PreviewRequest>,
 ) -> ApiResult<Json<PreviewResponse>> {
     let id_user = user.id;
-    let id: i64 = body
-        .entry_id
-        .trim()
-        .parse()
-        .map_err(|_| ApiError(Error::Validation(format!(
+    let id: i64 = body.entry_id.trim().parse().map_err(|_| {
+        ApiError(Error::Validation(format!(
             "{:?} is not an entry id",
             body.entry_id
-        ))))?;
+        )))
+    })?;
     let expr = crate::service::search::compile(&body.q, id_user, &state.db)
         .await
         .map_err(ApiError)?;
 
-    let db = state.db.clone();
-    let response = tokio::task::spawn_blocking(move || -> Result<PreviewResponse> {
-        let conn = db.get()?;
-        let entry = entry_dao::find_by_id(&conn, EntryId::from_micros(id), id_user)?
-            .ok_or_else(|| Error::NotFound(format!("entry {id}")))?;
-        // The folder and the labels are not columns on `entry`, so they have to be resolved before the
-        // matcher can answer `c:` and `labels:` at all.
-        let category_id = feed_dao::find_by_id(&conn, entry.id_feed, id_user)?
-            .and_then(|f| f.category);
-        let labels = tag_dao::labels_for_entry(&conn, entry.id.micros())?;
-        let target = SearchableEntry::new(entry, category_id, labels);
+    let response: PreviewResponse = state
+        .db
+        .with(move |mut conn| async move {
+            let entry = entry_dao::find_by_id(&mut conn, EntryId::from_micros(id), id_user)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("entry {id}")))?;
+            // The folder and the labels are not columns on `entry`, so they have to be resolved
+            // before the matcher can answer `c:` and `labels:` at all.
+            let category_id = feed_dao::find_by_id(&mut conn, entry.id_feed, id_user)
+                .await?
+                .and_then(|f| f.category);
+            let labels = tag_dao::labels_for_entry(&mut conn, entry.id.micros()).await?;
+            let target = SearchableEntry::new(entry, category_id, labels);
 
-        let matched = matches(&expr, &target)?;
-        // Each predicate on its own. `Expr::pred` rather than slicing the tree, because a predicate's
-        // polarity belongs to it and evaluating it in isolation is what "why did this match" means.
-        let explain = expr
-            .preds()
-            .iter()
-            .map(|pred| {
-                let alone = Expr::pred((*pred).clone());
-                PredExplain {
-                    operator: render(&alone),
-                    negated: pred.is_negated(),
-                    matched: matches(&alone, &target).unwrap_or(false),
-                }
+            let matched = matches(&expr, &target)?;
+            // Each predicate on its own. `Expr::pred` rather than slicing the tree, because a
+            // predicate's polarity belongs to it and evaluating it in isolation is what "why did
+            // this match" means.
+            let explain = expr
+                .preds()
+                .iter()
+                .map(|pred| {
+                    let alone = Expr::pred((*pred).clone());
+                    PredExplain {
+                        operator: render(&alone),
+                        negated: pred.is_negated(),
+                        matched: matches(&alone, &target).unwrap_or(false),
+                    }
+                })
+                .collect();
+
+            Ok(PreviewResponse {
+                matches: matched,
+                explain,
             })
-            .collect();
-
-        Ok(PreviewResponse {
-            matches: matched,
-            explain,
         })
-    })
-    .await??;
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(response))
 }
@@ -337,7 +339,10 @@ mod tests {
         // The matcher sees the joined column, exactly as SQL does, so a quoted needle can cross it.
         let s = SearchableEntry::new(entry(), None, Vec::new());
         assert!(m(r#"author:"Lovelace; Grace""#, &s));
-        assert!(!m("author:Hopper; Ada", &s), "the order in the column matters");
+        assert!(
+            !m("author:Hopper; Ada", &s),
+            "the order in the column matters"
+        );
     }
 
     #[test]

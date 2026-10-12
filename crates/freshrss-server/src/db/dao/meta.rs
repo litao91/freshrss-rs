@@ -1,25 +1,29 @@
 //! `meta` table access, including the global entry-id allocator.
 
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use sqlx::SqliteConnection;
 
 use crate::domain::ids::now_micros;
+use crate::error::Result;
 
 /// Key holding the highest entry id handed out so far.
 pub const ENTRY_ID_SEQ: &str = "entry_id_seq";
 
-pub fn get(conn: &Connection, key: &str) -> SqlResult<Option<String>> {
-    conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-        r.get::<_, String>(0)
-    })
-    .optional()
+pub async fn get(conn: &mut SqliteConnection, key: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT value FROM meta WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
-pub fn set(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
-    conn.execute(
+pub async fn set(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<()> {
+    sqlx::query(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        params![key, value],
-    )?;
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -45,24 +49,26 @@ pub fn set(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
 ///
 /// Panics if `count` is zero, because there is no first id to return. Callers must skip the call
 /// when a refresh produced nothing.
-pub fn reserve_entry_ids(conn: &Connection, count: usize) -> SqlResult<i64> {
+pub async fn reserve_entry_ids(conn: &mut SqliteConnection, count: usize) -> Result<i64> {
     assert!(count > 0, "reserving zero ids has no first id to return");
     let count = count as i64;
 
-    let last: i64 = get(conn, ENTRY_ID_SEQ)?
+    let last: i64 = get(conn, ENTRY_ID_SEQ)
+        .await?
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
     // The clock can go backwards (NTP correction, a VM restore), so never allocate below what has
     // already been handed out.
     let next = (last + 1).max(now_micros());
-    set(conn, ENTRY_ID_SEQ, &(next + count - 1).to_string())?;
+    set(conn, ENTRY_ID_SEQ, &(next + count - 1).to_string()).await?;
     Ok(next)
 }
 
 /// The highest entry id allocated so far, or 0 when none has been.
-pub fn entry_id_high_water(conn: &Connection) -> SqlResult<i64> {
-    Ok(get(conn, ENTRY_ID_SEQ)?
+pub async fn entry_id_high_water(conn: &mut SqliteConnection) -> Result<i64> {
+    Ok(get(conn, ENTRY_ID_SEQ)
+        .await?
         .and_then(|v| v.parse().ok())
         .unwrap_or(0))
 }

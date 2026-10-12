@@ -57,22 +57,28 @@ fn session_cookie(
 /// Registration uses this directly rather than going through [`auth::login`]: the password has
 /// just been verified by construction, and re-running the credential check would either fail (the
 /// plaintext is gone) or force us to keep it around longer than necessary.
-fn open_session(
+async fn open_session(
     state: &AppState,
     id_user: i64,
     headers: &HeaderMap,
 ) -> crate::error::Result<session_dao::Session> {
     let ttl = i64::from(state.config.session.max_age_days) * 86_400;
     let client = client_info(headers);
-    state.db.blocking_with(|conn| {
-        Ok(session_dao::create(
-            conn,
-            id_user,
-            ttl,
-            client.ip,
-            client.user_agent,
-        )?)
-    })
+    let ip = client.ip.map(str::to_owned);
+    let user_agent = client.user_agent.map(str::to_owned);
+    state
+        .db
+        .with(move |mut conn| async move {
+            session_dao::create(
+                &mut conn,
+                id_user,
+                ttl,
+                ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await
+        })
+        .await
 }
 
 /// The visitor's address and user agent, recorded against the session for the account menu's
@@ -98,11 +104,15 @@ async fn register(
     uri: Uri,
     Json(req): Json<auth::RegisterRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let user = auth::register(&state.db, &state.config, req).map_err(ApiError)?;
+    let user = auth::register(&state.db, &state.config, req)
+        .await
+        .map_err(ApiError)?;
 
     // Registering also signs the user in: making them log straight back in is friction with no
     // security benefit, since they just proved control of the password.
-    let session = open_session(&state, user.id, &headers).map_err(ApiError)?;
+    let session = open_session(&state, user.id, &headers)
+        .await
+        .map_err(ApiError)?;
 
     let (name, value) = session_cookie(&state, &session.id, is_secure_request(&headers, &uri));
     Ok((
@@ -119,7 +129,9 @@ async fn login(
     Json(req): Json<auth::LoginRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let client = client_info(&headers);
-    let (user, session) = auth::login(&state.db, &state.config, req, client).map_err(ApiError)?;
+    let (user, session) = auth::login(&state.db, &state.config, req, client)
+        .await
+        .map_err(ApiError)?;
     let (name, value) = session_cookie(&state, &session.id, is_secure_request(&headers, &uri));
     Ok((
         [(name, value)],
@@ -128,7 +140,9 @@ async fn login(
 }
 
 async fn logout(State(state): State<AppState>, user: CurrentUser) -> ApiResult<impl IntoResponse> {
-    auth::logout(&state.db, &user.session_id).map_err(ApiError)?;
+    auth::logout(&state.db, &user.session_id)
+        .await
+        .map_err(ApiError)?;
     let removal = cookie::removal(&state.config.session.cookie_name);
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, removal)]))
 }
@@ -164,6 +178,7 @@ async fn change_password(
         // Keep the session that just proved it knows the old password; sign out the rest.
         Some(&user.session_id),
     )
+    .await
     .map_err(ApiError)?;
     Ok(Json(json!({ "revoked_sessions": revoked })))
 }
@@ -176,8 +191,8 @@ pub async fn list_sessions(
     let current = user.session_id.clone();
     let sessions = state
         .db
-        .with(move |conn| {
-            let rows = session_dao::list_for_user(conn, id_user)?;
+        .with(move |mut conn| async move {
+            let rows = session_dao::list_for_user(&mut conn, id_user).await?;
             Ok(rows
                 .into_iter()
                 .map(|s| SessionDto {
@@ -206,14 +221,14 @@ pub async fn revoke_session(
     // would confirm the session exists.
     let revoked = state
         .db
-        .with(move |conn| {
-            let Some(session) = session_dao::find(conn, &id)? else {
+        .with(move |mut conn| async move {
+            let Some(session) = session_dao::find(&mut conn, &id).await? else {
                 return Err(Error::NotFound(format!("session {id}")));
             };
             if session.id_user != id_user {
                 return Err(Error::NotFound(format!("session {id}")));
             }
-            Ok(session_dao::revoke(conn, &id)?)
+            session_dao::revoke(&mut conn, &id).await
         })
         .await
         .map_err(ApiError)?;

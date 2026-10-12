@@ -17,6 +17,7 @@ use crate::domain::attributes::Attributes;
 use crate::domain::category::Category;
 use crate::error::Error;
 use crate::router::AppState;
+use sqlx::SqliteConnection;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -57,9 +58,9 @@ pub async fn list(
     let id_user = user.id;
     let dtos = state
         .db
-        .with(move |conn| {
-            let categories = cat_dao::list(conn, id_user)?;
-            let feeds = feed_dao::list(conn, id_user)?;
+        .with(move |mut conn| async move {
+            let categories = cat_dao::list(&mut conn, id_user).await?;
+            let feeds = feed_dao::list(&mut conn, id_user).await?;
 
             let mut by_category: std::collections::HashMap<i64, Vec<_>> =
                 std::collections::HashMap::new();
@@ -88,17 +89,20 @@ pub async fn create(
 
     let dto = state
         .db
-        .with(move |conn| {
+        .with(move |mut conn| async move {
             // The uniqueness check produces a clear 409. Without it the UNIQUE(id_user, name)
             // constraint would surface as an opaque database error.
-            if cat_dao::find_by_name(conn, id_user, &name)?.is_some() {
+            if cat_dao::find_by_name(&mut conn, id_user, &name)
+                .await?
+                .is_some()
+            {
                 return Err(Error::Conflict(format!(
                     "a folder named {name:?} already exists"
                 )));
             }
-            let position = cat_dao::next_position(conn, id_user)?;
+            let position = cat_dao::next_position(&mut conn, id_user).await?;
             let id = cat_dao::insert(
-                conn,
+                &mut conn,
                 &cat_dao::NewCategory {
                     id_user,
                     name: &name,
@@ -106,8 +110,10 @@ pub async fn create(
                     position,
                     attributes: Attributes::new(),
                 },
-            )?;
-            let category = cat_dao::find_by_id(conn, id, id_user)?
+            )
+            .await?;
+            let category = cat_dao::find_by_id(&mut conn, id, id_user)
+                .await?
                 .ok_or_else(|| Error::Internal("folder vanished after insert".into()))?;
             Ok(CategoryDto::new(&category, Vec::new()))
         })
@@ -125,9 +131,9 @@ pub async fn show(
     let id_user = user.id;
     let dto = state
         .db
-        .with(move |conn| {
-            let category = require_category(conn, id, id_user)?;
-            let feeds = feed_dao::list_by_category(conn, id_user, id)?;
+        .with(move |mut conn| async move {
+            let category = require_category(&mut conn, id, id_user).await?;
+            let feeds = feed_dao::list_by_category(&mut conn, id_user, id).await?;
             Ok(CategoryDto::new(&category, feeds))
         })
         .await
@@ -144,21 +150,21 @@ pub async fn update(
     let id_user = user.id;
     let dto = state
         .db
-        .with(move |conn| {
-            require_category(conn, id, id_user)?;
+        .with(move |mut conn| async move {
+            require_category(&mut conn, id, id_user).await?;
             if let Some(raw) = req.name.as_deref() {
                 let name = Category::normalize_name(raw).map_err(crate::error::validation)?;
                 // Only worth checking when the name is actually changing.
-                let existing = cat_dao::find_by_name(conn, id_user, &name)?;
+                let existing = cat_dao::find_by_name(&mut conn, id_user, &name).await?;
                 if existing.is_some_and(|c| c.id != id) {
                     return Err(Error::Conflict(format!(
                         "a folder named {name:?} already exists"
                     )));
                 }
-                cat_dao::update_name(conn, id, id_user, &name)?;
+                cat_dao::update_name(&mut conn, id, id_user, &name).await?;
             }
-            let category = require_category(conn, id, id_user)?;
-            let feeds = feed_dao::list_by_category(conn, id_user, id)?;
+            let category = require_category(&mut conn, id, id_user).await?;
+            let feeds = feed_dao::list_by_category(&mut conn, id_user, id).await?;
             Ok(CategoryDto::new(&category, feeds))
         })
         .await
@@ -175,9 +181,9 @@ pub async fn set_position(
     let id_user = user.id;
     state
         .db
-        .with(move |conn| {
-            require_category(conn, id, id_user)?;
-            Ok(cat_dao::update_position(conn, id, id_user, req.position)?)
+        .with(move |mut conn| async move {
+            require_category(&mut conn, id, id_user).await?;
+            cat_dao::update_position(&mut conn, id, id_user, req.position).await
         })
         .await
         .map_err(ApiError)?;
@@ -192,7 +198,7 @@ pub async fn reorder(
     let id_user = user.id;
     let updated = state
         .db
-        .with(move |conn| Ok(cat_dao::reorder(conn, id_user, &req.ids)?))
+        .with(move |mut conn| async move { cat_dao::reorder(&mut conn, id_user, &req.ids).await })
         .await
         .map_err(ApiError)?;
     Ok(Json(serde_json::json!({ "repositioned": updated })))
@@ -211,10 +217,12 @@ pub async fn remove(
     let id_user = user.id;
     let orphaned = state
         .db
-        .with(move |conn| {
-            require_category(conn, id, id_user)?;
-            let orphaned = feed_dao::list_by_category(conn, id_user, id)?.len() as i64;
-            cat_dao::delete(conn, id, id_user)?;
+        .with(move |mut conn| async move {
+            require_category(&mut conn, id, id_user).await?;
+            let orphaned = feed_dao::list_by_category(&mut conn, id_user, id)
+                .await?
+                .len() as i64;
+            cat_dao::delete(&mut conn, id, id_user).await?;
             Ok(orphaned)
         })
         .await
@@ -229,12 +237,14 @@ pub async fn remove(
 /// Loads a folder the caller owns, or 404s.
 ///
 /// A 404 rather than a 403 for someone else's folder: the distinction would confirm the id exists.
-fn require_category(
-    conn: &rusqlite::Connection,
+async fn require_category(
+    conn: &mut SqliteConnection,
     id: i64,
     id_user: i64,
 ) -> crate::error::Result<Category> {
-    cat_dao::find_by_id(conn, id, id_user)?.ok_or_else(|| Error::NotFound(format!("folder {id}")))
+    cat_dao::find_by_id(conn, id, id_user)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("folder {id}")))
 }
 
 /// Feeds belonging to a folder, for the sidebar's nested list.
@@ -246,9 +256,10 @@ pub async fn feeds(
     let id_user = user.id;
     let dtos = state
         .db
-        .with(move |conn| {
-            require_category(conn, id, id_user)?;
-            Ok(feed_dao::list_by_category(conn, id_user, id)?
+        .with(move |mut conn| async move {
+            require_category(&mut conn, id, id_user).await?;
+            Ok(feed_dao::list_by_category(&mut conn, id_user, id)
+                .await?
                 .iter()
                 .map(FeedDto::new)
                 .collect())

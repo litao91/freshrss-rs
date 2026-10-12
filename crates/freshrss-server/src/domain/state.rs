@@ -102,7 +102,9 @@ impl EntryState {
         let read = bits & bits::READ != 0;
         let not_read = bits & bits::NOT_READ != 0;
         if read != not_read {
-            state.ands.push(if read { Cond::Read } else { Cond::NotRead });
+            state
+                .ands
+                .push(if read { Cond::Read } else { Cond::NotRead });
         }
         let favorite = bits & bits::FAVORITE != 0;
         let not_favorite = bits & bits::NOT_FAVORITE != 0;
@@ -200,7 +202,11 @@ mod tests {
         // FreshRSS's `STATE_ALL` is `READ | NOT_READ`. Asking for both is asking for everything, and
         // a port that turned it into `is_read=1 AND is_read=0` would list nothing at all.
         assert!(EntryState::from_bits(bits::ALL).is_unconstrained());
-        assert!(EntryState::from_bits(bits::ALL | bits::FAVORITE | bits::NOT_FAVORITE).ands.is_empty());
+        assert!(
+            EntryState::from_bits(bits::ALL | bits::FAVORITE | bits::NOT_FAVORITE)
+                .ands
+                .is_empty()
+        );
     }
 
     #[test]

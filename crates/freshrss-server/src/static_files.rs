@@ -231,7 +231,7 @@ mod tests {
         std::fs::write(dir.path().join("assets/app.js"), "console.log(1)").expect("write");
 
         let state = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig {
                 server: crate::config::ServerConfig {
                     static_dir: dir.path().to_path_buf(),
@@ -287,7 +287,7 @@ mod tests {
         std::fs::write(dir.path().parent().unwrap().join("secret.txt"), "nope").ok();
 
         let state = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig {
                 server: crate::config::ServerConfig {
                     static_dir: dir.path().to_path_buf(),

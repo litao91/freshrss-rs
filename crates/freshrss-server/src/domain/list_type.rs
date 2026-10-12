@@ -129,10 +129,7 @@ impl ListType {
 
     /// True when this scope needs an `id` (a category, feed or tag) to mean anything.
     pub fn needs_id(self) -> bool {
-        matches!(
-            self,
-            ListType::Category | ListType::Feed | ListType::Tag
-        )
+        matches!(self, ListType::Category | ListType::Feed | ListType::Tag)
     }
 
     /// True when the scope joins `entrytag`, which multiplies rows for an article with several labels.
@@ -286,7 +283,11 @@ mod tests {
     #[test]
     fn ignoring_priority_and_having_no_floor_are_the_same_thing() {
         for t in ListType::ALL {
-            assert_eq!(t.ignores_priority(), t.priority_floor(None).is_none(), "{t:?}");
+            assert_eq!(
+                t.ignores_priority(),
+                t.priority_floor(None).is_none(),
+                "{t:?}"
+            );
         }
     }
 

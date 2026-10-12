@@ -106,11 +106,8 @@ async fn resolve(
         return Ok(None);
     }
 
-    let db = app.db.clone();
-    let sid = session_id.clone();
-    let user = tokio::task::spawn_blocking(move || auth::resolve_session(&db, &sid)).await?;
-
-    Ok(user?.map(|u| (u, session_id)))
+    let user = auth::resolve_session(&app.db, &session_id).await?;
+    Ok(user.map(|u| (u, session_id)))
 }
 
 /// True when the original request arrived over TLS.
@@ -165,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_cookie_is_anonymous_not_an_error() {
         let app = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig::default(),
         );
         let parts = parts_with_cookie(None, None);
@@ -176,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_session_id_is_anonymous() {
         let app = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig::default(),
         );
         let parts = parts_with_cookie(Some("frss_sid=doesnotexist"), None);
@@ -186,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_cookie_value_is_anonymous() {
         let app = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig::default(),
         );
         let parts = parts_with_cookie(Some("frss_sid="), None);
@@ -197,7 +194,7 @@ mod tests {
     async fn a_real_session_resolves_to_its_user() {
         use crate::service::auth::{ClientInfo, LoginRequest, RegisterRequest};
         let app = AppState::new(
-            crate::db::Db::in_memory().expect("db"),
+            crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig::default(),
         );
 
@@ -210,6 +207,7 @@ mod tests {
                 password: "correct horse".into(),
             },
         )
+        .await
         .expect("register");
         let (_, session) = auth::login(
             &app.db,
@@ -220,6 +218,7 @@ mod tests {
             },
             ClientInfo::default(),
         )
+        .await
         .expect("login");
 
         let parts = parts_with_cookie(Some(&format!("frss_sid={}", session.id)), None);

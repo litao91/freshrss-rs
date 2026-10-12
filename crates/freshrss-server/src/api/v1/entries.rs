@@ -22,9 +22,9 @@ use crate::domain::list_type::ListType;
 use crate::domain::sort::{Order, SecondarySort, Sort};
 use crate::domain::state::{Cond, EntryState};
 use crate::error::{Error, Result};
-use freshrss_search::ast::Expr;
 use crate::router::AppState;
 use crate::service::entries as entry_service;
+use freshrss_search::ast::Expr;
 
 /// The largest page the API will serve.
 ///
@@ -112,9 +112,8 @@ impl ListParams {
         let order = parse_order(self.order.as_deref(), "order")?;
         let secondary_sort = match self.secondary_sort.as_deref() {
             None | Some("") => SecondarySort::default(),
-            Some(text) => SecondarySort::parse(text).ok_or_else(|| {
-                Error::Validation(format!("{text:?} is not a secondary sort"))
-            })?,
+            Some(text) => SecondarySort::parse(text)
+                .ok_or_else(|| Error::Validation(format!("{text:?} is not a secondary sort")))?,
         };
         let secondary_order = parse_order(self.secondary_order.as_deref(), "secondary_order")?;
 
@@ -195,7 +194,9 @@ fn parse_order(text: Option<&str>, field: &str) -> Result<Order> {
     match text {
         None | Some("") => Ok(Order::default()),
         Some(value) => Order::parse(value).ok_or_else(|| {
-            Error::Validation(format!("{value:?} is not a direction for {field}; expected asc or desc"))
+            Error::Validation(format!(
+                "{value:?} is not a direction for {field}; expected asc or desc"
+            ))
         }),
     }
 }
@@ -204,9 +205,10 @@ fn parse_order(text: Option<&str>, field: &str) -> Result<Order> {
 fn parse_id(text: Option<&str>, field: &str) -> Result<Option<i64>> {
     match text.map(str::trim) {
         None | Some("") => Ok(None),
-        Some(value) => value.parse::<i64>().map(Some).map_err(|_| {
-            Error::Validation(format!("{value:?} is not a number for {field}"))
-        }),
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| Error::Validation(format!("{value:?} is not a number for {field}"))),
     }
 }
 
@@ -253,40 +255,41 @@ pub async fn list_entries(
     };
     let query = params.into_query(id_user, parsed, now).map_err(ApiError)?;
 
-    let db = state.db.clone();
-    let page = tokio::task::spawn_blocking(move || {
-        // One extra row, so `has_more` does not need a second query.
-        let mut probe = query.clone();
-        probe.limit = query.limit.saturating_add(1);
+    let page = state
+        .db
+        .with(move |mut conn| async move {
+            // One extra row, so `has_more` does not need a second query.
+            let mut probe = query.clone();
+            probe.limit = query.limit.saturating_add(1);
 
-        let conn = db.get()?;
-        let rows = list(&conn, &probe)?;
-        let has_more = rows.len() > query.limit;
-        let rows = if has_more {
-            rows.into_iter().take(query.limit).collect()
-        } else {
-            rows
-        };
-        let unread = count_unread(&conn, &query)?;
+            let rows = list(&mut conn, &probe).await?;
+            let has_more = rows.len() > query.limit;
+            let rows = if has_more {
+                rows.into_iter().take(query.limit).collect()
+            } else {
+                rows
+            };
+            let unread = count_unread(&mut conn, &query).await?;
 
-        let cursor = match (has_more, rows.last()) {
-            (true, Some(last)) => {
-                let cursor = entry_query::cursor_after(&conn, &query, last.id)?;
-                Some(entry_service::encode_cursor(&cursor)?)
-            }
-            _ => None,
-        };
+            let cursor = match (has_more, rows.last()) {
+                (true, Some(last)) => {
+                    let cursor = entry_query::cursor_after(&mut conn, &query, last.id).await?;
+                    Some(entry_service::encode_cursor(&cursor)?)
+                }
+                _ => None,
+            };
 
-        let items = entry_service::summaries(&conn, id_user, &rows)?;
-        Ok::<_, Error>(EntryPageDto {
-            items,
-            cursor,
-            has_more,
-            id_max: query.id_max.unwrap_or_else(|| EntryId::from_micros(now)),
-            unread_in_scope: unread,
+            let items = entry_service::summaries(&mut conn, id_user, &rows).await?;
+            Ok(EntryPageDto {
+                items,
+                cursor,
+                has_more,
+                id_max: query.id_max.unwrap_or_else(|| EntryId::from_micros(now)),
+                unread_in_scope: unread,
+            })
         })
-    })
-    .await??;
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(page))
 }
@@ -304,40 +307,52 @@ pub async fn show(
     let parsed = compile_search(params.search.as_deref(), id_user, &state).await?;
     let query = params.into_query(id_user, parsed, now).map_err(ApiError)?;
 
-    let db = state.db.clone();
-    let detail = tokio::task::spawn_blocking(move || {
-        let conn = db.get()?;
-        let entry = entry_dao::find_by_id(&conn, id, id_user)?
-            .ok_or_else(|| Error::NotFound(format!("entry {id:?}")))?;
-        let (full, feed) = entry_service::full(&conn, &entry)?;
+    let detail = state
+        .db
+        .with(move |mut conn| async move {
+            let entry = entry_dao::find_by_id(&mut conn, id, id_user)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("entry {id:?}")))?;
+            let (full, feed) = entry_service::full(&mut conn, &entry).await?;
 
-        // The neighbours in *this* listing, not in the database: the reading pane's prev/next buttons
-        // have to follow the order the reader is looking at, which a `sort=title` list and a
-        // `sort=date` list disagree about.
-        let mut next_query = query.clone();
-        next_query.limit = 1;
-        next_query.cursor = Some(entry_query::cursor_after(&conn, &query, id)?);
-        let next = list(&conn, &next_query)?.into_iter().next().map(|e| e.id);
+            // The neighbours in *this* listing, not in the database: the reading pane's prev/next
+            // buttons have to follow the order the reader is looking at, which a `sort=title` list
+            // and a `sort=date` list disagree about.
+            let mut next_query = query.clone();
+            next_query.limit = 1;
+            next_query.cursor = Some(entry_query::cursor_after(&mut conn, &query, id).await?);
+            let next = list(&mut conn, &next_query)
+                .await?
+                .into_iter()
+                .next()
+                .map(|e| e.id);
 
-        // Reversing every level of the ladder is what "the article before this one" means.
-        let mut prev_query = query.clone();
-        prev_query.limit = 1;
-        prev_query.order = query.order.reverse();
-        prev_query.secondary_order = query.secondary_order.reverse();
-        prev_query.cursor = Some(Cursor {
-            id,
-            values: entry_query::cursor_after(&conn, &query, id)?.values,
-        });
-        let prev = list(&conn, &prev_query)?.into_iter().next().map(|e| e.id);
+            // Reversing every level of the ladder is what "the article before this one" means.
+            let mut prev_query = query.clone();
+            prev_query.limit = 1;
+            prev_query.order = query.order.reverse();
+            prev_query.secondary_order = query.secondary_order.reverse();
+            prev_query.cursor = Some(Cursor {
+                id,
+                values: entry_query::cursor_after(&mut conn, &query, id)
+                    .await?
+                    .values,
+            });
+            let prev = list(&mut conn, &prev_query)
+                .await?
+                .into_iter()
+                .next()
+                .map(|e| e.id);
 
-        Ok::<_, Error>(EntryDetailDto {
-            entry: full,
-            prev_id: prev,
-            next_id: next,
-            feed,
+            Ok(EntryDetailDto {
+                entry: full,
+                prev_id: prev,
+                next_id: next,
+                feed,
+            })
         })
-    })
-    .await??;
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(detail))
 }
@@ -377,18 +392,21 @@ async fn mark(
         .map_err(ApiError)?;
 
     let id_user = user.id;
-    let db = state.db.clone();
-    let marked = tokio::task::spawn_blocking(move || {
-        let conn = db.get()?;
-        let n = match kind {
-            Mark::Read => entry_dao::mark_read(&conn, id_user, &ids, true)?,
-            Mark::Unread => entry_dao::mark_read(&conn, id_user, &ids, false)?,
-            Mark::Star => entry_dao::mark_favorite(&conn, id_user, &ids, true)?,
-            Mark::Unstar => entry_dao::mark_favorite(&conn, id_user, &ids, false)?,
-        };
-        Ok::<_, Error>(n)
-    })
-    .await??;
+    let marked = state
+        .db
+        // The writer lock, because this updates `entry`: without it a bulk mark-read and a refresh
+        // commit contend for SQLite's single write lock and one of them gets SQLITE_BUSY.
+        .with_writer(move |mut conn| async move {
+            let n = match kind {
+                Mark::Read => entry_dao::mark_read(&mut conn, id_user, &ids, true).await?,
+                Mark::Unread => entry_dao::mark_read(&mut conn, id_user, &ids, false).await?,
+                Mark::Star => entry_dao::mark_favorite(&mut conn, id_user, &ids, true).await?,
+                Mark::Unstar => entry_dao::mark_favorite(&mut conn, id_user, &ids, false).await?,
+            };
+            Ok(n)
+        })
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(MarkedDto { marked }))
 }
@@ -497,27 +515,29 @@ pub async fn mark_all_read(
     let query = params.into_query(id_user, parsed, now).map_err(ApiError)?;
     let star = body.star.unwrap_or(false);
 
-    let db = state.db.clone();
-    let marked = tokio::task::spawn_blocking(move || {
-        let conn = db.get()?;
-        // Select the ids first. Updating through the same join the listing uses would work, but it
-        // would hold a write lock for as long as the sort takes, and the id-select is the part that
-        // benefits from the narrow columns anyway.
-        let mut select = query.clone();
-        select.limit = usize::MAX;
-        select.cursor = None;
-        let rows = list(&conn, &select)?;
-        if rows.is_empty() {
-            return Ok(0);
-        }
-        let ids: Vec<EntryId> = rows.iter().map(|e| e.id).collect();
-        let marked = entry_dao::mark_read(&conn, id_user, &ids, true)?;
-        if star {
-            entry_dao::mark_favorite(&conn, id_user, &ids, true)?;
-        }
-        Ok::<_, Error>(marked)
-    })
-    .await??;
+    let marked = state
+        .db
+        // The writer lock, because this updates every `entry` row the filters select.
+        .with_writer(move |mut conn| async move {
+            // Select the ids first. Updating through the same join the listing uses would work, but
+            // it would hold a write lock for as long as the sort takes, and the id-select is the
+            // part that benefits from the narrow columns anyway.
+            let mut select = query.clone();
+            select.limit = usize::MAX;
+            select.cursor = None;
+            let rows = list(&mut conn, &select).await?;
+            if rows.is_empty() {
+                return Ok(0);
+            }
+            let ids: Vec<EntryId> = rows.iter().map(|e| e.id).collect();
+            let marked = entry_dao::mark_read(&mut conn, id_user, &ids, true).await?;
+            if star {
+                entry_dao::mark_favorite(&mut conn, id_user, &ids, true).await?;
+            }
+            Ok(marked)
+        })
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(MarkAllReadDto { marked }))
 }
@@ -549,28 +569,34 @@ pub async fn add_label(
         )));
     }
 
-    let db = state.db.clone();
-    let labels = tokio::task::spawn_blocking(move || {
-        let conn = db.get()?;
-        // Refuse early rather than after creating labels: an id belonging to another user must not be
-        // discoverable, and must certainly not be writable.
-        if entry_dao::find_by_id(&conn, id, id_user)?.is_none() {
-            return Err(Error::NotFound(format!("entry {id:?}")));
-        }
-        for name in &names {
-            let id_tag = tag_dao::find_or_create(&conn, id_user, name)?;
-            tag_dao::tag_entry(&conn, id_tag, id.micros(), true)?;
-        }
-        // Every label on the article, so the reader replaces its chip list rather than appending to it
-        // and getting duplicates when two tabs race.
-        Ok::<_, Error>(
-            tag_dao::labels_for_entry(&conn, id.micros())?
+    let labels = state
+        .db
+        .with(move |mut conn| async move {
+            // Refuse early rather than after creating labels: an id belonging to another user must
+            // not be discoverable, and must certainly not be writable.
+            if entry_dao::find_by_id(&mut conn, id, id_user)
+                .await?
+                .is_none()
+            {
+                return Err(Error::NotFound(format!("entry {id:?}")));
+            }
+            for name in &names {
+                let id_tag = tag_dao::find_or_create(&mut conn, id_user, name).await?;
+                tag_dao::tag_entry(&mut conn, id_tag, id.micros(), true).await?;
+            }
+            // Every label on the article, so the reader replaces its chip list rather than
+            // appending to it and getting duplicates when two tabs race.
+            Ok(tag_dao::labels_for_entry(&mut conn, id.micros())
+                .await?
                 .into_iter()
-                .map(|t| LabelRefDto { id: t.id, name: t.name })
-                .collect(),
-        )
-    })
-    .await??;
+                .map(|t| LabelRefDto {
+                    id: t.id,
+                    name: t.name,
+                })
+                .collect())
+        })
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(labels))
 }
@@ -583,25 +609,31 @@ pub async fn remove_label(
     let id_user = user.id;
     let id = entry_id(id).map_err(ApiError)?;
 
-    let db = state.db.clone();
-    let labels = tokio::task::spawn_blocking(move || {
-        let conn = db.get()?;
-        if entry_dao::find_by_id(&conn, id, id_user)?.is_none() {
-            return Err(Error::NotFound(format!("entry {id:?}")));
-        }
-        if let Some(tag) = tag_dao::find_by_name(&conn, id_user, &name)? {
-            tag_dao::untag_entry(&conn, tag.id, id.micros())?;
-        }
-        // Removing a label that was not there is not an error: the reader's view and the database can
-        // disagree after two tabs, and the wanted end state is the same either way.
-        Ok::<_, Error>(
-            tag_dao::labels_for_entry(&conn, id.micros())?
+    let labels = state
+        .db
+        .with(move |mut conn| async move {
+            if entry_dao::find_by_id(&mut conn, id, id_user)
+                .await?
+                .is_none()
+            {
+                return Err(Error::NotFound(format!("entry {id:?}")));
+            }
+            if let Some(tag) = tag_dao::find_by_name(&mut conn, id_user, &name).await? {
+                tag_dao::untag_entry(&mut conn, tag.id, id.micros()).await?;
+            }
+            // Removing a label that was not there is not an error: the reader's view and the
+            // database can disagree after two tabs, and the wanted end state is the same either way.
+            Ok(tag_dao::labels_for_entry(&mut conn, id.micros())
+                .await?
                 .into_iter()
-                .map(|t| LabelRefDto { id: t.id, name: t.name })
-                .collect(),
-        )
-    })
-    .await??;
+                .map(|t| LabelRefDto {
+                    id: t.id,
+                    name: t.name,
+                })
+                .collect())
+        })
+        .await
+        .map_err(ApiError)?;
 
     Ok(Json(labels))
 }
@@ -701,7 +733,10 @@ mod tests {
             ..params()
         })
         .expect_err("rejected");
-        assert!(matches!(&e, Error::Validation(m) if m.contains("needs an id")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("needs an id")),
+            "{e}"
+        );
         assert!(e.is_client_error());
     }
 
@@ -712,21 +747,30 @@ mod tests {
             ..params()
         })
         .expect_err("rejected");
-        assert!(matches!(&e, Error::Validation(m) if m.contains("not a scope")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("not a scope")),
+            "{e}"
+        );
 
         let e = build(ListParams {
             sort: Some("colour".to_owned()),
             ..params()
         })
         .expect_err("rejected");
-        assert!(matches!(&e, Error::Validation(m) if m.contains("not a sort")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("not a sort")),
+            "{e}"
+        );
 
         let e = build(ListParams {
             order: Some("sideways".to_owned()),
             ..params()
         })
         .expect_err("rejected");
-        assert!(matches!(&e, Error::Validation(m) if m.contains("direction")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("direction")),
+            "{e}"
+        );
     }
 
     #[test]
@@ -762,21 +806,27 @@ mod tests {
             .expect("builds");
             assert_eq!(q.state.ands, expected, "{text}");
         }
-        assert!(build(ListParams {
-            read: Some("UNREAD".to_owned()),
-            ..params()
-        })
-        .expect("builds")
-        .state
-        .ands
-        .contains(&Cond::NotRead), "case-insensitive");
+        assert!(
+            build(ListParams {
+                read: Some("UNREAD".to_owned()),
+                ..params()
+            })
+            .expect("builds")
+            .state
+            .ands
+            .contains(&Cond::NotRead),
+            "case-insensitive"
+        );
 
         let e = build(ListParams {
             read: Some("maybe".to_owned()),
             ..params()
         })
         .expect_err("rejected");
-        assert!(matches!(&e, Error::Validation(m) if m.contains("read filter")), "{e}");
+        assert!(
+            matches!(&e, Error::Validation(m) if m.contains("read filter")),
+            "{e}"
+        );
     }
 
     #[test]
@@ -836,7 +886,10 @@ mod tests {
             ..params()
         })
         .expect_err("rejected");
-        assert!(e.is_client_error(), "a stale cursor is a 400, not a 500: {e}");
+        assert!(
+            e.is_client_error(),
+            "a stale cursor is a 400, not a 500: {e}"
+        );
     }
 
     #[test]
@@ -851,7 +904,10 @@ mod tests {
 
     #[test]
     fn entry_ids_in_paths_are_validated() {
-        assert_eq!(entry_id("1700000000000000".into()).expect("ok").micros(), 1_700_000_000_000_000);
+        assert_eq!(
+            entry_id("1700000000000000".into()).expect("ok").micros(),
+            1_700_000_000_000_000
+        );
         for bad in ["", "abc", "1.5", "-"] {
             assert!(entry_id(bad.to_owned()).is_err(), "{bad:?}");
         }

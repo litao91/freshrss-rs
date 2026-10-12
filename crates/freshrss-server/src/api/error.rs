@@ -29,18 +29,6 @@ impl From<Error> for ApiError {
     }
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(err: rusqlite::Error) -> Self {
-        Self(Error::from(err))
-    }
-}
-
-impl From<tokio::task::JoinError> for ApiError {
-    fn from(err: tokio::task::JoinError) -> Self {
-        Self(Error::from(err))
-    }
-}
-
 impl From<std::io::Error> for ApiError {
     fn from(err: std::io::Error) -> Self {
         Self(Error::Io(err))
@@ -219,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_errors_are_reported_as_internal() {
-        let (status, body) = envelope(Error::from(rusqlite::Error::QueryReturnedNoRows)).await;
+        let (status, body) = envelope(Error::from(sqlx::Error::RowNotFound)).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["code"], "db");
         assert_eq!(body["error"]["message"], "an internal error occurred");

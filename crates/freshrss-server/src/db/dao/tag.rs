@@ -6,33 +6,43 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Connection as _, Row as _, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::{in_clause, MAX_BIND_PARAMS};
+use crate::db::sql::{in_clause, sql, MAX_BIND_PARAMS};
 use crate::domain::attributes::Attributes;
 use crate::domain::tag::Tag;
+use crate::error::Result;
 
 pub const COLUMNS: &str = "id, id_user, name, attributes, name_folded";
 
 /// The same list qualified with the `t.` alias, for joins.
 const COLUMNS_ALIASED: &str = "t.id, t.id_user, t.name, t.attributes, t.name_folded";
 
-fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Tag> {
+fn tag_of(row: &SqliteRow) -> std::result::Result<Tag, sqlx::Error> {
     Ok(Tag {
-        id: row.get(0)?,
-        id_user: row.get(1)?,
-        name: row.get(2)?,
-        attributes: row_attributes(row, 3)?,
+        id: row.try_get("id")?,
+        id_user: row.try_get("id_user")?,
+        name: row.try_get("name")?,
+        attributes: row_attributes(row, "attributes")?,
     })
 }
 
-pub fn insert(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
-    conn.execute(
-        "INSERT INTO tag (id_user, name, name_folded) VALUES (?1, ?2, ?3)",
-        params![id_user, name, freshrss_search::fold(name)],
-    )?;
-    Ok(conn.last_insert_rowid())
+/// One row of the `entrytag` join: the article a label is on, and the label.
+fn entry_label_of(row: SqliteRow) -> std::result::Result<(i64, Tag), sqlx::Error> {
+    Ok((row.try_get("id_entry")?, tag_of(&row)?))
+}
+
+pub async fn insert(conn: &mut SqliteConnection, id_user: i64, name: &str) -> Result<i64> {
+    let id = sqlx::query("INSERT INTO tag (id_user, name, name_folded) VALUES (?1, ?2, ?3)")
+        .bind(id_user)
+        .bind(name)
+        .bind(freshrss_search::fold(name))
+        .execute(&mut *conn)
+        .await?
+        .last_insert_rowid();
+    Ok(id)
 }
 
 /// Returns the existing label's id or creates it.
@@ -40,49 +50,68 @@ pub fn insert(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
 /// The `INSERT … ON CONFLICT DO NOTHING` then re-select shape avoids a read-then-write race: two
 /// concurrent requests labelling an article "todo" must not both insert, and `UNIQUE(id_user,name)`
 /// alone would turn the loser into an error the user sees.
-pub fn find_or_create(conn: &Connection, id_user: i64, name: &str) -> SqlResult<i64> {
-    conn.execute(
+pub async fn find_or_create(conn: &mut SqliteConnection, id_user: i64, name: &str) -> Result<i64> {
+    sqlx::query(
         "INSERT INTO tag (id_user, name, name_folded) VALUES (?1, ?2, ?3)
          ON CONFLICT (id_user, name) DO NOTHING",
-        params![id_user, name, freshrss_search::fold(name)],
-    )?;
-    conn.query_row(
-        "SELECT id FROM tag WHERE id_user = ?1 AND name = ?2",
-        params![id_user, name],
-        |r| r.get(0),
+    )
+    .bind(id_user)
+    .bind(name)
+    .bind(freshrss_search::fold(name))
+    .execute(&mut *conn)
+    .await?;
+    Ok(
+        sqlx::query_scalar("SELECT id FROM tag WHERE id_user = ?1 AND name = ?2")
+            .bind(id_user)
+            .bind(name)
+            .fetch_one(&mut *conn)
+            .await?,
     )
 }
 
-pub fn find_by_id(conn: &Connection, id: i64, id_user: i64) -> SqlResult<Option<Tag>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM tag WHERE id = ?1 AND id_user = ?2"),
-        params![id, id_user],
-        from_row,
-    )
-    .optional()
+pub async fn find_by_id(conn: &mut SqliteConnection, id: i64, id_user: i64) -> Result<Option<Tag>> {
+    Ok(sqlx::query(sql(format!(
+        "SELECT {COLUMNS} FROM tag WHERE id = ?1 AND id_user = ?2"
+    )))
+    .bind(id)
+    .bind(id_user)
+    .try_map(|row: SqliteRow| tag_of(&row))
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
-pub fn find_by_name(conn: &Connection, id_user: i64, name: &str) -> SqlResult<Option<Tag>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM tag WHERE id_user = ?1 AND name = ?2"),
-        params![id_user, name],
-        from_row,
-    )
-    .optional()
+pub async fn find_by_name(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+    name: &str,
+) -> Result<Option<Tag>> {
+    Ok(sqlx::query(sql(format!(
+        "SELECT {COLUMNS} FROM tag WHERE id_user = ?1 AND name = ?2"
+    )))
+    .bind(id_user)
+    .bind(name)
+    .try_map(|row: SqliteRow| tag_of(&row))
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
-pub fn list(conn: &Connection, id_user: i64) -> SqlResult<Vec<Tag>> {
-    let mut stmt = conn.prepare(&format!(
+pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Tag>> {
+    Ok(sqlx::query(sql(format!(
         "SELECT {COLUMNS} FROM tag WHERE id_user = ?1 ORDER BY name COLLATE NOCASE"
-    ))?;
-    let rows = stmt.query_map(params![id_user], from_row)?;
-    rows.collect()
+    )))
+    .bind(id_user)
+    .try_map(|row: SqliteRow| tag_of(&row))
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
 /// Labels together with how many articles each is on, for the sidebar. One query rather than a
 /// count per label.
-pub fn list_with_counts(conn: &Connection, id_user: i64) -> SqlResult<Vec<(Tag, i64, i64)>> {
-    let mut stmt = conn.prepare(
+pub async fn list_with_counts(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+) -> Result<Vec<(Tag, i64, i64)>> {
+    Ok(sqlx::query(
         "SELECT t.id, t.id_user, t.name, t.attributes,
                 COUNT(et.id_entry) AS total,
                 COALESCE(SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END), 0) AS unread
@@ -92,63 +121,88 @@ pub fn list_with_counts(conn: &Connection, id_user: i64) -> SqlResult<Vec<(Tag, 
          WHERE t.id_user = ?1
          GROUP BY t.id
          ORDER BY t.name COLLATE NOCASE",
-    )?;
-    let rows = stmt.query_map(params![id_user], |row| {
-        Ok((
-            Tag {
-                id: row.get(0)?,
-                id_user: row.get(1)?,
-                name: row.get(2)?,
-                attributes: row_attributes(row, 3)?,
-            },
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-        ))
-    })?;
-    rows.collect()
+    )
+    .bind(id_user)
+    .try_map(
+        |row: SqliteRow| -> std::result::Result<(Tag, i64, i64), sqlx::Error> {
+            Ok((tag_of(&row)?, row.try_get("total")?, row.try_get("unread")?))
+        },
+    )
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
-pub fn rename(conn: &Connection, id: i64, id_user: i64, name: &str) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE tag SET name = ?3, name_folded = ?4 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, name, freshrss_search::fold(name)],
-    )? > 0)
+pub async fn rename(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    name: &str,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE tag SET name = ?3, name_folded = ?4 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(name)
+            .bind(freshrss_search::fold(name))
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
-pub fn update_attributes(
-    conn: &Connection,
+pub async fn update_attributes(
+    conn: &mut SqliteConnection,
     id: i64,
     id_user: i64,
     attributes: &Attributes,
-) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "UPDATE tag SET attributes = ?3 WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user, attributes.to_db()],
-    )? > 0)
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE tag SET attributes = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(attributes.to_db())
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Deletes a label and, via `ON DELETE CASCADE`, its `entrytag` links. Articles are untouched.
-pub fn delete(conn: &Connection, id: i64, id_user: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "DELETE FROM tag WHERE id = ?1 AND id_user = ?2",
-        params![id, id_user],
-    )? > 0)
+pub async fn delete(conn: &mut SqliteConnection, id: i64, id_user: i64) -> Result<bool> {
+    Ok(
+        sqlx::query("DELETE FROM tag WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
 // --- entrytag --------------------------------------------------------------
 
 /// Attaches or detaches a label, matching `FreshRSS_TagDAO::tagEntry`.
-pub fn tag_entry(conn: &Connection, id_tag: i64, id_entry: i64, tagged: bool) -> SqlResult<()> {
+pub async fn tag_entry(
+    conn: &mut SqliteConnection,
+    id_tag: i64,
+    id_entry: i64,
+    tagged: bool,
+) -> Result<()> {
     if tagged {
-        conn.execute(
-            "INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES (?1, ?2)",
-            params![id_tag, id_entry],
-        )?;
+        sqlx::query("INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES (?1, ?2)")
+            .bind(id_tag)
+            .bind(id_entry)
+            .execute(&mut *conn)
+            .await?;
     } else {
-        conn.execute(
-            "DELETE FROM entrytag WHERE id_tag = ?1 AND id_entry = ?2",
-            params![id_tag, id_entry],
-        )?;
+        sqlx::query("DELETE FROM entrytag WHERE id_tag = ?1 AND id_entry = ?2")
+            .bind(id_tag)
+            .bind(id_entry)
+            .execute(&mut *conn)
+            .await?;
     }
     Ok(())
 }
@@ -157,7 +211,11 @@ pub fn tag_entry(conn: &Connection, id_tag: i64, id_entry: i64, tagged: bool) ->
 ///
 /// Used after a refresh commits, because filter actions that add a label need real entry ids and
 /// so can only run once the staged rows exist.
-pub fn tag_entries(conn: &Connection, id_tag: i64, id_entries: &[i64]) -> SqlResult<usize> {
+pub async fn tag_entries(
+    conn: &mut SqliteConnection,
+    id_tag: i64,
+    id_entries: &[i64],
+) -> Result<usize> {
     if id_entries.is_empty() {
         return Ok(0);
     }
@@ -166,92 +224,94 @@ pub fn tag_entries(conn: &Connection, id_tag: i64, id_entries: &[i64]) -> SqlRes
     for chunk in id_entries.chunks(MAX_BIND_PARAMS - 1) {
         // One statement per chunk rather than per row: a refresh can commit thousands of articles
         // and a label rule matching most of them would otherwise issue thousands of inserts.
-        let mut sql = String::from("INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES ");
-        let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len());
-        for (i, entry_id) in chunk.iter().enumerate() {
+        let mut statement =
+            String::from("INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES ");
+        for (i, _) in chunk.iter().enumerate() {
             if i > 0 {
-                sql.push(',');
+                statement.push(',');
             }
             // ?1 is the tag; the entry ids follow.
-            sql.push_str(&format!("(?1,?{})", i + 2));
-            values.push(entry_id as &dyn rusqlite::ToSql);
+            statement.push_str(&format!("(?1,?{})", i + 2));
         }
-        let mut all: Vec<&dyn rusqlite::ToSql> = vec![&id_tag];
-        all.extend(values);
-        added += conn.execute(&sql, all.as_slice())?;
+        let mut query = sqlx::query(sql(statement)).bind(id_tag);
+        for entry_id in chunk {
+            query = query.bind(*entry_id);
+        }
+        added += query.execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(added)
 }
 
-pub fn untag_entry(conn: &Connection, id_tag: i64, id_entry: i64) -> SqlResult<bool> {
-    Ok(conn.execute(
-        "DELETE FROM entrytag WHERE id_tag = ?1 AND id_entry = ?2",
-        params![id_tag, id_entry],
-    )? > 0)
+pub async fn untag_entry(conn: &mut SqliteConnection, id_tag: i64, id_entry: i64) -> Result<bool> {
+    Ok(
+        sqlx::query("DELETE FROM entrytag WHERE id_tag = ?1 AND id_entry = ?2")
+            .bind(id_tag)
+            .bind(id_entry)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Replaces an article's labels with exactly `id_tags`.
-pub fn set_entry_tags(conn: &Connection, id_entry: i64, id_tags: &[i64]) -> SqlResult<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM entrytag WHERE id_entry = ?1",
-        params![id_entry],
-    )?;
+pub async fn set_entry_tags(
+    conn: &mut SqliteConnection,
+    id_entry: i64,
+    id_tags: &[i64],
+) -> Result<()> {
+    let mut tx = conn.begin().await?;
+    sqlx::query("DELETE FROM entrytag WHERE id_entry = ?1")
+        .bind(id_entry)
+        .execute(&mut *tx)
+        .await?;
     for id_tag in id_tags {
-        tx.execute(
-            "INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES (?1, ?2)",
-            params![id_tag, id_entry],
-        )?;
+        sqlx::query("INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES (?1, ?2)")
+            .bind(*id_tag)
+            .bind(id_entry)
+            .execute(&mut *tx)
+            .await?;
     }
-    tx.commit()?;
+    tx.commit().await?;
     Ok(())
 }
 
-pub fn labels_for_entry(conn: &Connection, id_entry: i64) -> SqlResult<Vec<Tag>> {
-    let mut stmt = conn.prepare(&format!(
+pub async fn labels_for_entry(conn: &mut SqliteConnection, id_entry: i64) -> Result<Vec<Tag>> {
+    Ok(sqlx::query(sql(format!(
         "SELECT {COLUMNS_ALIASED} FROM tag t
          INNER JOIN entrytag et ON et.id_tag = t.id
          WHERE et.id_entry = ?1
          ORDER BY t.name COLLATE NOCASE"
-    ))?;
-    let rows = stmt.query_map(params![id_entry], from_row)?;
-    rows.collect()
+    )))
+    .bind(id_entry)
+    .try_map(|row: SqliteRow| tag_of(&row))
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
 /// Labels for many articles in one query, keyed by entry id.
 ///
 /// The list endpoint needs this for every row on the page; fetching per entry would be a classic
 /// N+1 — 50 extra queries per page of 50 articles.
-pub fn labels_for_entries(
-    conn: &Connection,
+pub async fn labels_for_entries(
+    conn: &mut SqliteConnection,
     id_entries: &[i64],
-) -> SqlResult<HashMap<i64, Vec<Tag>>> {
+) -> Result<HashMap<i64, Vec<Tag>>> {
     let mut out: HashMap<i64, Vec<Tag>> = HashMap::new();
     for chunk in id_entries.chunks(MAX_BIND_PARAMS) {
-        let placeholders = in_clause(chunk.len());
-        let sql = format!(
+        let placeholders = in_clause(1, chunk.len());
+        let mut query = sqlx::query(sql(format!(
             "SELECT et.id_entry, t.id, t.id_user, t.name, t.attributes, t.name_folded
              FROM entrytag et
              INNER JOIN tag t ON t.id = et.id_tag
              WHERE et.id_entry IN {placeholders}
              ORDER BY t.name COLLATE NOCASE"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let values: Vec<&dyn rusqlite::ToSql> =
-            chunk.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(values.as_slice(), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                Tag {
-                    id: row.get(1)?,
-                    id_user: row.get(2)?,
-                    name: row.get(3)?,
-                    attributes: row_attributes(row, 4)?,
-                },
-            ))
-        })?;
-        for row in rows {
-            let (entry_id, tag) = row?;
+        )));
+        for entry_id in chunk {
+            query = query.bind(*entry_id);
+        }
+        let rows = query.try_map(entry_label_of).fetch_all(&mut *conn).await?;
+        for (entry_id, tag) in rows {
             out.entry(entry_id).or_default().push(tag);
         }
     }

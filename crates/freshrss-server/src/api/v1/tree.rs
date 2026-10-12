@@ -20,7 +20,7 @@ pub async fn tree(State(state): State<AppState>, user: CurrentUser) -> ApiResult
     let id_user = user.id;
     let tree = state
         .db
-        .with(move |conn| tree_service::build(conn, id_user))
+        .with(move |mut conn| async move { tree_service::build(&mut conn, id_user).await })
         .await
         .map_err(ApiError)?;
     Ok(Json(tree))
@@ -38,7 +38,7 @@ pub async fn counts(
     let id_user = user.id;
     let counts: CountsDto = state
         .db
-        .with(move |conn| tree_service::counts(conn, id_user))
+        .with(move |mut conn| async move { tree_service::counts(&mut conn, id_user).await })
         .await
         .map_err(ApiError)?;
 

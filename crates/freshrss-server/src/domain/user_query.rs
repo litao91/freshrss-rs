@@ -126,10 +126,7 @@ mod tests {
             SavedQuery::sort_order_from_db("colour:sideways"),
             (Sort::Id, Order::Desc)
         );
-        assert_eq!(
-            SavedQuery::sort_order_from_db(""),
-            (Sort::Id, Order::Desc)
-        );
+        assert_eq!(SavedQuery::sort_order_from_db(""), (Sort::Id, Order::Desc));
         assert_eq!(
             SavedQuery::sort_order_from_db("date"),
             (Sort::Date, Order::Desc)

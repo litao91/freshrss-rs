@@ -166,6 +166,8 @@ CREATE TABLE user_query (
     UNIQUE (id_user, name)
 );
 
--- `schema_migrations` is created by the runner itself (db/migrate.rs), not here.
+-- Migration bookkeeping lives in `_sqlx_migrations`, which sqlx creates and owns; it is not here.
+-- A database written by a build from before the driver was sqlx has no such table, looks untouched
+-- to sqlx, and would fail on the `CREATE TABLE`s above. There is no bridge: recreate it.
 
 INSERT INTO meta (key, value) VALUES ('text_encoding', 'utf8-plain');

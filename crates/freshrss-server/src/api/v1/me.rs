@@ -10,8 +10,7 @@ use axum::{extract::State, Json};
 use crate::api::dto::{BootstrapDto, UserConfigDto, UserDto, VersionDto};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extract::CurrentUser;
-use crate::db::dao::meta;
-use crate::db::migrate;
+use crate::db::applied_schema_version;
 use crate::router::AppState;
 use crate::service::tree;
 
@@ -32,11 +31,9 @@ pub async fn bootstrap(
 
     let (tree, schema) = state
         .db
-        .with(move |conn| {
-            let schema = meta::get(conn, "schema_version")?
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(migrate::SCHEMA_VERSION);
-            Ok((tree::build(conn, id_user)?, schema))
+        .with(move |mut conn| async move {
+            let schema = applied_schema_version(&mut conn).await?;
+            Ok((tree::build(&mut conn, id_user).await?, schema))
         })
         .await
         .map_err(ApiError)?;

@@ -23,6 +23,7 @@ use crate::domain::priority::Priority;
 use crate::domain::ttl::Ttl;
 use crate::error::Error;
 use crate::router::AppState;
+use sqlx::SqliteConnection;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -146,8 +147,9 @@ pub async fn list(
     let id_user = user.id;
     let dtos = state
         .db
-        .with(move |conn| {
-            Ok(feed_dao::list(conn, id_user)?
+        .with(move |mut conn| async move {
+            Ok(feed_dao::list(&mut conn, id_user)
+                .await?
                 .iter()
                 .map(FeedDto::new)
                 .collect())
@@ -184,8 +186,11 @@ pub async fn create(
 
     let dto = state
         .db
-        .with(move |conn| {
-            if feed_dao::find_by_url(conn, id_user, &url)?.is_some() {
+        .with(move |mut conn| async move {
+            if feed_dao::find_by_url(&mut conn, id_user, &url)
+                .await?
+                .is_some()
+            {
                 return Err(Error::Conflict(
                     "you are already subscribed to that address".into(),
                 ));
@@ -195,11 +200,12 @@ pub async fn create(
             // would file the feed under someone else's folder (or fail the foreign key).
             let category = match requested_category {
                 Some(id) => {
-                    let _ = cat_dao::find_by_id(conn, id, id_user)?
+                    let _ = cat_dao::find_by_id(&mut conn, id, id_user)
+                        .await?
                         .ok_or_else(|| Error::NotFound(format!("folder {id}")))?;
                     Some(id)
                 }
-                None => crate::db::dao::user::default_category_id(conn, id_user)?,
+                None => crate::db::dao::user::default_category_id(&mut conn, id_user).await?,
             };
 
             let feed = Feed {
@@ -209,8 +215,9 @@ pub async fn create(
                 ttl,
                 ..Feed::new(id_user, url.clone(), name)
             };
-            let id = feed_dao::insert(conn, &feed)?;
-            let stored = feed_dao::find_by_id(conn, id, id_user)?
+            let id = feed_dao::insert(&mut conn, &feed).await?;
+            let stored = feed_dao::find_by_id(&mut conn, id, id_user)
+                .await?
                 .ok_or_else(|| Error::Internal("feed vanished after insert".into()))?;
             Ok(FeedDto::new(&stored))
         })
@@ -228,7 +235,9 @@ pub async fn show(
     let id_user = user.id;
     let dto = state
         .db
-        .with(move |conn| Ok(FeedDto::new(&require_feed(conn, id, id_user)?)))
+        .with(move |mut conn| async move {
+            Ok(FeedDto::new(&require_feed(&mut conn, id, id_user).await?))
+        })
         .await
         .map_err(ApiError)?;
     Ok(Json(dto))
@@ -243,46 +252,48 @@ pub async fn update(
     let id_user = user.id;
     let dto = state
         .db
-        .with(move |conn| {
-            let feed = require_feed(conn, id, id_user)?;
+        .with(move |mut conn| async move {
+            let feed = require_feed(&mut conn, id, id_user).await?;
 
             if let Some(name) = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                feed_dao::update_name(conn, id, id_user, name)?;
+                feed_dao::update_name(&mut conn, id, id_user, name).await?;
             }
             if let Some(raw) = req.url.as_deref() {
                 let url = normalize_url(raw)?;
                 if url != feed.url
-                    && feed_dao::find_by_url(conn, id_user, &url)?
+                    && feed_dao::find_by_url(&mut conn, id_user, &url)
+                        .await?
                         .is_some_and(|other| other.id != id)
                 {
                     return Err(Error::Conflict(
                         "you are already subscribed to that address".into(),
                     ));
                 }
-                feed_dao::update_url(conn, id, id_user, &url)?;
+                feed_dao::update_url(&mut conn, id, id_user, &url).await?;
             }
             if req.clear_category == Some(true) {
                 // `None` moves the feed out of its folder; the sidebar then lists it as an orphan.
-                feed_dao::update_category(conn, id, id_user, None)?;
+                feed_dao::update_category(&mut conn, id, id_user, None).await?;
             } else if let Some(cat) = req.category_id {
-                let _ = cat_dao::find_by_id(conn, cat, id_user)?
+                let _ = cat_dao::find_by_id(&mut conn, cat, id_user)
+                    .await?
                     .ok_or_else(|| Error::NotFound(format!("folder {cat}")))?;
-                feed_dao::update_category(conn, id, id_user, Some(cat))?;
+                feed_dao::update_category(&mut conn, id, id_user, Some(cat)).await?;
             }
             if let Some(priority) = req.priority {
-                feed_dao::update_priority(conn, id, id_user, Priority::new(priority))?;
+                feed_dao::update_priority(&mut conn, id, id_user, Priority::new(priority)).await?;
             }
             if let Some(kind) = req.kind {
                 let kind = FeedKind::from_i16(kind)
                     .map_err(|e| crate::error::validation(e.to_string()))?;
-                feed_dao::update_kind(conn, id, id_user, kind)?;
+                feed_dao::update_kind(&mut conn, id, id_user, kind).await?;
             }
             // ttl and muted interact: the mute flag is the sign of the stored value, so applying
             // one without regard to the other would silently unmute a feed.
             if req.ttl.is_some() || req.muted.is_some() {
                 let seconds = req.ttl.unwrap_or_else(|| feed.ttl.seconds());
                 let muted = req.muted.unwrap_or_else(|| feed.ttl.is_muted());
-                feed_dao::update_ttl(conn, id, id_user, Ttl::new(seconds, muted))?;
+                feed_dao::update_ttl(&mut conn, id, id_user, Ttl::new(seconds, muted)).await?;
             }
             if req.path_entries.is_some() || req.path_entries_filter.is_some() {
                 let path_entries = req
@@ -297,15 +308,16 @@ pub async fn update(
                     .or(feed.path_entries_filter.as_deref())
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                feed_dao::update_scraping(conn, id, id_user, path_entries, filter)?;
+                feed_dao::update_scraping(&mut conn, id, id_user, path_entries, filter).await?;
             }
             if let Some(auth) = &req.http_auth {
                 let mut updated = feed.clone();
                 updated.set_http_auth(auth.username.as_deref(), auth.password.as_deref());
-                feed_dao::update_http_auth(conn, id, id_user, updated.http_auth.as_deref())?;
+                feed_dao::update_http_auth(&mut conn, id, id_user, updated.http_auth.as_deref())
+                    .await?;
             }
 
-            Ok(FeedDto::new(&require_feed(conn, id, id_user)?))
+            Ok(FeedDto::new(&require_feed(&mut conn, id, id_user).await?))
         })
         .await
         .map_err(ApiError)?;
@@ -321,18 +333,14 @@ pub async fn move_to_category(
     let id_user = user.id;
     state
         .db
-        .with(move |conn| {
-            require_feed(conn, id, id_user)?;
+        .with(move |mut conn| async move {
+            require_feed(&mut conn, id, id_user).await?;
             if let Some(cat) = req.category_id {
-                let _ = cat_dao::find_by_id(conn, cat, id_user)?
+                let _ = cat_dao::find_by_id(&mut conn, cat, id_user)
+                    .await?
                     .ok_or_else(|| Error::NotFound(format!("folder {cat}")))?;
             }
-            Ok(feed_dao::update_category(
-                conn,
-                id,
-                id_user,
-                req.category_id,
-            )?)
+            feed_dao::update_category(&mut conn, id, id_user, req.category_id).await
         })
         .await
         .map_err(ApiError)?;
@@ -348,9 +356,11 @@ pub async fn remove(
     let id_user = user.id;
     state
         .db
-        .with(move |conn| {
-            require_feed(conn, id, id_user)?;
-            Ok(feed_dao::delete(conn, id, id_user)?)
+        // The writer lock: `feed` has `ON DELETE CASCADE` into `entry`, so deleting a subscription
+        // is one of the largest entry writes in the system.
+        .with_writer(move |mut conn| async move {
+            require_feed(&mut conn, id, id_user).await?;
+            feed_dao::delete(&mut conn, id, id_user).await
         })
         .await
         .map_err(ApiError)?;
@@ -367,9 +377,9 @@ pub async fn truncate_entries(
     let id_user = user.id;
     let deleted = state
         .db
-        .with_writer(move |conn| {
-            require_feed(conn, id, id_user)?;
-            Ok(feed_dao::truncate_entries(conn, id, id_user)?)
+        .with_writer(move |mut conn| async move {
+            require_feed(&mut conn, id, id_user).await?;
+            feed_dao::truncate_entries(&mut conn, id, id_user).await
         })
         .await
         .map_err(ApiError)?;
@@ -377,8 +387,14 @@ pub async fn truncate_entries(
 }
 
 /// Loads a feed the caller owns, or 404s.
-fn require_feed(conn: &rusqlite::Connection, id: i64, id_user: i64) -> crate::error::Result<Feed> {
-    feed_dao::find_by_id(conn, id, id_user)?.ok_or_else(|| Error::NotFound(format!("feed {id}")))
+async fn require_feed(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+) -> crate::error::Result<Feed> {
+    feed_dao::find_by_id(conn, id, id_user)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("feed {id}")))
 }
 
 fn host_of(url: &str) -> String {
