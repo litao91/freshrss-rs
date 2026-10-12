@@ -1,0 +1,79 @@
+# freshrss-rs configuration.
+# Copy to config.toml (or point FRESHRSS_CONFIG at it). Every key can also be set
+# through an environment variable: FRESHRSS_<SECTION>_<KEY>, e.g. FRESHRSS_SERVER_BIND.
+
+[server]
+# Address the HTTP listener binds to.
+bind = "127.0.0.1:8080"
+# Directory holding the built SPA. In debug builds files are read from disk on every
+# request (so `npm run dev` output shows up immediately); in release builds the folder
+# is embedded into the binary by rust-embed.
+static_dir = "static"
+
+[database]
+# SQLite database file. Created (with the full schema) if missing.
+path = "data/freshrss.sqlite"
+# Connection pool ceiling. SQLite is single-writer, so a small pool is right; WAL keeps
+# readers concurrent.
+pool_size = 8
+# Milliseconds a writer waits on SQLITE_BUSY before giving up.
+busy_timeout_ms = 10000
+
+[session]
+# Secret used to sign the session cookie. MUST be overridden in production; the server
+# refuses to start with the default value unless `allow_insecure_secret` is true.
+secret = "change-me"
+cookie_name = "frss_sid"
+# Cookie lifetime.
+max_age_days = 30
+# Accept the shipped default secret (development only).
+allow_insecure_secret = true
+
+[registration]
+# "open" = anyone may register, "first-user-only" = registration closes after the first
+# account exists, "closed" = accounts are created by `freshrss-rs create-user` only.
+mode = "open"
+# The first registered account becomes an administrator.
+first_user_is_admin = true
+
+[limits]
+# FreshRSS `limits` block.
+max_search_length = 16384
+max_search_parentheses_depth = 32
+# Seconds an HTTP fetch may take (per-feed `attributes.timeout` overrides this).
+timeout_secs = 20
+# Feeds refreshed per scheduler tick.
+max_feeds_per_refresh = 10
+# Concurrent feed fetches.
+refresh_concurrency = 4
+# Scheduler period when no feed is due yet.
+scheduler_tick_secs = 60
+# Default feed TTL in seconds, used when `feed.ttl` is 0.
+ttl_default = 3600
+# Reject response bodies larger than this.
+max_body_bytes = 52428800
+# Entries returned by one /api/v1/entries page at most.
+max_page_size = 500
+
+[archiving]
+# Retention defaults; per-user, per-category and per-feed `attributes.archiving` override.
+keep_period = "P3M"
+keep_max = 200
+keep_min = 50
+keep_favourites = true
+keep_labels = true
+keep_unreads = false
+
+[http]
+user_agent = "freshrss-rs/0.1 (+https://github.com/example/freshrss-rs)"
+# Block fetches resolving to loopback / RFC1918 / link-local addresses (SSRF guard).
+# Set false only for trusted internal networks.
+block_private_networks = true
+# Comma-separated `host`, `host:port` or CIDR entries exempt from the block above.
+internal_host_allowlist = []
+
+[log]
+# tracing-subscriber EnvFilter directive.
+level = "info"
+# "pretty", "compact" or "json".
+format = "pretty"

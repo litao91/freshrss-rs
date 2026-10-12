@@ -1,0 +1,19 @@
+[package]
+name = "freshrss-search"
+description = "BooleanSearch query language for freshrss-rs: lexer, parser, AST, SQL compiler and in-memory matcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fancy-regex.workspace = true
+jiff.workspace = true
+regex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true

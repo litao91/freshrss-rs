@@ -1,0 +1,55 @@
+[package]
+name = "freshrss-server"
+description = "freshrss-rs: axum web service, SQLite storage, refresh scheduler and CLI for the FreshRSS port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "freshrss-rs"
+path = "src/main.rs"
+
+[lib]
+name = "freshrss_server"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+argon2.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap.workspace = true
+fancy-regex.workspace = true
+figment.workspace = true
+freshrss-feed.workspace = true
+freshrss-search.workspace = true
+futures.workspace = true
+hex.workspace = true
+http.workspace = true
+hyper.workspace = true
+jiff.workspace = true
+md-5.workspace = true
+mime_guess.workspace = true
+once_cell.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true

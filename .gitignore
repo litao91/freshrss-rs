@@ -1,0 +1,7 @@
+target/
+static/
+node_modules/
+web/dist/
+data/
+*.sqlite*
+.DS_Store

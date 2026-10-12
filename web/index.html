@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html
+  lang="en"
+  data-theme="kagit"
+  data-bs-theme="light"
+  data-theme-pref="auto"
+  data-rd-density="rahat"
+  data-rd-nav="acik"
+  data-rd-focus="kapali"
+>
+  <head>
+    <meta charset="UTF-8" />
+    <base href="/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="theme-color" content="#F6F2EA" />
+    <meta name="application-name" content="freshrss-rs" />
+    <meta name="description" content="A self-hosted RSS reader" />
+    <title>Reader</title>
+
+    <!--
+      Applied before first paint so the correct theme is on <html> from the start. Without it
+      a dark-mode visitor sees a white flash while the SPA boots. Mirrors Feeddi's bootstrap,
+      including its localStorage keys, so a user's saved preferences carry over.
+    -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('feeddi-theme') || 'auto';
+          var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = pref === 'auto' ? (dark ? 'gece' : 'kagit') : pref;
+          var root = document.documentElement;
+          root.setAttribute('data-theme', theme);
+          root.setAttribute('data-bs-theme', theme === 'gece' ? 'dark' : 'light');
+          root.setAttribute('data-theme-pref', pref);
+          var size = localStorage.getItem('feeddi-reader-size');
+          size = { s: 17, m: 19, l: 21 }[size] || parseInt(size, 10);
+          if (size >= 15 && size <= 28) root.style.setProperty('--rd-prose-size', size / 16 + 'rem');
+          root.setAttribute('data-rd-density', localStorage.getItem('feeddi-reader-density') || 'rahat');
+          root.setAttribute('data-rd-nav', localStorage.getItem('feeddi-reader-nav') || 'acik');
+          root.setAttribute('data-rd-focus', localStorage.getItem('feeddi-reader-focus') || 'kapali');
+          var tc = document.querySelector('meta[name="theme-color"]');
+          if (tc) tc.setAttribute('content', theme === 'gece' ? '#16130f' : theme === 'sepya' ? '#f1e6cf' : '#f6f2ea');
+        } catch (e) {}
+      })();
+    </script>
+
+    <link rel="stylesheet" href="/vendor/remixicon/remixicon.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>This reader requires JavaScript.</noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
