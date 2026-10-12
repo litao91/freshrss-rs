@@ -12,11 +12,11 @@
 use std::path::{Path, PathBuf};
 
 use axum::{
-    Router,
     body::Body,
     extract::State,
-    http::{HeaderValue, StatusCode, Uri, header},
+    http::{header, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
+    Router,
 };
 use rust_embed::Embed;
 use tower_http::services::ServeFile;
@@ -173,7 +173,10 @@ mod tests {
 
     #[test]
     fn sanitize_passes_normal_paths_through() {
-        assert_eq!(sanitize("/assets/app-abc123.js").as_deref(), Some("assets/app-abc123.js"));
+        assert_eq!(
+            sanitize("/assets/app-abc123.js").as_deref(),
+            Some("assets/app-abc123.js")
+        );
         assert_eq!(sanitize("/favicon.ico").as_deref(), Some("favicon.ico"));
     }
 
@@ -190,7 +193,10 @@ mod tests {
     fn vendor_fonts_are_not_immutable_but_hashed_bundles_are() {
         // Vite copies `web/public/**` to the output root without hashing, so anything not under
         // assets/ must stay revalidatable.
-        assert_eq!(cache_control_for("fonts/literata-normal-latin.woff2"), NO_CACHE);
+        assert_eq!(
+            cache_control_for("fonts/literata-normal-latin.woff2"),
+            NO_CACHE
+        );
         assert_eq!(cache_control_for("robots.txt"), NO_CACHE);
         assert_eq!(cache_control_for("assets/app-abc123.woff2"), IMMUTABLE);
     }
@@ -208,7 +214,10 @@ mod tests {
         // With nothing embedded and nothing on disk, the SPA fallback reports the build hint
         // rather than a bare 404 — that is the operator-facing failure mode we want.
         let res = embedded("some/client/route");
-        assert!(matches!(res.status(), StatusCode::OK | StatusCode::NOT_FOUND));
+        assert!(matches!(
+            res.status(),
+            StatusCode::OK | StatusCode::NOT_FOUND
+        ));
     }
 
     #[tokio::test]
@@ -235,25 +244,36 @@ mod tests {
 
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/assets/app.js").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request");
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(
-            res.headers().get(header::CACHE_CONTROL).unwrap(),
-            IMMUTABLE
-        );
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("body");
+        assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), IMMUTABLE);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body");
         assert_eq!(&body[..], b"console.log(1)");
 
         // Unknown route → index.html, with no-cache.
         let res = app
-            .oneshot(Request::builder().uri("/reader?feed=3").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/reader?feed=3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request");
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), NO_CACHE);
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("body");
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body");
         assert_eq!(&body[..], b"<html>root</html>");
     }
 

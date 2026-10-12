@@ -4,7 +4,6 @@
 //! and a zero ttl means "use the owner's `ttl_default`". That convention is a landmine in
 //! `WHERE` clauses — `ttl >= 0` reads like a range check but is actually the mute filter in
 /// `listFeedsOrderUpdate` — so all ttl arithmetic lives here and nowhere else.
-
 use serde::{Deserialize, Serialize};
 
 /// FreshRSS clamps the magnitude to this before storing.
@@ -163,7 +162,10 @@ mod tests {
 
     #[test]
     fn serializes_as_the_raw_signed_value() {
-        assert_eq!(serde_json::to_string(&Ttl::new(3600, true)).unwrap(), "-3600");
+        assert_eq!(
+            serde_json::to_string(&Ttl::new(3600, true)).unwrap(),
+            "-3600"
+        );
         let back: Ttl = serde_json::from_str("-3600").unwrap();
         assert!(back.is_muted());
         assert_eq!(back.seconds(), 3600);

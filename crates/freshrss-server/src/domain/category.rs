@@ -126,7 +126,10 @@ mod tests {
         assert_eq!(CategoryKind::Normal.as_i16(), 0);
         assert_eq!(CategoryKind::DynamicOpml.as_i16(), 2);
         assert_eq!(CategoryKind::from_i16(0).unwrap(), CategoryKind::Normal);
-        assert_eq!(CategoryKind::from_i16(2).unwrap(), CategoryKind::DynamicOpml);
+        assert_eq!(
+            CategoryKind::from_i16(2).unwrap(),
+            CategoryKind::DynamicOpml
+        );
         assert!(CategoryKind::from_i16(1).is_err());
         assert_eq!(CategoryKind::default(), CategoryKind::Normal);
     }
@@ -146,7 +149,10 @@ mod tests {
     #[test]
     fn names_are_trimmed_and_whitespace_collapsed() {
         assert_eq!(Category::normalize_name("  News  ").unwrap(), "News");
-        assert_eq!(Category::normalize_name("World\n  News\t!").unwrap(), "World News !");
+        assert_eq!(
+            Category::normalize_name("World\n  News\t!").unwrap(),
+            "World News !"
+        );
         assert_eq!(Category::normalize_name("Tech").unwrap(), "Tech");
     }
 

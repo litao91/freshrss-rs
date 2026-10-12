@@ -1,6 +1,6 @@
 //! `user` table access.
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::db::dao::row_attributes;
 use crate::domain::attributes::Attributes;

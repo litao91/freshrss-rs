@@ -149,7 +149,10 @@ mod tests {
 
     #[test]
     fn from_unix_appends_six_zeroes() {
-        assert_eq!(EntryId::from_unix(1_728_656_123).micros(), 1_728_656_123_000_000);
+        assert_eq!(
+            EntryId::from_unix(1_728_656_123).micros(),
+            1_728_656_123_000_000
+        );
         assert_eq!(EntryId::from_unix(0).micros(), 0);
     }
 
@@ -164,7 +167,10 @@ mod tests {
     fn now_is_microsecond_scale_and_monotonic_enough() {
         let a = EntryId::now();
         let b = EntryId::now();
-        assert!(a.micros() > 1_600_000_000_000_000, "id looks like seconds, not micros: {a}");
+        assert!(
+            a.micros() > 1_600_000_000_000_000,
+            "id looks like seconds, not micros: {a}"
+        );
         assert!(b >= a, "ids must not go backwards within a process");
     }
 
@@ -193,7 +199,10 @@ mod tests {
     fn rejects_a_malformed_id() {
         assert!(serde_json::from_str::<EntryId>("\"not-a-number\"").is_err());
         assert!("abc".parse::<EntryId>().is_err());
-        assert!("  42  ".parse::<EntryId>().is_ok(), "surrounding space is tolerated");
+        assert!(
+            "  42  ".parse::<EntryId>().is_ok(),
+            "surrounding space is tolerated"
+        );
     }
 
     #[test]

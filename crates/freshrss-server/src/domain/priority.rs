@@ -90,9 +90,18 @@ mod tests {
     #[test]
     fn floor_is_the_scope_base_without_a_search() {
         // `needVisibility() ?? IMPORTANT` → min(10, 20) == 10.
-        assert_eq!(Priority::floor(Priority::MAIN_STREAM, None), Priority::MAIN_STREAM);
-        assert_eq!(Priority::floor(Priority::CATEGORY, None), Priority::CATEGORY);
-        assert_eq!(Priority::floor(Priority::IMPORTANT, None), Priority::IMPORTANT);
+        assert_eq!(
+            Priority::floor(Priority::MAIN_STREAM, None),
+            Priority::MAIN_STREAM
+        );
+        assert_eq!(
+            Priority::floor(Priority::CATEGORY, None),
+            Priority::CATEGORY
+        );
+        assert_eq!(
+            Priority::floor(Priority::IMPORTANT, None),
+            Priority::IMPORTANT
+        );
     }
 
     #[test]

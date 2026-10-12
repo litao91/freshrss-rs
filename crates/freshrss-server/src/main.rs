@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use freshrss_server::config::{AppConfig, LogFormat};
-use freshrss_server::db::{Db, migrate};
-use freshrss_server::router::{AppState, router};
-use tracing_subscriber::EnvFilter;
+use freshrss_server::db::{migrate, Db};
+use freshrss_server::router::{router, AppState};
 use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -47,10 +47,7 @@ async fn main() -> Result<()> {
             // Db::open already migrated; report the state explicitly for the operator.
             let report = db.blocking_with(|conn| Ok(migrate::run(conn)?))?;
             if report.applied.is_empty() {
-                println!(
-                    "schema already at version {}",
-                    report.schema_version
-                );
+                println!("schema already at version {}", report.schema_version);
             } else {
                 println!(
                     "applied migrations {:?}, schema now at version {}",
@@ -98,7 +95,7 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         match signal(SignalKind::terminate()) {
             Ok(mut sig) => {
                 sig.recv().await;
@@ -122,7 +119,10 @@ async fn shutdown_signal() {
 fn init_tracing(config: &AppConfig) {
     let filter = EnvFilter::try_new(&config.log.level)
         .unwrap_or_else(|err| {
-            eprintln!("invalid log level {:?}: {err}; falling back to info", config.log.level);
+            eprintln!(
+                "invalid log level {:?}: {err}; falling back to info",
+                config.log.level
+            );
             EnvFilter::new("info")
         })
         // The SQL emitted by the search compiler is useful but far too loud by default.

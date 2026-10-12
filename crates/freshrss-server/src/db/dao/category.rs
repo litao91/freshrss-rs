@@ -3,14 +3,13 @@
 //! Every query is scoped by `id_user`. That is not defensive redundancy: `category.name` is only
 //! unique per user, so an unscoped lookup by name would return another user's folder.
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::db::dao::row_attributes;
 use crate::domain::attributes::Attributes;
 use crate::domain::category::{Category, CategoryKind};
 
-pub const COLUMNS: &str =
-    "id, id_user, name, kind, lastUpdate, error, position, attributes";
+pub const COLUMNS: &str = "id, id_user, name, kind, lastUpdate, error, position, attributes";
 
 fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Category> {
     let kind_raw: i64 = row.get(3)?;
@@ -61,11 +60,7 @@ pub fn find_by_id(conn: &Connection, id: i64, id_user: i64) -> SqlResult<Option<
 }
 
 /// Looks a folder up by name, for "add this feed to the folder called X" during OPML import.
-pub fn find_by_name(
-    conn: &Connection,
-    id_user: i64,
-    name: &str,
-) -> SqlResult<Option<Category>> {
+pub fn find_by_name(conn: &Connection, id_user: i64, name: &str) -> SqlResult<Option<Category>> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM category WHERE id_user = ?1 AND name = ?2"),
         params![id_user, name],

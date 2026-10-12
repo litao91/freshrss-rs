@@ -101,7 +101,7 @@ impl User {
     /// Validates a username, returning the reason it was rejected.
     pub fn validate_username(username: &str) -> Result<(), &'static str> {
         let len = username.chars().count();
-        if len < USERNAME_MIN_LEN || len > USERNAME_MAX_LEN {
+        if !(USERNAME_MIN_LEN..=USERNAME_MAX_LEN).contains(&len) {
             return Err("username must be between 2 and 64 characters");
         }
         // Alphanumeric plus `-`, `_`, `.`; must start and end alphanumeric so `..` and a leading
@@ -147,7 +147,9 @@ impl User {
         if email.chars().count() > 254 {
             return Err("email address is too long");
         }
-        let (local, domain) = email.split_once('@').ok_or("email address must contain '@'")?;
+        let (local, domain) = email
+            .split_once('@')
+            .ok_or("email address must contain '@'")?;
         if local.is_empty() || domain.is_empty() {
             return Err("email address must have text on both sides of '@'");
         }
@@ -221,23 +223,26 @@ mod tests {
     #[test]
     fn accepts_reasonable_usernames() {
         for name in ["al", "alice", "alice-smith", "a.b_c", "Litao912", "x1"] {
-            assert!(User::validate_username(name).is_ok(), "{name} should be valid");
+            assert!(
+                User::validate_username(name).is_ok(),
+                "{name} should be valid"
+            );
         }
     }
 
     #[test]
     fn rejects_bad_usernames() {
         for name in [
-            "",           // empty
-            "a",          // too short
-            ".alice",     // leading dot
-            "alice.",     // trailing dot
-            "../etc",     // traversal
-            "al..ice",    // interior double dot
-            "-alice",     // leading dash
-            "alice smith",// space
-            "alice!",     // punctuation
-            "üser",       // non-ASCII
+            "",            // empty
+            "a",           // too short
+            ".alice",      // leading dot
+            "alice.",      // trailing dot
+            "../etc",      // traversal
+            "al..ice",     // interior double dot
+            "-alice",      // leading dash
+            "alice smith", // space
+            "alice!",      // punctuation
+            "üser",        // non-ASCII
             "a".repeat(65).as_str(),
         ] {
             assert!(
@@ -255,7 +260,10 @@ mod tests {
 
     #[test]
     fn password_length_and_nul_are_enforced() {
-        assert!(User::validate_password("1234567").is_err(), "7 chars is too short");
+        assert!(
+            User::validate_password("1234567").is_err(),
+            "7 chars is too short"
+        );
         assert!(User::validate_password("12345678").is_ok());
         assert!(User::validate_password(&"p".repeat(512)).is_ok());
         assert!(User::validate_password(&"p".repeat(513)).is_err());
@@ -266,13 +274,19 @@ mod tests {
     fn email_is_optional_and_loosely_validated() {
         assert!(User::validate_email(None).is_ok());
         assert!(User::validate_email(Some("")).is_ok());
-        assert!(User::validate_email(Some("  ")).is_ok(), "blank means unset");
+        assert!(
+            User::validate_email(Some("  ")).is_ok(),
+            "blank means unset"
+        );
         assert!(User::validate_email(Some("a@b.co")).is_ok());
         assert!(User::validate_email(Some("litao912002@hotmail.com")).is_ok());
         assert!(User::validate_email(Some("no-at-sign")).is_err());
         assert!(User::validate_email(Some("@b.co")).is_err());
         assert!(User::validate_email(Some("a@")).is_err());
-        assert!(User::validate_email(Some("a@localhost")).is_err(), "needs a dot");
+        assert!(
+            User::validate_email(Some("a@localhost")).is_err(),
+            "needs a dot"
+        );
         assert!(User::validate_email(Some("a b@c.co")).is_err());
     }
 

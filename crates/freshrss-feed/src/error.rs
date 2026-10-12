@@ -70,7 +70,9 @@ impl FeedError {
             FeedError::Transport(_) | FeedError::Timeout { .. } | FeedError::RetryAfter { .. } => {
                 true
             }
-            FeedError::Http { status, .. } => *status == 0 || *status == 408 || *status == 429 || *status >= 500,
+            FeedError::Http { status, .. } => {
+                *status == 0 || *status == 408 || *status == 429 || *status >= 500
+            }
             _ => false,
         }
     }

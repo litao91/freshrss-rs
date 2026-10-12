@@ -183,9 +183,11 @@ mod tests {
         let db = Db::in_memory().expect("open");
         let version: i64 = db
             .blocking_with(|c| {
-                Ok(c.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
-                    r.get(0)
-                })?)
+                Ok(
+                    c.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .expect("query");
         assert_eq!(version, migrate::SCHEMA_VERSION);
@@ -224,7 +226,10 @@ mod tests {
                 Ok((fk, busy))
             })
             .expect("pragma");
-        assert!(fk, "foreign_keys must be ON for the ON DELETE CASCADE schema");
+        assert!(
+            fk,
+            "foreign_keys must be ON for the ON DELETE CASCADE schema"
+        );
         assert_eq!(busy, 5_000);
     }
 
@@ -240,9 +245,7 @@ mod tests {
         assert!(cfg.path.exists(), "database file must exist");
 
         let mode: String = db
-            .blocking_with(|c| {
-                Ok(c.pragma_query_value(None, "journal_mode", |r| r.get(0))?)
-            })
+            .blocking_with(|c| Ok(c.pragma_query_value(None, "journal_mode", |r| r.get(0))?))
             .expect("journal_mode");
         assert_eq!(mode, "wal");
     }
@@ -309,7 +312,10 @@ mod tests {
         .expect("seed");
 
         let out: Result<()> = db.transaction(|c| {
-            c.execute("INSERT INTO category (id_user, name) VALUES (1, 'kept')", [])?;
+            c.execute(
+                "INSERT INTO category (id_user, name) VALUES (1, 'kept')",
+                [],
+            )?;
             Err(crate::error::Error::Internal("boom".into()))
         });
         assert!(out.is_err());
@@ -326,9 +332,7 @@ mod tests {
         let db = Db::in_memory().expect("open");
         let hit: i64 = db
             .blocking_with(|c| {
-                Ok(c.query_row("SELECT frss_ilike('École', '%ecole%')", [], |r| {
-                    r.get(0)
-                })?)
+                Ok(c.query_row("SELECT frss_ilike('École', '%ecole%')", [], |r| r.get(0))?)
             })
             .expect("udf");
         assert_eq!(hit, 1);

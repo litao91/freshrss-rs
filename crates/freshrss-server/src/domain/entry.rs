@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::attributes::{Attributes, keys};
+use crate::domain::attributes::{keys, Attributes};
 use crate::domain::ids::EntryId;
 
 /// When an article has no usable title, FreshRSS falls back to the first N characters of its
@@ -174,7 +174,11 @@ impl Entry {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        let separator: &[char] = if trimmed.contains(';') { &[';'] } else { &[','] };
+        let separator: &[char] = if trimmed.contains(';') {
+            &[';']
+        } else {
+            &[',']
+        };
         trimmed
             .split(separator)
             .map(str::trim)
@@ -366,7 +370,11 @@ mod tests {
     #[test]
     fn tags_serialize_with_the_hash_prefix_the_search_operator_expects() {
         let mut e = entry();
-        assert_eq!(e.tags_to_db(), "", "no tags stores an empty string, not '#'");
+        assert_eq!(
+            e.tags_to_db(),
+            "",
+            "no tags stores an empty string, not '#'"
+        );
         e.tags = vec!["rust".into(), "rss".into()];
         assert_eq!(e.tags_to_db(), "#rust #rss");
     }
@@ -424,7 +432,8 @@ mod tests {
         // With no original_content attribute, the wrapper is stripped.
         assert_eq!(e.content_for_hash(), "");
 
-        e.attributes.set(keys::ORIGINAL_CONTENT, "<p>from the feed</p>");
+        e.attributes
+            .set(keys::ORIGINAL_CONTENT, "<p>from the feed</p>");
         assert_eq!(e.content_for_hash(), "<p>from the feed</p>");
     }
 
@@ -510,7 +519,10 @@ mod tests {
         let s = e.summary(30);
         assert!(s.ends_with('…'), "{s}");
         assert!(s.chars().count() <= 32, "{s} is too long");
-        assert!(!s[..s.len() - '…'.len_utf8()].ends_with(' '), "must not end in a gap");
+        assert!(
+            !s[..s.len() - '…'.len_utf8()].ends_with(' '),
+            "must not end in a gap"
+        );
     }
 
     #[test]
@@ -540,7 +552,10 @@ mod tests {
             url: "https://e.com/photo.jpeg?size=large#frag".into(),
             ..base_enclosure()
         };
-        assert!(by_ext.is_image(), "extension check ignores query and fragment");
+        assert!(
+            by_ext.is_image(),
+            "extension check ignores query and fragment"
+        );
 
         let not_image = Enclosure {
             url: "https://e.com/episode.mp3".into(),

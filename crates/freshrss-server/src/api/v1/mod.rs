@@ -1,0 +1,30 @@
+//! The `/api/v1` route table.
+
+use axum::{
+    routing::{delete, get},
+    Router,
+};
+
+use crate::router::AppState;
+
+pub mod auth;
+pub mod categories;
+pub mod feeds;
+pub mod me;
+pub mod tree;
+
+/// All versioned API routes, mounted at `/api/v1`.
+///
+/// Kept in one place so the surface is reviewable at a glance: anything reachable by the SPA is
+/// listed here, and anything not listed here is not reachable.
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .nest("/auth", auth::router())
+        .route("/me", get(me::bootstrap))
+        .route("/me/sessions", get(auth::list_sessions))
+        .route("/me/sessions/{id}", delete(auth::revoke_session))
+        .route("/tree", get(tree::tree))
+        .route("/counts", get(tree::counts))
+        .nest("/categories", categories::router())
+        .nest("/feeds", feeds::router())
+}

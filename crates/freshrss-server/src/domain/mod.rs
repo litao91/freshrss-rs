@@ -17,12 +17,12 @@ pub mod tag;
 pub mod ttl;
 pub mod user;
 
-pub use attributes::{Attributes, keys as attribute_keys};
+pub use attributes::{keys as attribute_keys, Attributes};
 pub use category::{Category, CategoryKind, DEFAULT_CATEGORY_NAME};
 pub use entry::{Enclosure, Entry, Thumbnail};
 pub use feed::{Feed, LetterAvatar};
 pub use filter_action::{FilterAction, FilterActionType};
-pub use ids::{EntryId, MICROS_PER_SEC, now_micros, now_unix};
+pub use ids::{now_micros, now_unix, EntryId, MICROS_PER_SEC};
 pub use kind::FeedKind;
 pub use priority::Priority;
 pub use tag::Tag;

@@ -7,7 +7,7 @@
 //! FreshRSS itself does not, which is why `intitle:ecole` matches "École" for filter
 //! actions but not for listing queries there.
 
-use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Accent-folds and lowercases `s`: NFD → drop nonspacing marks → NFC → lowercase.
 ///

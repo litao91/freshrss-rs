@@ -3,7 +3,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::attributes::{Attributes, keys};
+use crate::domain::attributes::{keys, Attributes};
 use crate::domain::filter_action::FilterAction;
 use crate::domain::kind::FeedKind;
 use crate::domain::priority::Priority;
@@ -100,7 +100,8 @@ impl Feed {
     }
 
     pub fn set_simplepie_hash(&mut self, hash: Option<&str>) {
-        self.attributes.set_str(keys::SIMPLEPIE_HASH, hash.map(str::to_string));
+        self.attributes
+            .set_str(keys::SIMPLEPIE_HASH, hash.map(str::to_string));
     }
 
     /// The GUID policy override, when the user set one.
@@ -111,7 +112,9 @@ impl Feed {
     /// True when the user chose the GUID policy explicitly, so refresh must not silently
     /// auto-degrade it after seeing bad GUIDs.
     pub fn unicity_criteria_forced(&self) -> bool {
-        self.attributes.get_bool(keys::UNICITY_CRITERIA_FORCED).unwrap_or(false)
+        self.attributes
+            .get_bool(keys::UNICITY_CRITERIA_FORCED)
+            .unwrap_or(false)
     }
 
     /// Per-feed HTTP timeout override, in seconds.
@@ -198,10 +201,7 @@ impl Feed {
 /// The host part of a URL, or the whole string if it does not parse. Used for display fallbacks,
 /// so a best-effort answer beats an error.
 fn host_of(url: &str) -> &str {
-    let without_scheme = url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(url);
+    let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     let host = without_scheme
         .split(['/', '?', '#'])
         .next()
@@ -245,8 +245,8 @@ impl LetterAvatar {
         // A small fixed palette keeps avatars distinguishable without competing with the theme's
         // accent colour. Picked by hashing the name so it never changes between renders.
         const PALETTE: [&str; 10] = [
-            "#3a6ea5", "#6a4c93", "#19857b", "#a4453a", "#8a6d1f", "#4a6741", "#7a4a6b",
-            "#2f5d7c", "#8c5a2b", "#515a6b",
+            "#3a6ea5", "#6a4c93", "#19857b", "#a4453a", "#8a6d1f", "#4a6741", "#7a4a6b", "#2f5d7c",
+            "#8c5a2b", "#515a6b",
         ];
         let mut hash: u64 = 5381;
         for byte in name.as_bytes() {
@@ -339,7 +339,10 @@ mod tests {
         assert_eq!(f.simplepie_hash(), Some("abc123"));
         f.set_simplepie_hash(None);
         assert_eq!(f.simplepie_hash(), None);
-        assert!(f.attributes.is_empty(), "clearing the only key empties attributes");
+        assert!(
+            f.attributes.is_empty(),
+            "clearing the only key empties attributes"
+        );
     }
 
     #[test]
@@ -415,7 +418,10 @@ mod tests {
                 search: "author:bot".into(),
                 actions: vec![crate::domain::filter_action::FilterActionType::Read],
             },
-            FilterAction { search: "".into(), actions: vec![] },
+            FilterAction {
+                search: "".into(),
+                actions: vec![],
+            },
         ]);
         let stored = f.filter_actions();
         assert_eq!(stored.len(), 1);
@@ -453,6 +459,9 @@ mod tests {
         let colors: std::collections::HashSet<_> = (0..40)
             .map(|i| LetterAvatar::for_name(&format!("Feed {i}")).color)
             .collect();
-        assert!(colors.len() > 1, "a single colour for every feed is not an avatar");
+        assert!(
+            colors.len() > 1,
+            "a single colour for every feed is not an avatar"
+        );
     }
 }

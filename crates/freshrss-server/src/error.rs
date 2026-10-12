@@ -5,17 +5,31 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Builds a 400-class validation error.
+///
+/// The domain validators return `&'static str` reasons so their messages can live next to the
+/// rules they enforce; this adapts them to the crate error type at the API boundary.
+pub fn validation(reason: impl Into<String>) -> Error {
+    Error::Validation(reason.into())
+}
+
+/// The crate's error type.
+///
+/// The bulky source errors are boxed. `rusqlite::Error` alone is 64 bytes and `figment::Error`
+/// pushes `ConfigError` past 200; because `Result<T, Error>` is the return type of every DAO,
+/// service and handler, an unboxed variant makes *each* of those Results that size. Clippy reports
+/// it once on the enum, but the cost is paid at every call site.
 #[derive(Debug, Error)]
 pub enum Error {
     // --- storage ---
     #[error("sqlite: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(#[source] Box<rusqlite::Error>),
     #[error("connection pool exhausted: {0}")]
-    Pool(#[from] r2d2::Error),
+    Pool(#[source] Box<r2d2::Error>),
     #[error("blocking database task failed: {0}")]
-    Join(#[from] tokio::task::JoinError),
+    Join(#[source] Box<tokio::task::JoinError>),
     #[error("schema migration: {0}")]
-    Migrate(#[from] crate::db::migrate::MigrateError),
+    Migrate(#[source] Box<crate::db::migrate::MigrateError>),
     #[error("could not open {path}: {source}")]
     OpenDb {
         path: String,
@@ -45,7 +59,7 @@ pub enum Error {
 
     // --- feeds / refresh ---
     #[error("feed error: {0}")]
-    Feed(#[from] freshrss_feed::FeedError),
+    Feed(#[source] Box<freshrss_feed::FeedError>),
     #[error("invalid feed url {url:?}: {reason}")]
     BadUrl { url: String, reason: String },
     #[error("http {status}: {message}")]
@@ -53,11 +67,11 @@ pub enum Error {
 
     // --- search ---
     #[error("invalid search query: {0}")]
-    Search(#[from] freshrss_search::SearchError),
+    Search(#[source] Box<freshrss_search::SearchError>),
 
     // --- config / io / misc ---
     #[error("configuration: {0}")]
-    Config(#[from] crate::config::ConfigError),
+    Config(#[source] Box<crate::config::ConfigError>),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
@@ -107,6 +121,26 @@ impl Error {
         }
     }
 }
+
+// Boxing conversions, written by hand because thiserror's `#[from]` on a `Box<T>` field generates
+// `From<Box<T>>` rather than `From<T>` — which would break every `?` on a rusqlite call.
+macro_rules! box_from {
+    ($from:ty => $variant:ident) => {
+        impl From<$from> for Error {
+            fn from(err: $from) -> Self {
+                Error::$variant(Box::new(err))
+            }
+        }
+    };
+}
+
+box_from!(rusqlite::Error => Sqlite);
+box_from!(r2d2::Error => Pool);
+box_from!(tokio::task::JoinError => Join);
+box_from!(crate::db::migrate::MigrateError => Migrate);
+box_from!(freshrss_feed::FeedError => Feed);
+box_from!(freshrss_search::SearchError => Search);
+box_from!(crate::config::ConfigError => Config);
 
 #[cfg(test)]
 mod tests {

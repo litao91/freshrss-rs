@@ -50,7 +50,9 @@ impl SearchError {
     pub fn is_limit(&self) -> bool {
         matches!(
             self,
-            SearchError::TooLong { .. } | SearchError::TooDeep { .. } | SearchError::BudgetExceeded { .. }
+            SearchError::TooLong { .. }
+                | SearchError::TooDeep { .. }
+                | SearchError::BudgetExceeded { .. }
         )
     }
 }

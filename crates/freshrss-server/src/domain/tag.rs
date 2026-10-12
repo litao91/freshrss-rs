@@ -58,9 +58,9 @@ impl Tag {
 
     /// True when this label auto-attaches itself to matching articles.
     pub fn has_label_filter(&self) -> bool {
-        self.filter_actions()
-            .iter()
-            .any(|rule| rule.is_valid() && rule.performs(crate::domain::filter_action::FilterActionType::Label))
+        self.filter_actions().iter().any(|rule| {
+            rule.is_valid() && rule.performs(crate::domain::filter_action::FilterActionType::Label)
+        })
     }
 }
 
@@ -83,7 +83,10 @@ mod tests {
     fn empty_and_over_long_names_are_rejected() {
         assert!(Tag::normalize_name("").is_err());
         assert!(Tag::normalize_name("   ").is_err());
-        assert!(Tag::normalize_name("#").is_err(), "a bare hash is not a name");
+        assert!(
+            Tag::normalize_name("#").is_err(),
+            "a bare hash is not a name"
+        );
         assert!(Tag::normalize_name(&"t".repeat(TAG_NAME_MAX_LEN)).is_ok());
         assert!(Tag::normalize_name(&"t".repeat(TAG_NAME_MAX_LEN + 1)).is_err());
     }

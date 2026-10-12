@@ -1,6 +1,6 @@
 //! `meta` table access, including the global entry-id allocator.
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::domain::ids::now_micros;
 

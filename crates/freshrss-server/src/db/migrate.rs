@@ -4,9 +4,9 @@
 //! order inside `schema_migrations`, and each applied row records a SHA-1 of its contents so
 //! editing an already-applied migration is a hard error instead of silent drift.
 
-use rusqlite::{Connection, Result as SqlResult, params};
-use sha1::Sha1;
+use rusqlite::{params, Connection, Result as SqlResult};
 use sha1::digest::{Digest, FixedOutput};
+use sha1::Sha1;
 use thiserror::Error;
 
 /// One migration. `sql` is embedded at compile time so the binary is self-contained.
@@ -82,7 +82,9 @@ pub fn run(conn: &Connection) -> Result<Report, MigrateError> {
 
     let applied: std::collections::HashMap<i64, String> = {
         let mut stmt = conn.prepare("SELECT version, checksum FROM schema_migrations")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
             let (version, checksum) = row?;
@@ -142,9 +144,11 @@ pub fn run(conn: &Connection) -> Result<Report, MigrateError> {
         [],
     )?;
     let encoding: String = conn
-        .query_row("SELECT value FROM meta WHERE key = 'text_encoding'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'text_encoding'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or_else(|_| "utf8-plain".into());
     if encoding != "utf8-plain" {
         return Err(MigrateError::WrongTextEncoding {
@@ -228,7 +232,11 @@ mod tests {
         let c = conn();
         run(&c).expect("migrate");
         let v: String = c
-            .query_row("SELECT value FROM meta WHERE key='text_encoding'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM meta WHERE key='text_encoding'",
+                [],
+                |r| r.get(0),
+            )
             .expect("marker");
         assert_eq!(v, "utf8-plain");
     }
@@ -304,7 +312,8 @@ mod tests {
         )
         .expect("entry");
 
-        c.execute("DELETE FROM user WHERE id = 1", []).expect("delete user");
+        c.execute("DELETE FROM user WHERE id = 1", [])
+            .expect("delete user");
         let left: i64 = c
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM category) + (SELECT COUNT(*) FROM feed) + (SELECT COUNT(*) FROM entry)",
@@ -312,7 +321,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count");
-        assert_eq!(left, 0, "deleting a user must cascade to categories, feeds and entries");
+        assert_eq!(
+            left, 0,
+            "deleting a user must cascade to categories, feeds and entries"
+        );
     }
 
     #[test]
@@ -325,15 +337,19 @@ mod tests {
             [],
         )
         .expect("user");
-        c.execute("INSERT INTO category (id, id_user, name) VALUES (1, 1, 'News')", [])
-            .expect("category");
+        c.execute(
+            "INSERT INTO category (id, id_user, name) VALUES (1, 1, 'News')",
+            [],
+        )
+        .expect("category");
         c.execute(
             "INSERT INTO feed (id, id_user, url, name, category) VALUES (1, 1, 'u', 'n', 1)",
             [],
         )
         .expect("feed");
         // ON DELETE SET NULL, matching FreshRSS.
-        c.execute("DELETE FROM category WHERE id = 1", []).expect("del cat");
+        c.execute("DELETE FROM category WHERE id = 1", [])
+            .expect("del cat");
         let cat: Option<i64> = c
             .query_row("SELECT category FROM feed WHERE id = 1", [], |r| r.get(0))
             .expect("feed survives");
@@ -389,9 +405,11 @@ mod tests {
             .expect("both users may have the same category name");
         }
         let n: i64 = c
-            .query_row("SELECT COUNT(*) FROM category WHERE name='Uncategorized'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM category WHERE name='Uncategorized'",
+                [],
+                |r| r.get(0),
+            )
             .expect("count");
         assert_eq!(n, 2);
         let dup = c.execute(

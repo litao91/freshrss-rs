@@ -4,7 +4,7 @@
 //! revoked individually, and swept when it expires. A signed-JWT cookie would be stateless but
 //! then "sign out everywhere" and the account menu's session list are both impossible.
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::domain::ids::now_unix;
 
@@ -61,8 +61,7 @@ pub fn create(
 const COLUMNS: &str = "id, id_user, created_at, expires_at, ip, user_agent";
 
 /// The same list qualified with the `s.` alias, for the join in [`find_valid`].
-const COLUMNS_ALIASED: &str =
-    "s.id, s.id_user, s.created_at, s.expires_at, s.ip, s.user_agent";
+const COLUMNS_ALIASED: &str = "s.id, s.id_user, s.created_at, s.expires_at, s.ip, s.user_agent";
 
 fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Session> {
     Ok(Session {
@@ -116,25 +115,22 @@ pub fn revoke(conn: &Connection, id: &str) -> SqlResult<bool> {
 }
 
 pub fn revoke_for_user(conn: &Connection, id_user: i64) -> SqlResult<usize> {
-    Ok(conn.execute(
-        "DELETE FROM session WHERE id_user = ?1",
-        params![id_user],
-    )?)
+    conn.execute("DELETE FROM session WHERE id_user = ?1", params![id_user])
 }
 
 /// Signs out every session except `keep`, for "sign out other devices" after a password change.
 pub fn revoke_others(conn: &Connection, id_user: i64, keep: &str) -> SqlResult<usize> {
-    Ok(conn.execute(
+    conn.execute(
         "DELETE FROM session WHERE id_user = ?1 AND id <> ?2",
         params![id_user, keep],
-    )?)
+    )
 }
 
 /// Deletes expired sessions. Runs opportunistically from the scheduler rather than on a timer of
 /// its own; a stale row is inert, so an occasional skip costs nothing.
 pub fn sweep_expired(conn: &Connection) -> SqlResult<usize> {
-    Ok(conn.execute(
+    conn.execute(
         "DELETE FROM session WHERE expires_at <= ?1",
         params![now_unix()],
-    )?)
+    )
 }

@@ -5,7 +5,7 @@
 //! `IN (?,?,…)`. rusqlite's `params![]` macro only takes a fixed argument list; this provides the
 //! dynamic equivalent.
 
-use rusqlite::{Result as SqlResult, ToSql, types::ToSqlOutput, types::ValueRef};
+use rusqlite::{types::ToSqlOutput, types::ValueRef, Result as SqlResult, ToSql};
 
 /// A bind value whose type is chosen at runtime.
 ///
@@ -153,8 +153,10 @@ mod tests {
     #[test]
     fn an_empty_in_clause_is_false_for_every_row_rather_than_a_syntax_error() {
         let conn = Connection::open_in_memory().expect("db");
-        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1),(2);")
-            .expect("seed");
+        conn.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1),(2);",
+        )
+        .expect("seed");
         let sql = format!("SELECT COUNT(*) FROM t WHERE id IN {}", in_clause(0));
         let count: i64 = conn.query_row(&sql, [], |r| r.get(0)).expect("query");
         assert_eq!(count, 0);
@@ -163,12 +165,10 @@ mod tests {
     #[test]
     fn sql_values_bind_to_the_right_sqlite_types() {
         let conn = Connection::open_in_memory().expect("db");
-        conn.execute_batch(
-            "CREATE TABLE t (i INTEGER, r REAL, s TEXT, b BLOB, n TEXT);",
-        )
-        .expect("create");
+        conn.execute_batch("CREATE TABLE t (i INTEGER, r REAL, s TEXT, b BLOB, n TEXT);")
+            .expect("create");
 
-        let values = vec![
+        let values = [
             SqlValue::from(42i64),
             SqlValue::from(1.5f64),
             SqlValue::from("hello"),
@@ -183,7 +183,13 @@ mod tests {
 
         let (i, r, s, b, n): (i64, f64, String, Vec<u8>, Option<String>) = conn
             .query_row("SELECT i, r, s, b, n FROM t", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })
             .expect("select");
         assert_eq!(i, 42);
@@ -197,13 +203,16 @@ mod tests {
     fn bool_binds_as_an_integer_matching_the_schema() {
         // is_read / is_favorite are INTEGER columns; `true` must land as 1, not as text.
         let conn = Connection::open_in_memory().expect("db");
-        conn.execute_batch("CREATE TABLE t (flag INTEGER);").expect("create");
+        conn.execute_batch("CREATE TABLE t (flag INTEGER);")
+            .expect("create");
         conn.execute(
             "INSERT INTO t VALUES (?)",
             rusqlite::params![SqlValue::from(true)],
         )
         .expect("insert");
-        let flag: i64 = conn.query_row("SELECT flag FROM t", [], |r| r.get(0)).expect("select");
+        let flag: i64 = conn
+            .query_row("SELECT flag FROM t", [], |r| r.get(0))
+            .expect("select");
         assert_eq!(flag, 1);
     }
 
@@ -252,11 +261,9 @@ mod tests {
         assert_eq!(escaped, 1, "only the literal '50%' row");
 
         let unescaped: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM t WHERE s LIKE '%50%%'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM t WHERE s LIKE '%50%%'", [], |r| {
+                r.get(0)
+            })
             .expect("unescaped");
         assert_eq!(unescaped, 2, "without escaping the % is a wildcard");
     }

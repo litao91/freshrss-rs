@@ -1,11 +1,11 @@
 //! The HTTP router. Mounted by `main.rs`; tests drive it with `tower::ServiceExt::oneshot`.
 
 use axum::{
-    Router,
     extract::State,
     http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
+    Router,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(version))
+        .nest("/api/v1", crate::api::v1::router())
         .merge(crate::static_files::router())
         .with_state(state)
 }
@@ -62,9 +63,11 @@ async fn version(State(_state): State<AppState>) -> impl IntoResponse {
         .db
         .with(|conn| {
             Ok(conn
-                .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'schema_version'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0))

@@ -8,8 +8,10 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "i16", into = "i16")]
+#[derive(Default)]
 pub enum FeedKind {
     /// RSS/Atom, autodiscovery off at refresh time.
+    #[default]
     Rss,
     /// "Invalid RSS or Atom feed": parsed as a feed regardless of content type. Corresponds to
     /// FreshRSS's `#force_feed` URL suffix.
@@ -77,7 +79,10 @@ impl FeedKind {
     pub const fn uses_xpath(self) -> bool {
         matches!(
             self,
-            FeedKind::HtmlXpath | FeedKind::XmlXpath | FeedKind::JsonXpath | FeedKind::HtmlXpathJsonDotNotation
+            FeedKind::HtmlXpath
+                | FeedKind::XmlXpath
+                | FeedKind::JsonXpath
+                | FeedKind::HtmlXpathJsonDotNotation
         )
     }
 
@@ -92,7 +97,10 @@ impl FeedKind {
 
     /// True when the response is HTML rather than a syndication format.
     pub const fn is_html(self) -> bool {
-        matches!(self, FeedKind::HtmlXpath | FeedKind::HtmlXpathJsonDotNotation)
+        matches!(
+            self,
+            FeedKind::HtmlXpath | FeedKind::HtmlXpathJsonDotNotation
+        )
     }
 
     /// The `Accept` header FreshRSS sends for this kind, mirroring `FreshRSS_http_Util::httpGet`.
@@ -123,11 +131,6 @@ impl FeedKind {
     }
 }
 
-impl Default for FeedKind {
-    fn default() -> Self {
-        FeedKind::Rss
-    }
-}
 
 impl TryFrom<i16> for FeedKind {
     type Error = UnknownFeedKind;
@@ -228,18 +231,28 @@ mod tests {
     #[test]
     fn every_kind_has_an_accept_header() {
         for kind in ALL {
-            assert!(!kind.accept_header().is_empty(), "{kind:?} needs an Accept header");
+            assert!(
+                !kind.accept_header().is_empty(),
+                "{kind:?} needs an Accept header"
+            );
         }
         // The JSON kinds must prefer JSON.
-        assert!(FeedKind::JsonFeed.accept_header().starts_with("application/json"));
-        assert!(FeedKind::Rss.accept_header().contains("application/rss+xml"));
+        assert!(FeedKind::JsonFeed
+            .accept_header()
+            .starts_with("application/json"));
+        assert!(FeedKind::Rss
+            .accept_header()
+            .contains("application/rss+xml"));
     }
 
     #[test]
     fn only_rss_forced_ignores_the_content_type() {
         assert!(!FeedKind::RssForced.trust_content_type());
         for kind in ALL.iter().filter(|k| **k != FeedKind::RssForced) {
-            assert!(kind.trust_content_type(), "{kind:?} should trust the content type");
+            assert!(
+                kind.trust_content_type(),
+                "{kind:?} should trust the content type"
+            );
         }
     }
 

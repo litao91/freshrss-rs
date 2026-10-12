@@ -75,7 +75,10 @@ mod tests {
         assert_eq!(FilterActionType::Read.as_str(), "read");
         assert_eq!(FilterActionType::Star.as_str(), "star");
         assert_eq!(FilterActionType::Label.as_str(), "label");
-        assert_eq!(serde_json::to_string(&FilterActionType::Read).unwrap(), "\"read\"");
+        assert_eq!(
+            serde_json::to_string(&FilterActionType::Read).unwrap(),
+            "\"read\""
+        );
     }
 
     #[test]
@@ -95,17 +98,38 @@ mod tests {
         assert!(good.performs(FilterActionType::Read));
         assert!(!good.performs(FilterActionType::Star));
 
-        assert!(!FilterAction { search: "".into(), actions: vec![FilterActionType::Read] }.is_valid());
-        assert!(!FilterAction { search: "   ".into(), actions: vec![FilterActionType::Read] }.is_valid());
-        assert!(!FilterAction { search: "x".into(), actions: vec![] }.is_valid());
+        assert!(!FilterAction {
+            search: "".into(),
+            actions: vec![FilterActionType::Read]
+        }
+        .is_valid());
+        assert!(!FilterAction {
+            search: "   ".into(),
+            actions: vec![FilterActionType::Read]
+        }
+        .is_valid());
+        assert!(!FilterAction {
+            search: "x".into(),
+            actions: vec![]
+        }
+        .is_valid());
     }
 
     #[test]
     fn invalid_rules_are_dropped() {
         let mut rules = vec![
-            FilterAction { search: "a".into(), actions: vec![FilterActionType::Read] },
-            FilterAction { search: "".into(), actions: vec![FilterActionType::Star] },
-            FilterAction { search: "b".into(), actions: vec![] },
+            FilterAction {
+                search: "a".into(),
+                actions: vec![FilterActionType::Read],
+            },
+            FilterAction {
+                search: "".into(),
+                actions: vec![FilterActionType::Star],
+            },
+            FilterAction {
+                search: "b".into(),
+                actions: vec![],
+            },
         ];
         FilterAction::retain_valid(&mut rules);
         assert_eq!(rules.len(), 1);

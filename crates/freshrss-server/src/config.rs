@@ -70,7 +70,9 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            bind: "127.0.0.1:8080".parse().expect("valid default bind address"),
+            bind: "127.0.0.1:8080"
+                .parse()
+                .expect("valid default bind address"),
             static_dir: PathBuf::from("static"),
         }
     }
@@ -257,8 +259,10 @@ impl Default for AppConfig {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    /// Boxed because `figment::Error` is ~200 bytes, and this type is the payload of
+    /// `Error::Config`; an unboxed variant would make every `Result` in the crate carry it.
     #[error("invalid configuration: {0}")]
-    Invalid(#[from] figment::Error),
+    Invalid(#[source] Box<figment::Error>),
     #[error("configuration file not found: {}", .0.display())]
     FileNotFound(PathBuf),
     #[error(
@@ -268,10 +272,21 @@ pub enum ConfigError {
     InsecureSecret,
 }
 
+impl From<figment::Error> for ConfigError {
+    fn from(err: figment::Error) -> Self {
+        ConfigError::Invalid(Box::new(err))
+    }
+}
+
 impl AppConfig {
     /// Loads defaults → `config.toml` → environment, then validates.
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_from(std::env::var("FRESHRSS_CONFIG").ok().as_deref().map(Path::new))
+        Self::load_from(
+            std::env::var("FRESHRSS_CONFIG")
+                .ok()
+                .as_deref()
+                .map(Path::new),
+        )
     }
 
     /// Same as [`Self::load`] with an explicit config path (`None` = `config.toml` if present).
@@ -311,8 +326,8 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use figment::Figment;
     use figment::providers::{Format, Serialized, Toml};
+    use figment::Figment;
 
     #[test]
     fn defaults_apply_when_file_is_absent() {

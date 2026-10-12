@@ -5,11 +5,13 @@
 //! and `api` maps those onto HTTP. [`freshrss_search`] and [`freshrss_feed`] are separate
 //! crates so the query language and the feed parsers stay testable without a database.
 
+pub mod api;
 pub mod config;
 pub mod db;
 pub mod domain;
 pub mod error;
 pub mod router;
+pub mod service;
 pub mod static_files;
 
 pub use config::AppConfig;

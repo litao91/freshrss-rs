@@ -6,8 +6,11 @@
 //! because each user got their own database file, so nothing upstream will warn us when a query
 //! forgets its `id_user` predicate.
 
+use freshrss_server::db::dao::{
+    category as cat_dao, entry as entry_dao, feed as feed_dao, meta, session, tag as tag_dao,
+    user as user_dao,
+};
 use freshrss_server::db::Db;
-use freshrss_server::db::dao::{category as cat_dao, entry as entry_dao, feed as feed_dao, meta, session, tag as tag_dao, user as user_dao};
 use freshrss_server::domain::attributes::Attributes;
 use freshrss_server::domain::category::DEFAULT_CATEGORY_NAME;
 use freshrss_server::domain::entry::Entry;
@@ -159,7 +162,11 @@ fn deleting_a_user_cascades_to_everything_they_own() {
             ))
         })
         .expect("count");
-    assert_eq!(leftovers, (0, 0, 0, 0, 0, 0), "nothing may survive the user");
+    assert_eq!(
+        leftovers,
+        (0, 0, 0, 0, 0, 0),
+        "nothing may survive the user"
+    );
 }
 
 #[test]
@@ -197,7 +204,8 @@ fn no_dao_leaks_rows_across_users() {
                     attributes: Attributes::new(),
                 },
             )?;
-            let feed = feed_dao::insert(conn, &Feed::new(alice, "https://alice.example/f", "Alice"))?;
+            let feed =
+                feed_dao::insert(conn, &Feed::new(alice, "https://alice.example/f", "Alice"))?;
             Ok((folder, feed))
         })
         .expect("seed alice");
@@ -240,7 +248,11 @@ fn no_dao_leaks_rows_across_users() {
         );
 
         // Listings must be scoped.
-        assert_eq!(cat_dao::list(conn, bob)?.len(), 2, "bob sees only his own two folders");
+        assert_eq!(
+            cat_dao::list(conn, bob)?.len(),
+            2,
+            "bob sees only his own two folders"
+        );
         assert_eq!(feed_dao::list(conn, bob)?.len(), 0);
         assert_eq!(tag_dao::list(conn, bob)?.len(), 0);
         assert_eq!(
@@ -256,7 +268,12 @@ fn no_dao_leaks_rows_across_users() {
         assert_eq!(marked, 0, "bob cannot mark alice's article read");
 
         assert!(!feed_dao::update_name(conn, alice_feed, bob, "hijacked")?);
-        assert!(!feed_dao::update_priority(conn, alice_feed, bob, Priority::HIDDEN)?);
+        assert!(!feed_dao::update_priority(
+            conn,
+            alice_feed,
+            bob,
+            Priority::HIDDEN
+        )?);
         assert!(!feed_dao::delete(conn, alice_feed, bob)?);
         assert!(!cat_dao::delete(conn, alice_folder, bob)?);
         assert!(!cat_dao::update_name(conn, alice_folder, bob, "hijacked")?);
@@ -347,9 +364,8 @@ fn committing_staged_entries_allocates_dense_chronological_ids() {
 
     let ordered: Vec<(String, i64)> = db
         .blocking_with(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT guid, id FROM entry WHERE id_user = ?1 ORDER BY id",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT guid, id FROM entry WHERE id_user = ?1 ORDER BY id")?;
             let rows = stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
@@ -393,7 +409,10 @@ fn a_second_commit_never_reuses_or_precedes_an_earlier_id() {
     assert_eq!(ids.len(), 2);
     assert!(ids[1] > ids[0], "ids must be monotonic across commits");
     assert!(ids[0] <= high_water_1);
-    assert!(ids[1] > high_water_1, "the second batch starts above the first");
+    assert!(
+        ids[1] > high_water_1,
+        "the second batch starts above the first"
+    );
 }
 
 #[test]
@@ -410,7 +429,14 @@ fn concurrent_commits_from_two_users_do_not_collide_or_drop_articles() {
 
     let per_user = 50;
     for i in 0..per_user {
-        stage_entry(&db, alice, alice_feed, &format!("a{i}"), "A", 1_700_000_000 + i);
+        stage_entry(
+            &db,
+            alice,
+            alice_feed,
+            &format!("a{i}"),
+            "A",
+            1_700_000_000 + i,
+        );
         stage_entry(&db, bob, bob_feed, &format!("b{i}"), "B", 1_700_000_000 + i);
     }
 
@@ -439,11 +465,11 @@ fn concurrent_commits_from_two_users_do_not_collide_or_drop_articles() {
         })
         .expect("counts");
 
-    assert_eq!(alice_count, i64::from(per_user), "alice lost no articles");
-    assert_eq!(bob_count, i64::from(per_user), "bob lost no articles");
+    assert_eq!(alice_count, per_user, "alice lost no articles");
+    assert_eq!(bob_count, per_user, "bob lost no articles");
     assert_eq!(
         distinct_ids,
-        i64::from(per_user) * 2,
+        per_user * 2,
         "every id must be unique across users"
     );
 }
@@ -482,7 +508,10 @@ fn committing_nothing_is_a_noop_that_does_not_burn_ids() {
     let after = db
         .blocking_with(|conn| Ok(meta::entry_id_high_water(conn)?))
         .expect("hwm");
-    assert_eq!(before, after, "an empty refresh must not advance the sequence");
+    assert_eq!(
+        before, after,
+        "an empty refresh must not advance the sequence"
+    );
 }
 
 #[test]
@@ -558,7 +587,10 @@ fn updating_an_article_keeps_its_id_and_the_users_state() {
     assert_eq!(after.content, "<p>new body</p>");
     assert_eq!(after.hash, Some([9u8; 16]));
     assert_eq!(after.last_modified, Some(1_700_001_000));
-    assert!(after.is_read, "an upstream edit must not clear the read flag");
+    assert!(
+        after.is_read,
+        "an upstream edit must not clear the read flag"
+    );
     assert!(after.is_favorite, "an upstream edit must not un-star");
     assert_eq!(
         entry_count(&db, id),
@@ -618,7 +650,10 @@ fn last_seen_advances_for_guids_still_published_and_stops_for_gone_ones() {
     db.blocking_with(|conn| {
         let kept = entry_dao::find_by_guid(conn, feed, "kept")?.expect("kept");
         let gone = entry_dao::find_by_guid(conn, feed, "gone")?.expect("gone");
-        assert_eq!(kept.last_seen, later, "still published, so it slides forward");
+        assert_eq!(
+            kept.last_seen, later,
+            "still published, so it slides forward"
+        );
         assert!(
             gone.last_seen < later,
             "an article that vanished keeps its old lastSeen; retention acts on that later"
@@ -718,9 +753,7 @@ fn mark_all_read_respects_the_id_max_snapshot_fence() {
     // "Mark all as read" means everything the reader had loaded, not articles that arrived since.
     let fence = ids[1];
     let marked = db
-        .blocking_with(|conn| {
-            Ok(entry_dao::mark_read_all(conn, id, fence, 1_700_099_999)?)
-        })
+        .blocking_with(|conn| Ok(entry_dao::mark_read_all(conn, id, fence, 1_700_099_999)?))
         .expect("mark all");
     assert_eq!(marked, 2, "only the two at or below the fence");
 
@@ -851,8 +884,10 @@ fn ttl_zero_uses_the_owners_default_not_a_global_one() {
 
     // Bob's account is configured to poll every 60 seconds.
     db.blocking_with(|conn| {
-        let mut cfg = UserConfig::default();
-        cfg.ttl_default = 60;
+        let cfg = UserConfig {
+            ttl_default: 60,
+            ..UserConfig::default()
+        };
         Ok(user_dao::update_config(conn, bob, &cfg)?)
     })
     .expect("configure bob");
@@ -887,7 +922,10 @@ fn muted_feeds_are_excluded_from_batch_refresh() {
     let due = db
         .blocking_with(|conn| Ok(feed_dao::list_due(conn, 1_800_000_000, 10)?))
         .expect("due");
-    assert!(due.is_empty(), "a negative ttl means muted, not 'very often'");
+    assert!(
+        due.is_empty(),
+        "a negative ttl means muted, not 'very often'"
+    );
 
     // Still reachable when named explicitly, so the user can force a refresh.
     let direct = db
@@ -914,7 +952,10 @@ fn a_failed_feed_retries_on_its_error_timestamp() {
     let due = db
         .blocking_with(|conn| Ok(feed_dao::list_due(conn, now + 3100, 10)?))
         .expect("due");
-    assert!(due.is_empty(), "only 100s past the error, inside the 3600s ttl");
+    assert!(
+        due.is_empty(),
+        "only 100s past the error, inside the 3600s ttl"
+    );
 
     let due = db
         .blocking_with(|conn| Ok(feed_dao::list_due(conn, now + 3000 + 3600, 10)?))
@@ -1017,13 +1058,14 @@ fn labels_attach_detach_and_list_without_n_plus_one_queries() {
         assert_eq!(on_first[0].name, "todo");
 
         // One query for the whole page.
-        let all = tag_dao::labels_for_entries(
-            conn,
-            &ids.iter().map(|i| i.micros()).collect::<Vec<_>>(),
-        )?;
+        let all =
+            tag_dao::labels_for_entries(conn, &ids.iter().map(|i| i.micros()).collect::<Vec<_>>())?;
         assert_eq!(all[&ids[0].micros()].len(), 1);
         assert_eq!(all[&ids[1].micros()].len(), 2);
-        assert!(!all.contains_key(&ids[2].micros()), "unlabelled entries are absent");
+        assert!(
+            !all.contains_key(&ids[2].micros()),
+            "unlabelled entries are absent"
+        );
 
         // Attaching twice is a no-op, not an error.
         tag_dao::tag_entry(conn, todo, ids[0].micros(), true)?;
@@ -1086,9 +1128,9 @@ fn deleting_a_label_unlinks_articles_but_does_not_delete_them() {
 
     assert_eq!(entry_count(&db, id), 1, "the article survives");
     let links: i64 = db
-        .blocking_with(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM entrytag", [], |r| r.get(0))?)
-        })
+        .blocking_with(
+            |conn| Ok(conn.query_row("SELECT COUNT(*) FROM entrytag", [], |r| r.get(0))?),
+        )
         .expect("count");
     assert_eq!(links, 0, "the link is gone");
 }
@@ -1216,7 +1258,11 @@ fn positions_do_not_collide_when_folders_are_appended() {
                         attributes: Attributes::new(),
                     },
                 )?;
-                out.push(cat_dao::find_by_id(conn, cid, id)?.expect("folder").position);
+                out.push(
+                    cat_dao::find_by_id(conn, cid, id)?
+                        .expect("folder")
+                        .position,
+                );
             }
             Ok(out)
         })
@@ -1225,7 +1271,11 @@ fn positions_do_not_collide_when_folders_are_appended() {
     let mut sorted = positions.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), positions.len(), "next_position must not repeat");
+    assert_eq!(
+        sorted.len(),
+        positions.len(),
+        "next_position must not repeat"
+    );
 }
 
 #[test]
@@ -1267,10 +1317,21 @@ fn sessions_expire_and_can_be_revoked() {
     let db = db();
     let id = create_user(&db, "alice");
     let s = db
-        .blocking_with(|conn| Ok(session::create(conn, id, 3600, Some("1.2.3.4"), Some("ua"))?))
+        .blocking_with(|conn| {
+            Ok(session::create(
+                conn,
+                id,
+                3600,
+                Some("1.2.3.4"),
+                Some("ua"),
+            )?)
+        })
         .expect("create");
     assert!(!s.is_expired());
-    assert!(s.id.len() >= 32, "the id is a bearer token and must be long");
+    assert!(
+        s.id.len() >= 32,
+        "the id is a bearer token and must be long"
+    );
 
     let valid = db
         .blocking_with(|conn| Ok(session::find_valid(conn, &s.id)?))
@@ -1297,10 +1358,12 @@ fn a_session_for_a_disabled_account_stops_working() {
         .expect("create");
     db.blocking_with(|conn| Ok(user_dao::set_enabled(conn, id, false)?))
         .expect("disable");
-    assert!(db
-        .blocking_with(|conn| Ok(session::find_valid(conn, &s.id)?))
-        .expect("lookup")
-        .is_none(), "disabling an account must invalidate its sessions");
+    assert!(
+        db.blocking_with(|conn| Ok(session::find_valid(conn, &s.id)?))
+            .expect("lookup")
+            .is_none(),
+        "disabling an account must invalidate its sessions"
+    );
 }
 
 #[test]
@@ -1382,7 +1445,11 @@ fn user_config_round_trips_through_the_database() {
     assert_eq!(updated.sort, "date");
     assert_eq!(updated.sort_order, SortOrder::Asc);
     assert_eq!(updated.posts_per_page, 25);
-    assert_eq!(updated.archiving.keep_max, Some(200), "unset fields keep defaults");
+    assert_eq!(
+        updated.archiving.keep_max,
+        Some(200),
+        "unset fields keep defaults"
+    );
 }
 
 #[test]

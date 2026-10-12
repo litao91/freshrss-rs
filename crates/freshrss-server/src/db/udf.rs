@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use fancy_regex::Regex;
-use rusqlite::{Connection, Result, functions::FunctionFlags};
+use rusqlite::{functions::FunctionFlags, Connection, Result};
 
 /// Compiled-pattern cache ceiling, per thread.
 const REGEX_CACHE_LIMIT: usize = 256;
@@ -111,7 +111,10 @@ mod tests {
     #[test]
     fn ilike_is_accent_and_case_insensitive() {
         let c = conn();
-        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('École Normale', '%ecole%')"), 1);
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_ilike('École Normale', '%ecole%')"),
+            1
+        );
         assert_eq!(scalar_i64(&c, "SELECT frss_ilike('CAFE', '%café%')"), 1);
         assert_eq!(scalar_i64(&c, "SELECT frss_ilike('lycée', '%college%')"), 0);
     }
@@ -136,16 +139,28 @@ mod tests {
     fn regexp_matches_translated_patterns() {
         let c = conn();
         // What the SQL compiler emits for `/rus|rust/i`.
-        assert_eq!(scalar_i64(&c, "SELECT frss_regexp('Rustlang', '(?i)rus|rust')"), 1);
-        assert_eq!(scalar_i64(&c, "SELECT frss_regexp('python', '(?i)rus|rust')"), 0);
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_regexp('Rustlang', '(?i)rus|rust')"),
+            1
+        );
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_regexp('python', '(?i)rus|rust')"),
+            0
+        );
         assert_eq!(scalar_i64(&c, "SELECT frss_regexp('aXb', 'a.b')"), 1);
     }
 
     #[test]
     fn regexp_supports_lookahead_which_the_regex_crate_does_not() {
         let c = conn();
-        assert_eq!(scalar_i64(&c, r"SELECT frss_regexp('rustlang', 'rust(?=lang)')"), 1);
-        assert_eq!(scalar_i64(&c, r"SELECT frss_regexp('rustc', 'rust(?=lang)')"), 0);
+        assert_eq!(
+            scalar_i64(&c, r"SELECT frss_regexp('rustlang', 'rust(?=lang)')"),
+            1
+        );
+        assert_eq!(
+            scalar_i64(&c, r"SELECT frss_regexp('rustc', 'rust(?=lang)')"),
+            0
+        );
     }
 
     #[test]
@@ -172,9 +187,11 @@ mod tests {
         )
         .expect("seed");
         let n: i64 = c
-            .query_row("SELECT COUNT(*) FROM t WHERE frss_ilike(title, '%ecole%')", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM t WHERE frss_ilike(title, '%ecole%')",
+                [],
+                |r| r.get(0),
+            )
             .expect("count");
         assert_eq!(n, 2, "'École' and 'ecole' must both match '%ecole%'");
     }

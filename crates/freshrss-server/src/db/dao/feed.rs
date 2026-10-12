@@ -1,9 +1,9 @@
 //! `feed` table access, including the due-feed selection query that drives the refresh scheduler.
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::{MAX_BIND_PARAMS, in_clause};
+use crate::db::sql::{in_clause, MAX_BIND_PARAMS};
 use crate::domain::attributes::Attributes;
 use crate::domain::feed::Feed;
 use crate::domain::kind::FeedKind;

@@ -1,64 +1,210 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { CategoryNode, FeedNode } from './lib/api';
+  import { initPrefs, setNavOpen, toggleFocus, toggleNav } from './lib/prefs.svelte';
+  import { bootstrap, isSignedIn, refreshTree, session, tree } from './lib/session.svelte';
+  import { notifyError } from './lib/toast.svelte';
+  import { scopeTitle, selectScope, view, isReading, type Scope } from './lib/view.svelte';
 
-  // Placeholder shell for stage S0. The real reader (top bar, nav tree, entry list, reading
-  // pane, dialogs) replaces this as later stages land.
-  let version = $state<{ name: string; version: string; schema: number } | null>(null);
-  let error = $state<string | null>(null);
+  import Auth from './components/Auth.svelte';
+  import NavTree from './components/NavTree.svelte';
+  import Toast from './components/Toast.svelte';
+  import TopBar from './components/TopBar.svelte';
+  import FolderDialog from './components/dialogs/FolderDialog.svelte';
 
-  onMount(async () => {
-    try {
-      const res = await fetch('/version');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      version = await res.json();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+  let search = $state('');
+  let refreshing = $state(false);
+
+  // `undefined` means closed; `null` means "create a new folder".
+  let folderDialog = $state<CategoryNode | null | undefined>(undefined);
+
+  let topBar: TopBar | undefined = $state();
+
+  /**
+   * Reads the query string into a scope.
+   *
+   * The reference reader's sidebar links are `?feed=`, `?folder=`, `?view=starred` and `?label=`,
+   * so mirroring them means a pasted link and the browser's back button both work.
+   */
+  function scopeFromLocation(): Scope {
+    const params = new URLSearchParams(window.location.search);
+    const search = params.get('search');
+    if (search) return { kind: 'search', query: search };
+
+    const feed = params.get('feed');
+    if (feed) {
+      const found = findFeed(feed);
+      return { kind: 'feed', id: feed, name: found?.name ?? 'Feed' };
     }
+
+    const folder = params.get('folder');
+    if (folder) {
+      const found = tree.data?.categories.find((c) => c.id === folder);
+      return { kind: 'category', id: folder, name: found?.name ?? 'Folder' };
+    }
+
+    const label = params.get('label');
+    if (label) {
+      const found = tree.data?.counts.labels.find((l) => l.id === label);
+      return { kind: 'label', id: label, name: found?.name ?? 'Label' };
+    }
+
+    if (params.get('view') === 'starred') return { kind: 'starred' };
+    return { kind: 'main' };
+  }
+
+  function findFeed(id: string): FeedNode | undefined {
+    if (!tree.data) return undefined;
+    for (const category of tree.data.categories) {
+      const hit = category.feeds.find((f) => f.id === id);
+      if (hit) return hit;
+    }
+    return tree.data.orphans.find((f) => f.id === id);
+  }
+
+  function syncScopeFromUrl(): void {
+    selectScope(scopeFromLocation());
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
+    const target = event.target as HTMLElement | null;
+    const typing =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target?.isContentEditable === true;
+
+    // Escape closes whatever is on top: an open <dialog> handles its own, so this covers the rest.
+    if (event.key === 'Escape') {
+      if (typing) (target as HTMLElement).blur();
+      return;
+    }
+    if (typing) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    switch (event.key) {
+      case 'b':
+        event.preventDefault();
+        toggleNav();
+        break;
+      case 'f':
+        event.preventDefault();
+        toggleFocus();
+        break;
+      case '/':
+        event.preventDefault();
+        topBar?.focusSearch();
+        break;
+      case '?':
+        event.preventDefault();
+        // The shortcuts dialog arrives in a later stage.
+        break;
+      default:
+        break;
+    }
+  }
+
+  onMount(() => {
+    initPrefs();
+    window.addEventListener('keydown', onKeydown);
+    window.addEventListener('popstate', syncScopeFromUrl);
+
+    void bootstrap().then(() => {
+      // The tree has to exist before the URL can resolve feed and folder ids to names.
+      syncScopeFromUrl();
+    });
+
+    return () => {
+      window.removeEventListener('keydown', onKeydown);
+      window.removeEventListener('popstate', syncScopeFromUrl);
+    };
   });
+
+  async function reload(): Promise<void> {
+    try {
+      await refreshTree();
+      syncScopeFromUrl();
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Could not reload subscriptions');
+    }
+  }
+
+  function onSearchSubmit(query: string): void {
+    const scope: Scope = query ? { kind: 'search', query } : { kind: 'main' };
+    selectScope(scope);
+    const url = query ? `/?search=${encodeURIComponent(query)}` : '/';
+    window.history.pushState({}, '', url);
+  }
+
+  function onRefresh(): void {
+    // The refresh pipeline lands in a later stage; until then this just re-reads the tree.
+    refreshing = true;
+    void reload().finally(() => {
+      refreshing = false;
+    });
+  }
+
+  const title = $derived(scopeTitle(view.scope));
+  const feedCount = $derived(
+    tree.data
+      ? tree.data.categories.reduce((n, c) => n + c.feeds.length, 0) + tree.data.orphans.length
+      : 0,
+  );
 </script>
 
-<div class="rd-app">
-  <header class="rd-top">
-    <a class="rd-brand" href="/">
-      <svg class="brand-mark" viewBox="8 4 48 55" aria-hidden="true" focusable="false">
-        <path class="brand-mark-ink" d="M10.5 22h10v20h-10z"></path>
-        <path
-          class="brand-mark-accent"
-          d="M12.5 12H28.5C38.5 12 46.5 11 53.5 6C49.5 18 39.5 23 26.5 23H10.5V14A2 2 0 0 1 12.5 12Z"
-        ></path>
-        <path
-          class="brand-mark-ink"
-          d="M10.5 27H24.5C32.5 27 37.5 26 42.5 22C39.5 32 32.5 37 22.5 37H10.5Z"
-        ></path>
-        <path class="brand-mark-accent" d="M10.5 40H20.5V46C20.5 52.5 16 56.5 10.5 57Z"></path>
-      </svg>
-      <span class="rd-brand-name">freshrss-rs</span>
-    </a>
-  </header>
+<svelte:head>
+  <title>{isSignedIn() ? `${title} · freshrss-rs` : 'Sign in · freshrss-rs'}</title>
+</svelte:head>
 
-  <nav id="rd-nav" class="rd-nav" aria-label="Subscriptions">
-    <div class="rd-nav-inner">
-      <p class="rd-nav-empty">Subscriptions appear here once you sign in.</p>
+{#if session.loading}
+  <div class="rd-auth">
+    <div class="rd-auth-card">
+      <div class="rd-auth-brand"><span>Loading…</span></div>
     </div>
-  </nav>
+  </div>
+{:else if !isSignedIn()}
+  <Auth />
+{:else}
+  <div class="rd-app" class:is-reading={isReading()}>
+    <TopBar
+      bind:this={topBar}
+      bind:search
+      onSearch={onSearchSubmit}
+      onRefresh={onRefresh}
+      onShowShortcuts={() => {}}
+      {refreshing}
+    />
 
-  <section id="icerik" class="rd-list">
-    <div class="rd-list-head">
-      <div class="rd-list-title-row">
-        <h1 id="rd-list-title" class="rd-list-title">Reader</h1>
+    <NavTree
+      onAddSubscription={() => notifyError('Adding a subscription arrives with the refresh pipeline.')}
+      onShowProblems={() => notifyError('The problems dialog arrives with the refresh pipeline.')}
+      onManageFolder={(folder) => (folderDialog = folder)}
+      onManageFeed={() => notifyError('Feed settings arrive with the refresh pipeline.')}
+    />
+
+    <div class="rd-scrim" role="presentation" onclick={() => setNavOpen(false)}></div>
+
+    <section id="icerik" class="rd-list">
+      <div class="rd-list-head">
+        <div class="rd-list-title-row">
+          <h1 id="rd-list-title" class="rd-list-title">{title}</h1>
+        </div>
       </div>
-    </div>
-    <div id="rd-list-scroll" class="rd-list-body">
-      <div class="rd-list-empty">
-        <i class="ri-rss-line" aria-hidden="true"></i>
-        {#if error}
-          <p>Could not reach the API: {error}</p>
-        {:else if version}
-          <p>Backend {version.name} {version.version}, schema v{version.schema}.</p>
-        {:else}
-          <p>Contacting the backend…</p>
-        {/if}
+      <div id="rd-list-scroll" class="rd-list-body">
+        <div class="rd-list-empty">
+          <i class="ri-rss-line" aria-hidden="true"></i>
+          {#if feedCount === 0}
+            <p>No subscriptions yet.</p>
+            <p class="rd-hint">Add one from the sidebar to start reading.</p>
+          {:else}
+            <p>Articles appear here once feeds have been refreshed.</p>
+          {/if}
+        </div>
       </div>
-    </div>
-  </section>
-</div>
+    </section>
+
+    <FolderDialog folder={folderDialog} onclose={() => (folderDialog = undefined)} onChanged={reload} />
+  </div>
+{/if}
+
+<Toast />

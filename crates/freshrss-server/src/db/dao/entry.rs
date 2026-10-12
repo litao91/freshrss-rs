@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 use crate::db::dao::meta;
 use crate::db::dao::row_attributes;
-use crate::db::sql::{MAX_BIND_PARAMS, in_clause};
+use crate::db::sql::{in_clause, MAX_BIND_PARAMS};
 use crate::domain::entry::Entry;
-use crate::domain::ids::{EntryId, now_unix};
+use crate::domain::ids::{now_unix, EntryId};
 
 pub const COLUMNS: &str = "id, id_user, id_feed, guid, title, author, content, link, date, \
      lastSeen, lastModified, lastUserModified, hash, is_read, is_favorite, tags, attributes";
@@ -54,11 +54,7 @@ pub fn find_by_id(conn: &Connection, id: EntryId, id_user: i64) -> SqlResult<Opt
     .optional()
 }
 
-pub fn find_by_guid(
-    conn: &Connection,
-    id_feed: i64,
-    guid: &str,
-) -> SqlResult<Option<Entry>> {
+pub fn find_by_guid(conn: &Connection, id_feed: i64, guid: &str) -> SqlResult<Option<Entry>> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM entry WHERE id_feed = ?1 AND guid = ?2"),
         params![id_feed, guid],
@@ -109,15 +105,9 @@ pub fn list_hashes_for_guids(
         let mut stmt = conn.prepare(&format!(
             "SELECT guid, hash FROM entry WHERE id_feed = ?1 AND guid IN {placeholders}"
         ))?;
-        let rows = stmt.query_map(
-            values.as_slice(),
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<Vec<u8>>>(1)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(values.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+        })?;
         for row in rows {
             let (guid, hash) = row?;
             // A NULL or wrong-length hash is treated as "unknown", so the reconcile loop will
@@ -133,9 +123,8 @@ pub fn list_hashes_for_guids(
 
 /// The most recent N titles in a feed, for `read_when_same_title_in_feed`.
 pub fn list_recent_titles(conn: &Connection, id_feed: i64, limit: usize) -> SqlResult<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT title FROM entry WHERE id_feed = ?1 ORDER BY id DESC LIMIT ?2",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT title FROM entry WHERE id_feed = ?1 ORDER BY id DESC LIMIT ?2")?;
     let rows = stmt.query_map(params![id_feed, limit as i64], |r| r.get(0))?;
     rows.collect()
 }
@@ -246,19 +235,13 @@ pub fn commit_staged(conn: &Connection, id_user: i64) -> SqlResult<usize> {
         params![id_user, first_id],
     )?;
 
-    conn.execute(
-        "DELETE FROM entrytmp WHERE id_user = ?1",
-        params![id_user],
-    )?;
+    conn.execute("DELETE FROM entrytmp WHERE id_user = ?1", params![id_user])?;
     Ok(inserted)
 }
 
 /// Discards a user's staged rows, for a refresh that aborted before committing.
 pub fn discard_staged(conn: &Connection, id_user: i64) -> SqlResult<usize> {
-    conn.execute(
-        "DELETE FROM entrytmp WHERE id_user = ?1",
-        params![id_user],
-    )
+    conn.execute("DELETE FROM entrytmp WHERE id_user = ?1", params![id_user])
 }
 
 // --- reconciliation --------------------------------------------------------
@@ -507,8 +490,5 @@ pub fn newest_article_date(conn: &Connection, id_user: i64) -> SqlResult<Option<
 
 /// Deletes every article a user owns. Used by account deletion and by tests.
 pub fn delete_all_for_user(conn: &Connection, id_user: i64) -> SqlResult<usize> {
-    conn.execute(
-        "DELETE FROM entry WHERE id_user = ?1",
-        params![id_user],
-    )
+    conn.execute("DELETE FROM entry WHERE id_user = ?1", params![id_user])
 }

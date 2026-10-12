@@ -140,7 +140,10 @@ impl Attributes {
     }
 
     pub fn get_u32(&self, key: &str) -> Option<u32> {
-        self.0.get(key).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok())
+        self.0
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
     }
 
     pub fn get_object(&self, key: &str) -> Option<&Map<String, Value>> {
@@ -150,9 +153,7 @@ impl Attributes {
     /// Deserializes a key into a typed value, reporting a decode error as `None` so one malformed
     /// attribute cannot break loading the row.
     pub fn get_typed<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
-        self.0
-            .get(key)
-            .and_then(|v| T::deserialize(v).ok())
+        self.0.get(key).and_then(|v| T::deserialize(v).ok())
     }
 
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) -> &mut Self {
@@ -160,7 +161,11 @@ impl Attributes {
         self
     }
 
-    pub fn set_typed<T: Serialize>(&mut self, key: &str, value: &T) -> serde_json::Result<&mut Self> {
+    pub fn set_typed<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+    ) -> serde_json::Result<&mut Self> {
         let json = serde_json::to_value(value)?;
         self.0.insert(key.to_string(), json);
         Ok(self)
@@ -225,10 +230,12 @@ impl Serialize for Attributes {
 impl<'de> Deserialize<'de> for Attributes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Accept `null` as "no attributes" so API clients can send either.
-        Ok(match Option::<Map<String, Value>>::deserialize(deserializer)? {
-            Some(map) => Self(map),
-            None => Self::new(),
-        })
+        Ok(
+            match Option::<Map<String, Value>>::deserialize(deserializer)? {
+                Some(map) => Self(map),
+                None => Self::new(),
+            },
+        )
     }
 }
 
@@ -285,7 +292,10 @@ mod tests {
         assert!(a.contains("some_future_key"));
         let back = Attributes::from_db(a.to_db().as_deref());
         assert_eq!(back, a);
-        assert_eq!(back.get("some_future_key").and_then(|v| v.get("nested")), Some(&json!([1, 2])));
+        assert_eq!(
+            back.get("some_future_key").and_then(|v| v.get("nested")),
+            Some(&json!([1, 2]))
+        );
     }
 
     #[test]
@@ -297,7 +307,10 @@ mod tests {
         assert_eq!(a.get_bool("b"), Some(true));
         assert_eq!(a.get_i64("i"), Some(42));
         assert_eq!(a.get_u32("u"), Some(7));
-        assert_eq!(a.get_object("o").and_then(|m| m.get("k")), Some(&json!("v")));
+        assert_eq!(
+            a.get_object("o").and_then(|m| m.get("k")),
+            Some(&json!("v"))
+        );
         assert_eq!(a.get_bool("wrong_type"), None, "a string is not a boolean");
         assert_eq!(a.get_str("missing"), None);
     }
