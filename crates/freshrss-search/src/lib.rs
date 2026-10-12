@@ -23,6 +23,7 @@
 pub mod ast;
 pub mod dateinterval;
 pub mod error;
+pub mod expand;
 pub mod lexer;
 pub mod matcher;
 pub mod normalize;
@@ -34,6 +35,7 @@ pub mod visibility;
 
 pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 pub use error::SearchError;
+pub use expand::{expand, QueryResolver, MAX_EXPANSIONS};
 pub use lexer::{tokenize, Token, Value};
 pub use matcher::{matches, SearchTarget};
 pub use normalize::{fold, ieq, ilike, Text};

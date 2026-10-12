@@ -145,14 +145,16 @@ impl Parser {
                 Token::Hash(value) => {
                     self.next();
                     preds.push(Pred::Tag {
-                        pat: text_pat(value)?,
+                        pat: text_pat("#", value)?,
                         negated,
                     });
                 }
                 Token::Free(value) => {
                     self.next();
+                    // The lexer only emits `Free` for a non-empty word, so `text_pat`'s
+                    // empty-operand arm is unreachable here; the label is what it would say.
                     preds.push(Pred::FreeText {
-                        pat: text_pat(value)?,
+                        pat: text_pat("free text", value)?,
                         negated,
                     });
                 }
@@ -234,23 +236,23 @@ impl Parser {
                 negated,
             },
             "label" | "labels" => Pred::LabelNames {
-                names: value_patterns(&value)?,
+                names: value_patterns(key, &value)?,
                 negated,
             },
             "intitle" => Pred::Title {
-                pat: text_pat(value)?,
+                pat: text_pat(key, value)?,
                 negated,
             },
             "intext" => Pred::Content {
-                pat: text_pat(value)?,
+                pat: text_pat(key, value)?,
                 negated,
             },
             "author" => Pred::Author {
-                pat: text_pat(value)?,
+                pat: text_pat(key, value)?,
                 negated,
             },
             "inurl" => Pred::Url {
-                pat: text_pat(value)?,
+                pat: text_pat(key, value)?,
                 negated,
             },
             "date" | "pubdate" | "mdate" | "userdate" => {
@@ -293,27 +295,47 @@ fn flush(preds: &mut Vec<Pred>, branches: &mut Vec<Expr>) {
 }
 
 /// A `Value` as a [`TextPat`]: a compiled regex, or a folded substring.
-fn text_pat(value: Value) -> Result<TextPat, SearchError> {
-    Ok(match value {
-        Value::Regex(pattern) => TextPat::Regex(pattern),
-        Value::Bare(s) | Value::Quoted(s) => TextPat::contains(&s),
-    })
+/// Builds a text pattern from one operator's operand.
+///
+/// An empty operand is an error, not a match-everything pattern: `intitle:` typed by accident would
+/// otherwise narrow nothing at all, and `-intitle:` would match nothing at all — both silent, both
+/// wrong. This deliberately differs from [`id_list`], where an empty `f:` *does* mean "no feeds":
+/// there an empty set is a meaningful answer, and "no search term" is not.
+///
+/// A regex operand is never empty-rejected. `//` and `/^/` are odd but they say what they mean, and
+/// the user had to type two delimiters to get there.
+fn text_pat(key: &str, value: Value) -> Result<TextPat, SearchError> {
+    match value {
+        Value::Regex(pattern) => Ok(TextPat::Regex(pattern)),
+        Value::Bare(s) | Value::Quoted(s) if !s.trim().is_empty() => Ok(TextPat::contains(&s)),
+        _ => Err(SearchError::BadOperand {
+            field: key.to_owned(),
+            expected: "a search term",
+        }),
+    }
 }
 
 /// The patterns for an operator that accepts a comma-separated list of them (`label:`).
-fn value_patterns(value: &Value) -> Result<Vec<TextPat>, SearchError> {
+///
+/// Empty entries are dropped rather than kept: `labels:a,,b` must not collapse into "any label whose
+/// name contains the empty string", which is every label.
+fn value_patterns(key: &str, value: &Value) -> Result<Vec<TextPat>, SearchError> {
     match value {
-        Value::Regex(_) => Ok(vec![text_pat(value.clone())?]),
+        Value::Regex(_) => Ok(vec![text_pat(key, value.clone())?]),
         Value::Bare(s) | Value::Quoted(s) => {
-            let parts: Vec<&str> = s.split(',').collect();
-            if parts.len() > 1 {
-                parts
-                    .into_iter()
-                    .map(|p| Ok(TextPat::contains(p.trim())))
-                    .collect()
-            } else {
-                Ok(vec![TextPat::contains(s)])
+            let parts: Vec<TextPat> = s
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(TextPat::contains)
+                .collect();
+            if parts.is_empty() {
+                return Err(SearchError::BadOperand {
+                    field: key.to_owned(),
+                    expected: "a comma-separated list of label names",
+                });
             }
+            Ok(parts)
         }
     }
 }
@@ -337,7 +359,7 @@ fn name_list(value: &Value) -> Vec<String> {
 /// which matches nothing. Silently treating it as "all feeds" would be the worst possible reading.
 fn id_list(key: &str, value: &Value) -> Result<Vec<i64>, SearchError> {
     let text = value.as_text().ok_or_else(|| SearchError::BadOperand {
-        field: format!("{key}:"),
+        field: key.to_owned(),
         expected: "a comma-separated list of ids",
     })?;
     if text.trim().is_empty() {
@@ -348,7 +370,7 @@ fn id_list(key: &str, value: &Value) -> Result<Vec<i64>, SearchError> {
         .filter(|p| !p.is_empty())
         .map(|p| {
             p.parse::<i64>().map_err(|_| SearchError::BadOperand {
-                field: format!("{key}:"),
+                field: key.to_owned(),
                 expected: "a comma-separated list of numbers",
             })
         })
@@ -358,7 +380,7 @@ fn id_list(key: &str, value: &Value) -> Result<Vec<i64>, SearchError> {
 /// [`id_list`] plus the `*` wildcard, for the operators that have one (`S:` and `l:`).
 fn id_set_with_wildcard(key: &str, value: &Value) -> Result<IdSet, SearchError> {
     let text = value.as_text().ok_or_else(|| SearchError::BadOperand {
-        field: format!("{key}:"),
+        field: key.to_owned(),
         expected: "a comma-separated list of ids, or *",
     })?;
     if text.trim() == "*" {
@@ -631,7 +653,43 @@ mod tests {
     fn a_non_numeric_id_is_an_error() {
         let e = err("f:abc");
         assert!(matches!(e, SearchError::BadOperand { .. }), "{e}");
-        assert!(e.to_string().contains("f:"), "{e}");
+        assert!(e.to_string().contains("'f:'"), "{e}");
+        assert!(
+            !e.to_string().contains("::"),
+            "the field label carries one colon, the message adds the other: {e}"
+        );
+    }
+
+    #[test]
+    fn an_empty_text_operand_is_an_error_not_a_match_everything() {
+        // `intitle:` on its own would otherwise narrow nothing at all, and `-intitle:` would match
+        // nothing at all. Both are silent, and neither is what the user meant.
+        for q in ["intitle:", "intext:", "author:", "inurl:", "#"] {
+            let e = err(q);
+            assert!(matches!(e, SearchError::BadOperand { .. }), "{q}: {e}");
+            assert!(e.to_string().contains("a search term"), "{q}: {e}");
+        }
+        // A space is not an operand either, and `intitle: rust` reads as two tokens.
+        assert!(matches!(err("intitle: rust"), SearchError::BadOperand { .. }));
+        assert!(matches!(err(r#"intitle:"""#), SearchError::BadOperand { .. }));
+    }
+
+    #[test]
+    fn an_empty_label_operand_is_an_error() {
+        assert!(matches!(err("labels:"), SearchError::BadOperand { .. }));
+        assert!(matches!(err("labels: , "), SearchError::BadOperand { .. }));
+    }
+
+    #[test]
+    fn a_blank_entry_is_dropped_from_a_label_list() {
+        // `labels:a,,b` must not collapse into "any label", which is what an empty pattern matches.
+        match pred("labels:a,,b") {
+            Pred::LabelNames { names, .. } => {
+                assert_eq!(names.len(), 2, "{names:?}");
+                assert!(names.iter().all(|n| n != &TextPat::contains("")), "{names:?}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
