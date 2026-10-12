@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use super::model::{type_of_kind, Opml, Outline, XPATH_KEYS};
+use super::model::{type_of_kind, Opml, Outline, JSON_KEYS, XPATH_KEYS};
 use crate::kind::FeedKind;
 
 /// The namespace every `frss:*` attribute lives in.
@@ -115,9 +115,11 @@ fn attributes(o: &Outline) -> Vec<(String, String)> {
     // Each map is written only for the kinds that read it, matching the export switch. Writing a
     // stale map for a feed whose kind has since changed would resurrect the old scraper settings.
     match o.kind {
-        FeedKind::HtmlXpath | FeedKind::XmlXpath => selectors(&mut out, "xPath", &o.xpath),
+        FeedKind::HtmlXpath | FeedKind::XmlXpath => {
+            selectors(&mut out, "xPath", &o.xpath, XPATH_KEYS)
+        }
         FeedKind::JsonDotNotation | FeedKind::HtmlXpathJsonDotNotation => {
-            selectors(&mut out, "json", &o.json_dotnotation);
+            selectors(&mut out, "json", &o.json_dotnotation, JSON_KEYS);
             if o.kind == FeedKind::HtmlXpathJsonDotNotation {
                 if let Some(xpath) = &o.xpath_to_json {
                     push(&mut out, "frss:xPathToJson", xpath);
@@ -159,8 +161,13 @@ fn push(out: &mut Vec<(String, String)>, name: &str, value: &str) {
 }
 
 /// Writes one selector map in the canonical key order.
-fn selectors(out: &mut Vec<(String, String)>, prefix: &str, map: &BTreeMap<String, String>) {
-    for key in XPATH_KEYS {
+fn selectors(
+    out: &mut Vec<(String, String)>,
+    prefix: &str,
+    map: &BTreeMap<String, String>,
+    keys: &[&str],
+) {
+    for key in keys {
         match map.get(*key) {
             Some(value) if !value.is_empty() => {
                 out.push((format!("frss:{prefix}{}", capitalize(key)), value.clone()));

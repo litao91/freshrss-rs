@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use crate::kind::FeedKind;
 
+pub use crate::kind::{JSON_KEYS, XPATH_KEYS};
+
 /// The `frss:priority` words.
 ///
 /// FreshRSS exports the default (main stream) as *no attribute at all*, so `None` in [`Outline`]
@@ -72,23 +74,6 @@ impl OpmlPriority {
         })
     }
 }
-
-/// The keys of the XPath map, in the order FreshRSS writes them.
-///
-/// The dot-notation map uses the same ten keys under a different attribute prefix, so both maps
-/// share this list.
-pub const XPATH_KEYS: &[&str] = &[
-    "item",
-    "itemTitle",
-    "itemContent",
-    "itemUri",
-    "itemAuthor",
-    "itemTimestamp",
-    "itemTimeFormat",
-    "itemThumbnail",
-    "itemCategories",
-    "itemUid",
-];
 
 /// The feed kind an OPML `type` word names.
 ///
@@ -279,12 +264,5 @@ mod tests {
         assert_eq!(o.name(), "From text", "text wins when both are present");
         o.text = "   ".into();
         assert_eq!(o.name(), "From title", "blank text is as absent as none");
-    }
-
-    #[test]
-    fn the_xpath_key_order_is_the_export_order() {
-        assert_eq!(XPATH_KEYS.first(), Some(&"item"));
-        assert_eq!(XPATH_KEYS.last(), Some(&"itemUid"));
-        assert_eq!(XPATH_KEYS.len(), 10);
     }
 }

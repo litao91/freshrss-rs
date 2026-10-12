@@ -17,7 +17,7 @@ mod model;
 mod parse;
 mod write;
 
-pub use model::{kind_of_type, type_of_kind, Opml, OpmlPriority, Outline, XPATH_KEYS};
+pub use model::{kind_of_type, type_of_kind, Opml, OpmlPriority, Outline, JSON_KEYS, XPATH_KEYS};
 pub use parse::{parse, OpmlError};
 pub use write::write;
 
@@ -46,25 +46,31 @@ mod tests {
             ttl: Some(-3600),
             unicity_criteria: Some("sha1:link_published_title".to_owned()),
             unicity_criteria_forced: true,
-            xpath: if uses_xpath {
-                BTreeMap::from([
-                    ("item".to_owned(), "//article".to_owned()),
-                    ("itemUid".to_owned(), ".//data-id".to_owned()),
-                ])
-            } else {
-                BTreeMap::new()
-            },
-            json_dotnotation: if uses_json {
-                BTreeMap::from([("item".to_owned(), "items".to_owned())])
-            } else {
-                BTreeMap::new()
-            },
             xpath_to_json: (kind == FeedKind::HtmlXpathJsonDotNotation)
                 .then(|| "//script[@type='application/json']".to_owned()),
             path_entries: Some("article.main".to_owned()),
             path_entries_conditions: vec!["html.example/sport".to_owned()],
             path_entries_filter: Some(".share".to_owned()),
             filters_action_read: vec!["intitle:ad".to_owned(), "author:bot".to_owned()],
+            // Present in the JSON vocabulary but not the XPath one, so it survives a round trip
+            // only under the kinds that read it.
+            json_dotnotation: {
+                let mut map = BTreeMap::new();
+                if uses_json {
+                    map.insert("item".to_owned(), "items".to_owned());
+                    map.insert("itemContentHTML".to_owned(), "content_html".to_owned());
+                }
+                map
+            },
+            xpath: {
+                let mut map = BTreeMap::new();
+                if uses_xpath {
+                    map.insert("feedTitle".to_owned(), "//h1".to_owned());
+                    map.insert("item".to_owned(), "//article".to_owned());
+                    map.insert("itemUid".to_owned(), ".//data-id".to_owned());
+                }
+                map
+            },
             ..Outline::default()
         }
     }
@@ -116,7 +122,8 @@ mod tests {
             ..Opml::default()
         }))
         .unwrap();
-        assert_eq!(xpath_kind.outlines[0].xpath.len(), 2);
+        assert_eq!(xpath_kind.outlines[0].xpath.len(), 3);
+        assert_eq!(xpath_kind.outlines[0].xpath["feedTitle"], "//h1");
         assert!(xpath_kind.outlines[0].json_dotnotation.is_empty());
 
         let json_kind = parse(&write(&Opml {

@@ -12,7 +12,7 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 
-use super::model::{kind_of_type, Opml, OpmlPriority, Outline, XPATH_KEYS};
+use super::model::{kind_of_type, Opml, OpmlPriority, Outline, JSON_KEYS, XPATH_KEYS};
 use crate::parse::xml::{self, attr, attrs_prefixed, local, skip, text, walk, Attrs};
 
 /// How many `<outline>` levels are descended before the document is rejected.
@@ -171,8 +171,8 @@ fn outline(a: &Attrs) -> Outline {
         ttl: frss(a, "ttl").and_then(|v| v.trim().parse().ok()),
         unicity_criteria: frss(a, "unicityCriteria").and_then(unicity_criteria),
         unicity_criteria_forced: frss(a, "unicityCriteriaForced").is_some_and(boolean),
-        xpath: selector_map(a, "xPath"),
-        json_dotnotation: selector_map(a, "json"),
+        xpath: selector_map(a, "xPath", XPATH_KEYS),
+        json_dotnotation: selector_map(a, "json", JSON_KEYS),
         xpath_to_json: frss(a, "xPathToJson").and_then(non_empty),
         path_entries: frss(a, "cssFullContent").and_then(non_empty),
         path_entries_conditions: lines(frss(a, "cssFullContentConditions")),
@@ -205,12 +205,10 @@ fn frss<'a>(a: &'a Attrs, key: &str) -> Option<&'a str> {
 
 /// Reads one of the two selector maps, `frss:xPathItem*` or `frss:jsonItem*`.
 ///
-/// Both use the same ten keys, so the key list is shared; only the attribute-name prefix differs.
 /// Empty expressions are dropped: an absent selector means "this feed does not scrape that field",
 /// while an empty one would mean "scrape it with no expression", which is nonsense.
-fn selector_map(a: &Attrs, prefix: &str) -> BTreeMap<String, String> {
-    XPATH_KEYS
-        .iter()
+fn selector_map(a: &Attrs, prefix: &str, keys: &[&str]) -> BTreeMap<String, String> {
+    keys.iter()
         .filter_map(|key| {
             let name = format!("{prefix}{}", capitalize(key));
             frss(a, &name)

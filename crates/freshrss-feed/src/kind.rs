@@ -122,6 +122,54 @@ impl FeedKind {
     }
 }
 
+/// The keys of the XPath selector map, in the order they are written.
+///
+/// These are the names the subscription form uses and the names RSS-Bridge uses, which is why a
+/// bridge's expressions can be pasted straight into a feed's configuration.
+///
+/// `feedTitle` is the one key PHP FreshRSS's OPML exporter omits: it writes ten and reads ten, so a
+/// feed-title expression does not survive a round trip there. It is included here because losing it
+/// silently renames a feed, and a PHP FreshRSS reading our file ignores an attribute it does not
+/// know.
+pub const XPATH_KEYS: &[&str] = &[
+    "feedTitle",
+    "item",
+    "itemTitle",
+    "itemContent",
+    "itemUri",
+    "itemAuthor",
+    "itemTimestamp",
+    "itemTimeFormat",
+    "itemThumbnail",
+    "itemCategories",
+    "itemUid",
+];
+
+/// The keys of the JSON dot-notation map.
+///
+/// A superset of [`XPATH_KEYS`]: the JSON scrapers also read a feed image with a fallback, an HTML
+/// body alongside the text one, and attachments. [`json_feed_dot_notation`] is this vocabulary
+/// filled in for a standard JSON Feed document.
+pub const JSON_KEYS: &[&str] = &[
+    "feedTitle",
+    "feedImage",
+    "feedImageFallback",
+    "item",
+    "itemTitle",
+    "itemContent",
+    "itemContentHTML",
+    "itemUri",
+    "itemTimestamp",
+    "itemTimeFormat",
+    "itemThumbnail",
+    "itemCategories",
+    "itemUid",
+    "itemAttachment",
+    "itemAttachmentUrl",
+    "itemAttachmentType",
+    "itemAttachmentLength",
+];
+
 /// The dot-notation map that lets a standard JSON Feed be read by the generic JSON scraper.
 ///
 /// FreshRSS expresses JSON Feed support this way rather than with a dedicated parser, which buys
@@ -203,6 +251,35 @@ mod tests {
             serde_json::to_string(&FeedKind::HtmlXpath).unwrap(),
             "\"html_xpath\""
         );
+    }
+
+    #[test]
+    fn the_two_vocabularies_share_every_field_but_the_author() {
+        // A configuration can be moved between the two scrapers without losing a field, except the
+        // per-item author: JSON Feed puts authors in an `authors` array rather than a scalar, and
+        // FreshRSS's standard dot-notation map has no key for it, so this port does not invent one.
+        for key in XPATH_KEYS {
+            if *key == "itemAuthor" {
+                assert!(!JSON_KEYS.contains(key));
+            } else {
+                assert!(
+                    JSON_KEYS.contains(key),
+                    "{key} is missing from the JSON map"
+                );
+            }
+        }
+        assert_eq!(XPATH_KEYS.first(), Some(&"feedTitle"));
+        assert_eq!(XPATH_KEYS[1], "item");
+    }
+
+    #[test]
+    fn the_dot_notation_map_only_uses_known_keys() {
+        for (key, _) in json_feed_dot_notation() {
+            assert!(
+                JSON_KEYS.contains(&key),
+                "{key} is not part of the vocabulary"
+            );
+        }
     }
 
     #[test]
