@@ -28,6 +28,12 @@ pub enum Expr {
     /// A set of predicates that must *all* hold. This is the leaf of the tree: `intitle:a b` is one
     /// leaf holding two title predicates, not an `And` node.
     Leaf(Vec<Pred>),
+    /// Negation of a whole subtree.
+    ///
+    /// Only used for a negated *group* — `!(a OR b)`. A negated single term carries its flag inside
+    /// the predicate instead, which is both what FreshRSS does and what keeps the emitted SQL flat:
+    /// `intitle:a -intitle:b` becomes `title LIKE … AND title NOT LIKE …`, not `… AND NOT (…)`.
+    Not(Box<Expr>),
 }
 
 /// How a [`Expr::Node`]'s children combine.
@@ -70,6 +76,16 @@ impl Expr {
         matches!(self, Expr::Node { op: Op::Or, children } if children.is_empty())
     }
 
+    /// Negation with the double-negative and constant cases collapsed.
+    pub fn not(child: Expr) -> Expr {
+        match child {
+            c if c.is_true() => Expr::FALSE,
+            c if c.is_false() => Expr::TRUE,
+            Expr::Not(inner) => *inner,
+            other => Expr::Not(Box::new(other)),
+        }
+    }
+
     /// Conjunction with flattening and short-circuiting.
     ///
     /// Flattening nested `And`s keeps the tree shallow, which matters for the SQL compiler: a
@@ -106,6 +122,7 @@ impl Expr {
                     child.collect_preds(out);
                 }
             }
+            Expr::Not(inner) => inner.collect_preds(out),
         }
     }
 }
@@ -155,8 +172,11 @@ pub enum Pred {
     FeedIds { ids: Vec<i64>, negated: bool },
     /// `c:` — category ids.
     CategoryIds { ids: Vec<i64>, negated: bool },
-    /// `S:` — a saved search (user_query) by id. `Any` is the `S:*` form.
-    SavedSearch { ids: IdSet, negated: bool },
+    /// `S:` or `search:` — a reference to a saved search (a `user_query` row).
+    ///
+    /// This variant exists only until [`crate::expand`] replaces it with the referenced query's own
+    /// subtree; neither backend can evaluate it, and both treat an unexpanded one as an error.
+    SavedQuery { target: QueryRef, negated: bool },
     /// `l:` / `L:` — a label by id. `Any` is `l:*`, meaning "has at least one label".
     LabelIds { ids: IdSet, negated: bool },
     /// `label:` / `labels:` — a label by name.
@@ -188,7 +208,7 @@ impl Pred {
             Pred::EntryIds { negated, .. }
             | Pred::FeedIds { negated, .. }
             | Pred::CategoryIds { negated, .. }
-            | Pred::SavedSearch { negated, .. }
+            | Pred::SavedQuery { negated, .. }
             | Pred::LabelIds { negated, .. }
             | Pred::LabelNames { negated, .. }
             | Pred::Title { negated, .. }
@@ -214,6 +234,16 @@ impl Pred {
             _ => Vec::new(),
         }
     }
+}
+
+/// What a `SavedQuery` predicate points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryRef {
+    /// `S:3` or `S:1,2` — by id. `S:*` is [`IdSet::Any`], meaning every saved search.
+    Ids(IdSet),
+    /// `search:my query` or `label:`-style lookup by name.
+    Names(Vec<String>),
 }
 
 /// An id list, or the `*` wildcard meaning "any".

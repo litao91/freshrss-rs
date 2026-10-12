@@ -24,10 +24,12 @@ pub mod dateinterval;
 pub mod error;
 pub mod lexer;
 pub mod normalize;
+pub mod parser;
 pub mod regex;
 
-pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, TextPat};
+pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 pub use error::SearchError;
 pub use lexer::{tokenize, Token, Value};
 pub use normalize::{fold, ilike};
+pub use parser::parse;
 pub use regex::{Flags, Pattern};
