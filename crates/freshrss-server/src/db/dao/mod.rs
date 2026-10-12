@@ -10,6 +10,7 @@
 
 pub mod category;
 pub mod entry;
+pub mod entry_query;
 pub mod feed;
 pub mod meta;
 pub mod session;

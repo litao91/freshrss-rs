@@ -86,6 +86,17 @@ impl<T: Into<SqlValue>> From<Option<T>> for SqlValue {
     }
 }
 
+impl From<&freshrss_search::sql::Param> for SqlValue {
+    fn from(param: &freshrss_search::sql::Param) -> Self {
+        use freshrss_search::sql::Param;
+        match param {
+            Param::Text(t) => SqlValue::Text(t.clone()),
+            Param::Int(i) => SqlValue::Int(*i),
+            Param::Null => SqlValue::Null,
+        }
+    }
+}
+
 /// Emits `(?,?,?)` for `count` placeholders, or `(NULL)` for zero.
 ///
 /// The zero case matters: `IN ()` is a syntax error in SQLite, and several call sites build an

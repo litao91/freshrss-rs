@@ -18,7 +18,17 @@ use crate::domain::ids::{now_unix, EntryId};
 pub const COLUMNS: &str = "id, id_user, id_feed, guid, title, author, content, link, date, \
      lastSeen, lastModified, lastUserModified, hash, is_read, is_favorite, tags, attributes";
 
-fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Entry> {
+/// The same list qualified for the late-row-lookup join in [`super::entry_query`], which fetches a
+/// page of ids first and only then reads the wide columns for those ids.
+pub fn columns_aliased(alias: &str) -> String {
+    COLUMNS
+        .split(", ")
+        .map(|c| format!("{alias}.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub(in crate::db::dao) fn from_row(row: &rusqlite::Row<'_>) -> SqlResult<Entry> {
     let id_raw: i64 = row.get(0)?;
     let hash_blob: Option<Vec<u8>> = row.get(12)?;
     Ok(Entry {
