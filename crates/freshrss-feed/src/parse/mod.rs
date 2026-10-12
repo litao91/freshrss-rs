@@ -6,10 +6,14 @@
 mod atom;
 mod common;
 pub mod date;
+pub(crate) mod dom;
 mod jsonfeed;
 mod rdf;
 mod rss;
 pub(crate) mod xml;
+mod xpath;
+
+use std::collections::BTreeMap;
 
 use crate::error::FeedError;
 use crate::kind::FeedKind;
@@ -33,9 +37,50 @@ pub fn parse(body: &[u8], hint: FeedKind) -> Result<RawFeed, FeedError> {
     match hint {
         FeedKind::JsonFeed => jsonfeed::parse(&text),
         FeedKind::RssForced => parse_xml(&text).or_else(|_| rss::parse(&text)),
+        // A scraping kind is not a syndication format, and reading one as if it were would report
+        // "unrecognized XML root element <html>" for a page that is perfectly good. [`scrape`] is
+        // the entry point for these; it needs the selector map, which this function does not have.
+        FeedKind::HtmlXpath
+        | FeedKind::XmlXpath
+        | FeedKind::JsonXpath
+        | FeedKind::JsonDotNotation
+        | FeedKind::HtmlXpathJsonDotNotation => Err(FeedError::UnsupportedKind(hint.as_i16())),
         _ if trimmed.starts_with('{') || trimmed.starts_with('[') => jsonfeed::parse(&text),
         _ => parse_xml(&text),
     }
+}
+
+/// Scrapes a feed out of a document that is not one.
+///
+/// `kind` decides how the bytes are read: [`FeedKind::HtmlXpath`] parses them as HTML — leniently,
+/// with element names lowercased, the way a browser and `DOMDocument::loadHTML` both do — and
+/// [`FeedKind::XmlXpath`] parses them as XML, strictly and with namespaces resolved. The selector map
+/// is then evaluated the same way against either, which is the point of having one data model.
+///
+/// `url` is where the document came from, used to resolve relative links and as the feed's website;
+/// `fallback_title` is the subscription's configured name, used when the map has no `feedTitle`
+/// expression or that expression matches nothing.
+///
+/// # Errors
+///
+/// [`FeedError::Empty`] when the body is empty, [`FeedError::Parse`] when it is not valid UTF-8 or
+/// not well-formed XML for a kind that requires XML, [`FeedError::BadConfig`] when the map has no
+/// `item` expression or any expression is invalid, [`FeedError::Empty`] when the `item` expression
+/// matched nothing, and [`FeedError::UnsupportedKind`] for a kind this function does not scrape.
+pub fn scrape(
+    body: &[u8],
+    kind: FeedKind,
+    map: &BTreeMap<String, String>,
+    url: &str,
+    fallback_title: &str,
+) -> Result<RawFeed, FeedError> {
+    let text = decode_body(body)?;
+    let document = match kind {
+        FeedKind::HtmlXpath => dom::Doc::from_html(&text),
+        FeedKind::XmlXpath => dom::Doc::from_xml(&text)?,
+        other => return Err(FeedError::UnsupportedKind(other.as_i16())),
+    };
+    xpath::scrape(&document, map, url, fallback_title)
 }
 
 /// Interprets the body as XML and picks the RSS/Atom/RDF reader from the root element.

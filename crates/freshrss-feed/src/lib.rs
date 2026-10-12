@@ -27,6 +27,6 @@ pub use hash::{content_hash, content_hash_hex, HashInput};
 pub use http::{FetchOutcome, FetchRequest, FetchedBody, Fetcher};
 pub use kind::FeedKind;
 pub use opml::{Opml, OpmlError, OpmlPriority, Outline};
-pub use parse::parse as parse_feed;
+pub use parse::{parse as parse_feed, scrape as scrape_feed};
 pub use raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};
 pub use sanitize::{sanitize_html, SanitizeOptions};
