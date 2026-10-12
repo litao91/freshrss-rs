@@ -23,8 +23,7 @@ use crate::domain::ids::EntryId;
 pub const TITLE_FALLBACK_CHARS: usize = 75;
 
 /// Wraps scraped full text so it can be removed again before hashing.
-pub const FULLCONTENT_START: &str = "<!-- FULLCONTENT start //-->";
-pub const FULLCONTENT_END: &str = "<!-- FULLCONTENT end //-->";
+pub use freshrss_feed::hash::{FULLCONTENT_END, FULLCONTENT_START};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
@@ -163,8 +162,11 @@ impl Entry {
     // --- column serialization ----------------------------------------------
 
     /// The `author` column value.
+    ///
+    /// Delegated to the feed crate because this exact string is also the hash input; a second
+    /// definition here would let the column and the digest drift apart.
     pub fn author_to_db(&self) -> String {
-        self.authors.join("; ")
+        freshrss_feed::hash::authors_field(&self.authors)
     }
 
     /// Parses the `author` column. FreshRSS splits on `;` when present and on `,` otherwise,
@@ -189,11 +191,7 @@ impl Entry {
 
     /// The `tags` column value: `"#tag1 #tag2"`, or empty when there are none.
     pub fn tags_to_db(&self) -> String {
-        if self.tags.is_empty() {
-            String::new()
-        } else {
-            format!("#{}", self.tags.join(" #"))
-        }
+        freshrss_feed::hash::tags_field(&self.tags)
     }
 
     /// Parses the `tags` column. Accepts `#` and `,` as separators, matching
@@ -214,10 +212,11 @@ impl Entry {
     /// Without this, turning on `pathEntries` would make every article look edited on the next
     /// refresh and clear the user's read state.
     pub fn content_for_hash(&self) -> String {
-        if let Some(original) = self.attributes.get_str(keys::ORIGINAL_CONTENT) {
-            return original.to_string();
-        }
-        strip_fullcontent_markers(&self.content)
+        freshrss_feed::hash::original_content(
+            &self.content,
+            self.attributes.get_str(keys::ORIGINAL_CONTENT),
+        )
+        .into_owned()
     }
 
     // --- attribute-backed accessors ----------------------------------------
@@ -307,39 +306,17 @@ impl Entry {
     }
 }
 
-/// Removes the `<!-- FULLCONTENT start //--> … <!-- FULLCONTENT end //-->` wrapper, keeping the
-/// feed's original content that precedes it.
-fn strip_fullcontent_markers(content: &str) -> String {
-    let Some(start) = content.find(FULLCONTENT_START) else {
-        return content.to_string();
-    };
-    let before = &content[..start];
-    let after_start = start + FULLCONTENT_START.len();
-    match content[after_start..].find(FULLCONTENT_END) {
-        Some(end_offset) => {
-            let after_end = after_start + end_offset + FULLCONTENT_END.len();
-            format!("{before}{}", &content[after_end..])
-        }
-        // An unterminated marker: drop everything from the marker on.
-        None => before.to_string(),
-    }
-}
-
 /// Strips tags and decodes entities, for previews and title fallbacks.
 ///
 /// Not a sanitizer — the output is plain text and callers must not treat it as HTML.
+///
+/// The full entity decode (rather than [`freshrss_feed::html_only_entity_decode`], which preserves
+/// `&amp;` and friends) is correct *here* because this is display text: an article body holding
+/// `Tom &amp; Jerry` must render as `Tom & Jerry`. On ingest the opposite holds, which is why the
+/// two functions exist.
 pub fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    html_escape::decode_html_entities(&out).into_owned()
+    let stripped = freshrss_feed::text::strip_tags(html);
+    html_escape::decode_html_entities(&stripped).into_owned()
 }
 
 #[cfg(test)]
@@ -445,10 +422,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unterminated_marker_drops_the_rest() {
+    fn an_unterminated_marker_leaves_the_content_alone() {
         let mut e = entry();
         e.content = format!("teaser{FULLCONTENT_START}never closed");
-        assert_eq!(e.content_for_hash(), "teaser");
+        // PHP's `preg_replace` finds no match without a closing marker, so nothing is removed.
+        assert_eq!(e.content_for_hash(), e.content);
     }
 
     #[test]
@@ -506,7 +484,10 @@ mod tests {
         assert_eq!(strip_html_tags("<p>Hello <b>world</b></p>"), "Hello world");
         assert_eq!(strip_html_tags("Caf&eacute; &amp; bar"), "Café & bar");
         assert_eq!(strip_html_tags("no tags"), "no tags");
-        assert_eq!(strip_html_tags("<script>evil()</script>text"), "evil()text");
+        // A script body is not article text, so it goes with the tags.
+        assert_eq!(strip_html_tags("<script>evil()</script>text"), "text");
+        assert_eq!(strip_html_tags("a < b"), "a < b");
+        assert_eq!(strip_html_tags(r#"<a title=">">link</a>"#), "link");
     }
 
     #[test]
