@@ -199,7 +199,11 @@ try {
   const titles = await page.locator('.rd-items .rd-item .rd-item-title').evaluateAll((els) =>
     els.map((e) => (e.textContent ?? '').trim()),
   );
-  const sorted = [...titles].sort((a, b) => a.localeCompare(b));
+  // Plain `.sort()`, not `localeCompare`: the list is ordered by SQLite's BINARY collation, which
+  // compares code points, so "École" sorts after every ASCII title. `localeCompare` would fold the
+  // accent and expect it among the E's — a different ordering from the one the server implements,
+  // and the same one PHP FreshRSS on SQLite produces.
+  const sorted = [...titles].sort();
   check('sorting by title actually sorts', JSON.stringify(titles) === JSON.stringify(sorted), titles.slice(0, 3).join(' | '));
 
   await page.locator('.rd-list-head .rd-segment[aria-label="Sort"] button', { hasText: 'Newest' }).click();
