@@ -275,9 +275,13 @@ impl IdSet {
 /// A text comparison: either a substring match or a compiled regular expression.
 ///
 /// The `Contains` form stores the needle **already accent-folded and lowercased** by
-/// [`crate::normalize::fold`], because both backends compare against a folded haystack. Folding once
-/// at parse time rather than per comparison is what makes a query over a million rows affordable, and
-/// folding in exactly one place is what keeps the two backends in agreement.
+/// [`crate::normalize::fold`], because both backends compare it against a folded haystack. Folding
+/// once at parse time rather than per comparison is what makes a query over a million rows
+/// affordable, and folding in exactly one place is what keeps the two backends in agreement.
+///
+/// The `Regex` form stores what the user wrote and is matched against the **stored** text — see
+/// [`crate::normalize::Text`].
+///
 /// Serializes as `{"contains": "…"}` or `{"regex": {"source": "…", "flags": {…}}}`, which is what
 /// `POST /api/v1/search/parse` returns to the reader.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,14 +301,14 @@ impl TextPat {
         matches!(self, TextPat::Regex(_))
     }
 
-    /// True when `haystack` matches, given that the haystack is *not* yet folded.
+    /// True when `text` matches.
     ///
-    /// Callers in `matcher.rs` fold the haystack once per article and reuse it across every
-    /// predicate, so this takes the already-folded form.
-    pub fn matches_folded(&self, folded_haystack: &str) -> bool {
+    /// Which half of `text` is consulted depends on the variant, and [`crate::sql`] makes the same
+    /// choice: `frss_ilike` folds inside, `frss_regexp` does not.
+    pub fn matches(&self, text: &crate::normalize::Text<'_>) -> bool {
         match self {
-            TextPat::Contains(needle) => folded_haystack.contains(needle.as_str()),
-            TextPat::Regex(re) => re.is_match_folded(folded_haystack),
+            TextPat::Contains(needle) => text.folded.contains(needle.as_str()),
+            TextPat::Regex(re) => re.is_match(text.raw),
         }
     }
 }
@@ -343,14 +347,23 @@ impl DateRange {
     ///
     /// Applying De Morgan here rather than emitting `NOT (…)` keeps the SQL index-usable: a negated
     /// inclusive range becomes two disjoint exclusive ones joined by `OR`.
+    ///
+    /// The two encodings are exact complements of each other, so this is an involution — negating
+    /// twice returns the original range:
+    ///
+    /// - `min <= max` is the band `[min, max]`;
+    /// - `min > max` is everything *outside* `[max, min]`, i.e. `value < max OR value > min`.
+    ///
+    /// A one-sided range has no complement in the same shape — `NOT (>= 10)` is `<= 9`, not another
+    /// half-open range with the same side missing — so those arms move the bound by one instead.
     pub fn negate(self) -> Self {
-        // Complement of [min, max] is (-inf, min-1] U [max+1, +inf). With one bound missing the
-        // complement is a single half-open range, which `DateRange` cannot express — so a
-        // one-sided range is negated by flipping the inclusivity of the bound that exists.
         match (self.min, self.max) {
+            // Swapping the bounds flips between the two encodings. Off-by-one here costs the day at
+            // each end of the band: `-date:d1/d2` would silently keep `d1-1` and `d2+1` out of the
+            // results.
             (Some(min), Some(max)) => DateRange {
-                min: Some(max + 1),
-                max: Some(min - 1),
+                min: Some(max),
+                max: Some(min),
             },
             (Some(min), None) => DateRange {
                 min: None,
@@ -360,15 +373,22 @@ impl DateRange {
                 min: Some(max + 1),
                 max: None,
             },
+            // The complement of an unbounded range is *empty*, which `DateRange` cannot express.
+            // Returning the range unchanged is the least surprising thing this function can do;
+            // [`crate::sql`] settles the unbounded case before calling `negate()` rather than relying
+            // on this arm.
             (None, None) => DateRange::default(),
         }
     }
 
-    /// True when the range is empty, i.e. can never match.
+    /// True when the range is in the complemented encoding, `min > max`, meaning "outside the band
+    /// `[max, min]`".
     ///
-    /// `negate()` on a two-sided range produces `min > max` deliberately: the SQL compiler turns that
-    /// into the `OR` of the two disjoint halves rather than a single impossible `BETWEEN`.
-    pub fn is_empty(&self) -> bool {
+    /// Only [`DateRange::negate`] produces one, and only for as long as it takes
+    /// [`crate::sql::compile`] to turn it into the `OR` of two disjoint halves. The parser never
+    /// builds one: `-date:d1/d2` keeps the range as written and sets `negated` instead, so the
+    /// canonical text round-trips.
+    pub fn is_complemented(&self) -> bool {
         match (self.min, self.max) {
             (Some(min), Some(max)) => min > max,
             _ => false,
@@ -508,10 +528,17 @@ mod tests {
     }
 
     #[test]
-    fn matches_folded_assumes_a_folded_haystack() {
+    fn a_contains_needle_matches_the_folded_half() {
         let pat = TextPat::contains("ecole");
-        assert!(pat.matches_folded(&crate::normalize::fold("l'École")));
-        assert!(!pat.matches_folded(&crate::normalize::fold("college")));
+        assert!(pat.matches(&crate::normalize::Text::of("l'École")));
+        assert!(!pat.matches(&crate::normalize::Text::of("college")));
+    }
+
+    #[test]
+    fn a_regex_matches_the_stored_half() {
+        let pat = TextPat::Regex(Pattern::parse("/École/i").expect("pattern compiles"));
+        assert!(pat.matches(&crate::normalize::Text::of("l'école des chiens")));
+        assert!(!pat.matches(&crate::normalize::Text::of("college")));
     }
 
     #[test]
@@ -524,16 +551,50 @@ mod tests {
 
     #[test]
     fn date_range_negation_is_de_morgan() {
-        // [10, 20] becomes min=21, max=9 — deliberately "empty", which the SQL compiler reads as
-        // `< 10 OR > 20` rather than an impossible BETWEEN.
+        // [10, 20] becomes min=20, max=10 — the complemented encoding, which both backends read as
+        // `< 10 OR > 20` rather than as an impossible BETWEEN.
         let r = DateRange {
             min: Some(10),
             max: Some(20),
         };
         let n = r.negate();
-        assert_eq!((n.min, n.max), (Some(21), Some(9)));
-        assert!(n.is_empty());
-        assert!(!r.is_empty());
+        assert_eq!((n.min, n.max), (Some(20), Some(10)));
+        assert!(n.is_complemented());
+        assert!(!r.is_complemented());
+    }
+
+    #[test]
+    fn the_band_edges_survive_negation() {
+        // The off-by-one this guards: with `min=max+1, max=min-1` the complement read as
+        // `< 9 OR > 21`, quietly dropping the day on each side of the excluded band. The semantics of
+        // the encoding are asserted against `range_contains` in `matcher.rs`.
+        let n = DateRange {
+            min: Some(10),
+            max: Some(20),
+        }
+        .negate();
+        assert_eq!(n.max, Some(10), "`value < 10` is the lower half");
+        assert_eq!(n.min, Some(20), "`value > 20` is the upper half");
+    }
+
+    #[test]
+    fn negating_twice_returns_the_original_range() {
+        for r in [
+            DateRange {
+                min: Some(10),
+                max: Some(20),
+            },
+            DateRange {
+                min: Some(10),
+                max: None,
+            },
+            DateRange {
+                min: None,
+                max: Some(20),
+            },
+        ] {
+            assert_eq!(r.negate().negate(), r, "{r:?}");
+        }
     }
 
     #[test]
@@ -544,7 +605,7 @@ mod tests {
         };
         let n = at_least.negate();
         assert_eq!((n.min, n.max), (None, Some(9)), "NOT (>= 10) is <= 9");
-        assert!(!n.is_empty(), "a half-open range is not empty");
+        assert!(!n.is_complemented(), "a half-open range is not complemented");
 
         let at_most = DateRange {
             min: None,

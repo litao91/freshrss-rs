@@ -53,9 +53,8 @@ struct CacheKey {
 pub struct Flags {
     /// Case-insensitive.
     ///
-    /// Largely redundant here, because both backends compare against an accent-folded, lowercased
-    /// haystack. It is still honoured so a pattern containing an uppercase literal behaves the way
-    /// the user wrote it.
+    /// Load-bearing for regexes and only for regexes: a pattern is matched against the stored text
+    /// rather than its folded form, so `/CAFÉ/` without this flag finds nothing in "café au lait".
     pub ignore_case: bool,
     /// `^` and `$` match at line boundaries rather than only at the ends of the string.
     pub multiline: bool,
@@ -182,19 +181,39 @@ impl Pattern {
         Ok(re)
     }
 
-    /// True when `folded_haystack` matches.
+    /// True when `haystack` matches.
     ///
-    /// The haystack must already be accent-folded and lowercased; see [`TextPat`](crate::ast::TextPat).
+    /// The haystack is the **stored** text, not its folded form: a pattern is matched against what
+    /// the article actually says, and the user's own flags decide about case. See [`normalize::Text`]
+    /// for why the containment operator differs.
     ///
     /// A pattern that exceeds the backtrack limit counts as **no match** rather than an error. A
     /// pathological regex typed by one user must not fail the listing for that page; reporting "no
     /// articles" is wrong but recoverable, and the error was already surfaced when the query was
     /// saved.
-    pub fn is_match_folded(&self, folded_haystack: &str) -> bool {
+    pub fn is_match(&self, haystack: &str) -> bool {
         match self.compile() {
-            Ok(re) => re.is_match(folded_haystack).unwrap_or(false),
+            Ok(re) => re.is_match(haystack).unwrap_or(false),
             Err(_) => false,
         }
+    }
+
+    /// The pattern with its flags spelled inline, for an engine that takes one string and nothing
+    /// else — which is all a SQLite UDF gets.
+    ///
+    /// [`Pattern::render`] is the PHP spelling used for display and round-tripping; this is the one
+    /// that gets bound. Confusing the two binds `/foo/i` as a pattern that matches the literal text
+    /// `/foo/i`.
+    pub fn inline(&self) -> String {
+        let mut out = String::with_capacity(self.source.len() + 8);
+        if self.flags.ignore_case {
+            out.push_str("(?i)");
+        }
+        if self.flags.multiline {
+            out.push_str("(?m)");
+        }
+        out.push_str(&self.source);
+        out
     }
 
     /// The PHP-style spelling, for round-tripping back to text.
@@ -315,7 +334,7 @@ mod tests {
     fn an_escaped_delimiter_inside_the_pattern_is_honoured() {
         let p = Pattern::parse(r"/a\/b/").unwrap();
         assert_eq!(p.source, "a/b", "the escape existed only for the parser");
-        assert!(p.is_match_folded("xa/by"));
+        assert!(p.is_match("xa/by"));
     }
 
     #[test]
@@ -340,16 +359,16 @@ mod tests {
     fn lookahead_and_backreferences_work_which_is_why_fancy_regex_is_here() {
         // The plain `regex` crate rejects both, and saved queries in the wild use both.
         let p = Pattern::parse("/foo(?=bar)/").unwrap();
-        assert!(p.is_match_folded("foobar"));
-        assert!(!p.is_match_folded("foobaz"));
+        assert!(p.is_match("foobar"));
+        assert!(!p.is_match("foobaz"));
 
         let p = Pattern::parse(r"/(a)b\1/").unwrap();
-        assert!(p.is_match_folded("aba"));
-        assert!(!p.is_match_folded("abb"));
+        assert!(p.is_match("aba"));
+        assert!(!p.is_match("abb"));
 
         let p = Pattern::parse("/(?<=a)b/").unwrap();
-        assert!(p.is_match_folded("ab"));
-        assert!(!p.is_match_folded("cb"));
+        assert!(p.is_match("ab"));
+        assert!(!p.is_match("cb"));
     }
 
     #[test]
@@ -357,21 +376,42 @@ mod tests {
         let single = Pattern::parse("/^b/").unwrap();
         let multi = Pattern::parse("/^b/m").unwrap();
         assert!(
-            !single.is_match_folded("a\nb"),
+            !single.is_match("a\nb"),
             "without m, ^ is the string start"
         );
         assert!(
-            multi.is_match_folded("a\nb"),
+            multi.is_match("a\nb"),
             "with m, ^ matches a line start"
         );
     }
 
     #[test]
-    fn matching_is_done_against_an_already_folded_haystack() {
-        // The caller folds; the pattern does not. A needle with an accent therefore never matches,
-        // which is the documented contract rather than a bug.
-        let p = Pattern::parse("/ecole/").unwrap();
-        assert!(p.is_match_folded(&crate::normalize::fold("l'École")));
+    fn a_regex_sees_the_stored_text_not_its_folded_form() {
+        // The containment operator folds both sides; a regex cannot, because folding the pattern
+        // would lowercase its character classes. So an accented pattern needs `/i` for case and
+        // spells its own accents.
+        let plain = Pattern::parse("/École/").unwrap();
+        assert!(plain.is_match("l'École des chiens"));
+        assert!(!plain.is_match("l'école des chiens"));
+
+        let insensitive = Pattern::parse("/École/i").unwrap();
+        assert!(insensitive.is_match("l'école des chiens"));
+
+        assert!(
+            !Pattern::parse("/ecole/").unwrap().is_match("l'École"),
+            "accents are not folded away for a regex the way they are for a plain needle"
+        );
+    }
+
+    #[test]
+    fn inline_spells_the_flags_out_for_a_one_string_engine() {
+        assert_eq!(Pattern::parse("/foo/").unwrap().inline(), "foo");
+        assert_eq!(Pattern::parse("/foo/i").unwrap().inline(), "(?i)foo");
+        assert_eq!(Pattern::parse("/foo/m").unwrap().inline(), "(?m)foo");
+        assert_eq!(Pattern::parse("/foo/im").unwrap().inline(), "(?i)(?m)foo");
+        // The point of the method: `render()` is the PHP spelling and would be bound as a pattern
+        // matching the literal text `/foo/i`.
+        assert_eq!(Pattern::parse("/foo/i").unwrap().render(), "/foo/i");
     }
 
     #[test]
@@ -401,7 +441,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Pattern>(&json).unwrap(), p);
         assert!(serde_json::from_str::<Pattern>(&json)
             .unwrap()
-            .is_match_folded("xFOOy"));
+            .is_match("xFOOy"));
     }
 
     #[test]
@@ -410,7 +450,7 @@ mod tests {
         // burning the request's whole time budget.
         let p = Pattern::parse("/(a+)+b/").unwrap();
         let start = std::time::Instant::now();
-        assert!(!p.is_match_folded(&format!("{}c", "a".repeat(64))));
+        assert!(!p.is_match(&format!("{}c", "a".repeat(64))));
         assert!(start.elapsed().as_secs() < 10, "took {:?}", start.elapsed());
     }
 
@@ -418,15 +458,15 @@ mod tests {
     fn the_cache_serves_repeated_compilations() {
         let p = Pattern::parse("/cached_pattern_xyz/").unwrap();
         for _ in 0..1000 {
-            assert!(p.is_match_folded("cached_pattern_xyz"));
+            assert!(p.is_match("cached_pattern_xyz"));
         }
         // The cache is bounded; exceeding it clears rather than growing without limit.
         for i in 0..(CACHE_SIZE + 50) {
             let q = Pattern::from_source(format!("filler_{i}")).unwrap();
-            assert!(q.is_match_folded(&format!("filler_{i}")));
+            assert!(q.is_match(&format!("filler_{i}")));
         }
         assert!(
-            p.is_match_folded("cached_pattern_xyz"),
+            p.is_match("cached_pattern_xyz"),
             "still works after eviction"
         );
     }

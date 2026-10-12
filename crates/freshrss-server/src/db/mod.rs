@@ -332,7 +332,7 @@ mod tests {
         let db = Db::in_memory().expect("open");
         let hit: i64 = db
             .blocking_with(|c| {
-                Ok(c.query_row("SELECT frss_ilike('École', '%ecole%')", [], |r| r.get(0))?)
+                Ok(c.query_row("SELECT frss_ilike('École', 'ecole')", [], |r| r.get(0))?)
             })
             .expect("udf");
         assert_eq!(hit, 1);

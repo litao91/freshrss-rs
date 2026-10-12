@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a8007f9aa587f5e94e928ce29a46c7b0372cef02fc70e602ef35195930e6af6e # shrinks to expr = Node { op: Or, children: [Leaf([FreeText { pat: Contains("rust"), negated: false }]), Leaf([FreeText { pat: Contains("_"), negated: false }, Title { pat: Contains("rust"), negated: true }])] }
+cc b7529b7be7c95680f2160ba4e1ab32aa0c85302d33185c50073dc133d47371f6 # shrinks to expr = Node { op: And, children: [Node { op: Or, children: [Leaf([Date { field: Ingestion, range: DateRange { min: None, max: None }, negated: true }]), Leaf([Content { pat: Contains("100%"), negated: false }])] }, Leaf([LabelIds { ids: Any, negated: false }]), Leaf([FreeText { pat: Contains("rust"), negated: false }])] }
+cc 26e410b7daa3452e51d8842c5180255a0fc514d7115571e0146ca06dce7131bf # shrinks to expr = Node { op: And, children: [Leaf([Tag { pat: Regex(Pattern { source: "^rust", flags: Flags { ignore_case: false, multiline: false } }), negated: false }, Tag { pat: Contains("axum"), negated: false }]), Leaf([LabelIds { ids: Any, negated: false }]), Leaf([EntryIds { ids: [], negated: true }])] }
+cc b81367ebcfacc3ff26ef5b2e7e480e212655ea1d9631965bcbab3b2866cc24f3 # shrinks to expr = Not(Node { op: Or, children: [Leaf([Date { field: Modified, range: DateRange { min: Some(1665440000), max: Some(1665440000) }, negated: false }]), Leaf([FreeText { pat: Contains("rust"), negated: false }])] })

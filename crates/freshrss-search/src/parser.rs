@@ -780,7 +780,7 @@ mod tests {
             Pred::Date { range, negated, .. } => {
                 assert!(negated, "the flag survives");
                 assert_eq!(range, positive, "and so does the range as written");
-                assert!(!range.is_empty());
+                assert!(!range.is_complemented());
             }
             other => panic!("{other:?}"),
         }

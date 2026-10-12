@@ -7,6 +7,17 @@
 //!
 //! Argument order is `(subject, pattern)` so the SQL reads naturally:
 //! `WHERE frss_ilike(e.title, ?)`.
+//!
+//! Three functions, one per comparison the search grammar needs:
+//!
+//! | function | meaning | used by |
+//! |---|---|---|
+//! | `frss_ilike(a, b)` | `b` occurs inside `a`, ignoring case and accents | `intitle:` `intext:` `author:` `inurl:` free text `#tag` |
+//! | `frss_ieq(a, b)` | `a` and `b` are equal, ignoring case and accents | `labels:` |
+//! | `frss_regexp(a, b)` | `b` matches inside `a`, as written | every operator's `/pattern/im` form |
+//!
+//! `frss_ilike`'s pattern is a **literal**: `%` and `_` are not wildcards. A user typing `100%` into
+//! the search box means those three characters, and the way to express a pattern is a regex.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -77,6 +88,15 @@ pub fn register(conn: &Connection) -> Result<()> {
         })
     })?;
 
+    conn.create_scalar_function("frss_ieq", 2, flags, |ctx| {
+        let left: Option<String> = ctx.get(0)?;
+        let right: Option<String> = ctx.get(1)?;
+        Ok(match (left, right) {
+            (Some(a), Some(b)) => freshrss_search::ieq(&a, &b),
+            _ => false,
+        })
+    })?;
+
     conn.create_scalar_function("frss_regexp", 2, flags, |ctx| {
         let text: Option<String> = ctx.get(0)?;
         let pattern: Option<String> = ctx.get(1)?;
@@ -111,12 +131,29 @@ mod tests {
     #[test]
     fn ilike_is_accent_and_case_insensitive() {
         let c = conn();
-        assert_eq!(
-            scalar_i64(&c, "SELECT frss_ilike('École Normale', '%ecole%')"),
-            1
-        );
-        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('CAFE', '%café%')"), 1);
-        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('lycée', '%college%')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('École Normale', 'ecole')"), 1);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('CAFE', 'café')"), 1);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('lycée', 'college')"), 0);
+    }
+
+    #[test]
+    fn ilike_treats_its_needle_as_a_literal() {
+        let c = conn();
+        // The two characters a user is most likely to type without meaning them as wildcards. SQLite's
+        // own LIKE would answer 1 to both.
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('axb', 'a_b')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT 'axb' LIKE 'a_b'"), 1);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('100 things', '100%')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('100% sure', '100%')"), 1);
+    }
+
+    #[test]
+    fn ieq_compares_whole_values() {
+        let c = conn();
+        assert_eq!(scalar_i64(&c, "SELECT frss_ieq('Étiquette', 'etiquette')"), 1);
+        // The reason labels do not use frss_ilike: `labels:todo` must not match a label "todos".
+        assert_eq!(scalar_i64(&c, "SELECT frss_ieq('todos', 'todo')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('todos', 'todo')"), 1);
     }
 
     #[test]
@@ -124,21 +161,23 @@ mod tests {
         let c = conn();
         // The exact divergence this module exists to remove.
         assert_eq!(scalar_i64(&c, "SELECT 'École' LIKE '%ecole%'"), 0);
-        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('École', '%ecole%')"), 1);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike('École', 'ecole')"), 1);
     }
 
     #[test]
     fn null_arguments_are_not_true() {
         let c = conn();
-        assert_eq!(scalar_i64(&c, "SELECT frss_ilike(NULL, '%x%')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ilike(NULL, 'x')"), 0);
         assert_eq!(scalar_i64(&c, "SELECT frss_ilike('x', NULL)"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ieq(NULL, 'x')"), 0);
+        assert_eq!(scalar_i64(&c, "SELECT frss_ieq('x', NULL)"), 0);
         assert_eq!(scalar_i64(&c, "SELECT frss_regexp(NULL, 'x')"), 0);
     }
 
     #[test]
     fn regexp_matches_translated_patterns() {
         let c = conn();
-        // What the SQL compiler emits for `/rus|rust/i`.
+        // What `Pattern::inline()` produces for `/rus|rust/i`.
         assert_eq!(
             scalar_i64(&c, "SELECT frss_regexp('Rustlang', '(?i)rus|rust')"),
             1
@@ -148,6 +187,48 @@ mod tests {
             0
         );
         assert_eq!(scalar_i64(&c, "SELECT frss_regexp('aXb', 'a.b')"), 1);
+    }
+
+    #[test]
+    fn regexp_sees_the_stored_text_with_its_accents_intact() {
+        let c = conn();
+        // A regex is not folded on either side, so the pattern spells its own accents and `/i` is
+        // what makes them case-insensitive.
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_regexp('l''École', '(?i)école')"),
+            1
+        );
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_regexp('l''École', 'école')"),
+            0,
+            "without /i the uppercase É does not match"
+        );
+        assert_eq!(
+            scalar_i64(&c, "SELECT frss_regexp('l''École', '(?i)ecole')"),
+            0,
+            "…and a folded spelling never matches an accented article"
+        );
+    }
+
+    #[test]
+    fn multiline_flags_let_anchors_work_per_tag() {
+        let c = conn();
+        // The tag column rewritten the way `tag_condition` rewrites it: `#rust #rss` becomes one tag
+        // per line, so `^` and `$` bound a single tag.
+        let rewritten = "REPLACE(REPLACE('#rust #rss', ' #', '#'), '#', CHAR(10))";
+        assert_eq!(
+            scalar_i64(&c, &format!("SELECT frss_regexp({rewritten}, '(?m)^rss$')")),
+            1
+        );
+        assert_eq!(
+            scalar_i64(&c, &format!("SELECT frss_regexp({rewritten}, '(?m)^rs$')")),
+            0
+        );
+        assert_eq!(
+            scalar_i64(&c, &format!("SELECT frss_regexp({rewritten}, '^rss$')")),
+            0,
+            "without (?m) the anchors mean the whole rewritten string"
+        );
     }
 
     #[test]
@@ -188,12 +269,12 @@ mod tests {
         .expect("seed");
         let n: i64 = c
             .query_row(
-                "SELECT COUNT(*) FROM t WHERE frss_ilike(title, '%ecole%')",
+                "SELECT COUNT(*) FROM t WHERE frss_ilike(title, 'ecole')",
                 [],
                 |r| r.get(0),
             )
             .expect("count");
-        assert_eq!(n, 2, "'École' and 'ecole' must both match '%ecole%'");
+        assert_eq!(n, 2, "'École' and 'ecole' must both match 'ecole'");
     }
 
     #[test]

@@ -7,23 +7,23 @@
 //! nothing to run SQL against.
 //!
 //! **It is the other half of the equivalence test.** [`crate::sql`] compiles the tree to SQL; this
-//! module evaluates it directly. Both call [`crate::normalize::fold`] on both sides of every text
-//! comparison, so they agree *by construction*. A property test can then generate random trees,
-//! seed a database, and assert that the SQL id-set and the matcher id-set are identical — which is
-//! the one test that permanently prevents the class of bug FreshRSS actually has.
+//! module evaluates it directly. Both consult [`crate::normalize::Text`] the same way — folded for a
+//! containment test, stored for a regex — so they agree *by construction*. A property test can then
+//! generate random trees, seed a database, and assert that the SQL id-set and the matcher id-set are
+//! identical, which is the one test that permanently prevents the class of bug FreshRSS actually has.
 
 use crate::ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 use crate::error::SearchError;
-use crate::normalize::fold;
+use crate::normalize::Text;
 
 /// The fields a query can look at, as seen by the matcher.
 ///
 /// Implemented by the server's `Entry` row and by `freshrss_feed::RawItem`, which is what makes the
 /// same filter rules work during refresh and when re-running a saved search over stored articles.
 ///
-/// Text accessors return the **stored** form, unfolded. The matcher folds each one exactly once per
-/// evaluation (see [`Folded`]); folding inside every comparison would make a twenty-predicate query
-/// over a thousand articles do twenty thousand normalizations instead of one thousand.
+/// Text accessors return the **stored** form, unfolded. The matcher prepares each one exactly once
+/// per evaluation (see [`Fields`]); folding inside every comparison would make a twenty-predicate
+/// query over a thousand articles do twenty thousand normalizations instead of one thousand.
 pub trait SearchTarget {
     /// The entry id, or `None` for an item that has not been stored yet.
     ///
@@ -46,40 +46,47 @@ pub trait SearchTarget {
     fn last_user_modified(&self) -> Option<i64>;
 }
 
-/// Every text field of one target, accent-folded once.
-struct Folded {
-    title: String,
-    content: String,
-    author: String,
-    link: String,
-    /// The tag list as individual folded names, so a whole-tag comparison is an equality check
-    /// rather than a substring search — the in-memory equivalent of the SQL `' #'` terminator trick.
-    tags: Vec<String>,
-    labels: Vec<String>,
+/// Every text field of one target, prepared once.
+///
+/// [`Text`] holds both the stored bytes and the folded form, so a containment predicate and a regex
+/// predicate over the same field each get the half they need without re-normalizing.
+struct Fields<'a> {
+    title: Text<'a>,
+    content: Text<'a>,
+    author: Text<'a>,
+    link: Text<'a>,
+    /// The tag list as individual values, so a whole-tag comparison is an equality check rather than
+    /// a substring search — the in-memory equivalent of the SQL `' #'` terminator trick.
+    tags: Vec<Text<'a>>,
+    labels: Vec<Text<'a>>,
 }
 
-impl Folded {
-    fn of(target: &dyn SearchTarget) -> Self {
+impl<'a> Fields<'a> {
+    fn of(target: &'a dyn SearchTarget) -> Self {
         Self {
-            title: fold(target.title()),
-            content: fold(target.content()),
-            author: fold(target.author()),
-            link: fold(target.link()),
-            tags: split_folded_tags(target.tags()),
-            labels: target.label_names().iter().map(|n| fold(n)).collect(),
+            title: Text::of(target.title()),
+            content: Text::of(target.content()),
+            author: Text::of(target.author()),
+            link: Text::of(target.link()),
+            tags: split_tags(target.tags())
+                .into_iter()
+                .map(Text::of)
+                .collect(),
+            labels: target.label_names().iter().map(|n| Text::of(n)).collect(),
         }
     }
 }
 
-/// Splits the `"#a #b"` column form into folded individual tags.
+/// Splits the `"#a #b"` column form into its individual tags.
 ///
-/// Comma is accepted as a separator too, because some feeds put every keyword in one category and
-/// the stored form preserves whatever the feed sent.
-fn split_folded_tags(tags: &str) -> Vec<String> {
-    tags.split(['#', ','])
+/// `#` is the only separator: the column is written by `freshrss_feed::hash::tags_field` as
+/// `"#" + join(" #")`, so a comma belongs to the tag name rather than dividing it. Splitting on one
+/// as well would make `#News, Tech` answer to `#News` here and not in SQL, which stores the whole
+/// thing as one tag.
+fn split_tags(tags: &str) -> Vec<&str> {
+    tags.split('#')
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(fold)
         .collect()
 }
 
@@ -92,14 +99,18 @@ fn split_folded_tags(tags: &str) -> Vec<String> {
 /// `date:` have no meaning for it. Reporting that is better than answering `false`, which would
 /// silently make every filter action that mentions a date a no-op.
 pub fn matches(expr: &Expr, target: &dyn SearchTarget) -> Result<bool, SearchError> {
-    evaluate(expr, target, &Folded::of(target))
+    evaluate(expr, target, &Fields::of(target))
 }
 
-fn evaluate(expr: &Expr, target: &dyn SearchTarget, folded: &Folded) -> Result<bool, SearchError> {
+fn evaluate(
+    expr: &Expr,
+    target: &dyn SearchTarget,
+    fields: &Fields<'_>,
+) -> Result<bool, SearchError> {
     match expr {
         Expr::Leaf(preds) => {
             for pred in preds {
-                if !eval_pred(pred, target, folded)? {
+                if !eval_pred(pred, target, fields)? {
                     return Ok(false);
                 }
             }
@@ -108,7 +119,7 @@ fn evaluate(expr: &Expr, target: &dyn SearchTarget, folded: &Folded) -> Result<b
         Expr::Node { op, children } => {
             let want_all = matches!(op, Op::And);
             for child in children {
-                let got = evaluate(child, target, folded)?;
+                let got = evaluate(child, target, fields)?;
                 if got != want_all {
                     // Short-circuit: `And` stops at the first false, `Or` at the first true.
                     return Ok(got);
@@ -117,11 +128,15 @@ fn evaluate(expr: &Expr, target: &dyn SearchTarget, folded: &Folded) -> Result<b
             // An empty `And` is true and an empty `Or` is false, which is exactly `want_all`.
             Ok(want_all)
         }
-        Expr::Not(inner) => Ok(!evaluate(inner, target, folded)?),
+        Expr::Not(inner) => Ok(!evaluate(inner, target, fields)?),
     }
 }
 
-fn eval_pred(pred: &Pred, target: &dyn SearchTarget, folded: &Folded) -> Result<bool, SearchError> {
+fn eval_pred(
+    pred: &Pred,
+    target: &dyn SearchTarget,
+    fields: &Fields<'_>,
+) -> Result<bool, SearchError> {
     let result = match pred {
         Pred::EntryIds { ids, negated } => {
             let id = require_id(target, "e:")?;
@@ -132,18 +147,18 @@ fn eval_pred(pred: &Pred, target: &dyn SearchTarget, folded: &Folded) -> Result<
             target.category_id().is_some_and(|c| ids.contains(&c)),
             *negated,
         ),
-        Pred::Title { pat, negated } => xor(pat.matches_folded(&folded.title), *negated),
-        Pred::Content { pat, negated } => xor(pat.matches_folded(&folded.content), *negated),
+        Pred::Title { pat, negated } => xor(pat.matches(&fields.title), *negated),
+        Pred::Content { pat, negated } => xor(pat.matches(&fields.content), *negated),
         Pred::FreeText { pat, negated } => xor(
-            pat.matches_folded(&folded.title) || pat.matches_folded(&folded.content),
+            pat.matches(&fields.title) || pat.matches(&fields.content),
             *negated,
         ),
-        Pred::Author { pat, negated } => xor(pat.matches_folded(&folded.author), *negated),
-        Pred::Url { pat, negated } => xor(pat.matches_folded(&folded.link), *negated),
-        Pred::Tag { pat, negated } => xor(any_tag_matches(pat, &folded.tags), *negated),
+        Pred::Author { pat, negated } => xor(pat.matches(&fields.author), *negated),
+        Pred::Url { pat, negated } => xor(pat.matches(&fields.link), *negated),
+        Pred::Tag { pat, negated } => xor(any_of_matches(pat, &fields.tags), *negated),
         Pred::LabelIds { ids, negated } => xor(label_ids_match(ids, target.label_ids()), *negated),
         Pred::LabelNames { names, negated } => {
-            xor(any_label_name_matches(names, &folded.labels), *negated)
+            xor(any_label_matches(names, &fields.labels), *negated)
         }
         Pred::Date {
             field,
@@ -213,17 +228,24 @@ fn range_contains(range: DateRange, value: i64) -> bool {
     }
 }
 
-/// Whole-tag matching: the needle must equal one of the tags, not merely occur inside one.
+/// Whole-value matching over a list of names: a tag or a label.
 ///
-/// This is the in-memory counterpart of the SQL `TRIM(tags) || ' #' LIKE '%needle #%'` trick. Both
-/// exist to stop `#ru` from matching the tag `rust`, and the equivalence test compares them.
-fn any_tag_matches(pat: &TextPat, folded_tags: &[String]) -> bool {
-    match pat {
-        // A `Contains` needle over a tag is an exact, folded comparison — the same semantics the SQL
-        // side gets from the `' #'` terminator.
-        TextPat::Contains(needle) => folded_tags.iter().any(|tag| tag == needle),
-        TextPat::Regex(re) => folded_tags.iter().any(|tag| re.is_match_folded(tag)),
-    }
+/// A `Contains` needle has to equal one of them rather than merely occur inside one — `#ru` is not
+/// the tag `rust`, and `labels:tod` is not the label `todo`. On the SQL side the same rule comes out
+/// of the `' #'` terminator for tags and out of `frss_ieq` for labels.
+///
+/// Two known asymmetries, both needing a pattern that names a separator the grammar otherwise splits
+/// on, and neither producible by a feed:
+///
+/// - a *quoted* needle containing ` #` (`#"rust #rss"`) is a substring of the concatenated tag
+///   column, so SQL matches it and this does not;
+/// - a regex containing `\n` can span the newline the SQL side joins tags with (`#/rust\naxum/`),
+///   which this cannot because it never sees two tags at once.
+fn any_of_matches(pat: &TextPat, values: &[Text<'_>]) -> bool {
+    values.iter().any(|value| match pat {
+        TextPat::Contains(needle) => value.folded == *needle,
+        TextPat::Regex(re) => re.is_match(value.raw),
+    })
 }
 
 fn label_ids_match(wanted: &IdSet, have: &[i64]) -> bool {
@@ -233,13 +255,9 @@ fn label_ids_match(wanted: &IdSet, have: &[i64]) -> bool {
     }
 }
 
-fn any_label_name_matches(names: &[TextPat], folded_labels: &[String]) -> bool {
-    folded_labels.iter().any(|label| {
-        names.iter().any(|pat| match pat {
-            TextPat::Contains(needle) => label == needle,
-            TextPat::Regex(re) => re.is_match_folded(label),
-        })
-    })
+/// Several names are ORed together, matching how every other list-valued operator behaves.
+fn any_label_matches(names: &[TextPat], labels: &[Text<'_>]) -> bool {
+    names.iter().any(|pat| any_of_matches(pat, labels))
 }
 
 #[cfg(test)]
@@ -385,11 +403,15 @@ mod tests {
     }
 
     #[test]
-    fn a_regex_is_evaluated_against_the_folded_text() {
-        assert!(m("intitle:/^a rust/i", &article()));
+    fn a_regex_is_evaluated_against_the_stored_text() {
+        assert!(m("intitle:/^A Rust/i", &article()));
         assert!(
-            m("intitle:/ecole/", &article()),
-            "the needle is folded, so the pattern must be too"
+            m("intitle:/École/", &article()),
+            "a pattern spells its own accents; the stored text is not folded for it"
+        );
+        assert!(
+            !m("intitle:/ecole/", &article()),
+            "…and so a folded spelling does not match an accented article"
         );
         assert!(!m("intitle:/^rust/", &article()));
     }
@@ -649,12 +671,14 @@ mod tests {
     }
 
     #[test]
-    fn split_folded_tags_handles_both_separators_and_blanks() {
-        assert_eq!(split_folded_tags("#a #b"), vec!["a", "b"]);
-        assert_eq!(split_folded_tags("#a,b"), vec!["a", "b"]);
-        assert_eq!(split_folded_tags("#Étiquette"), vec!["etiquette"]);
-        assert!(split_folded_tags("").is_empty());
-        assert!(split_folded_tags("# #").is_empty());
+    fn split_tags_uses_the_hash_alone_and_drops_blanks() {
+        assert_eq!(split_tags("#a #b"), vec!["a", "b"]);
+        // A comma is part of the name: the column is written as `"#" + join(" #")`, so splitting on
+        // one too would make `#News, Tech` answer to `#News` here and not in SQL.
+        assert_eq!(split_tags("#News, Tech"), vec!["News, Tech"]);
+        assert!(split_tags("").is_empty());
+        assert!(split_tags("# #").is_empty());
+        assert_eq!(split_tags("  #a   #b  "), vec!["a", "b"]);
     }
 
     #[test]
@@ -695,27 +719,19 @@ mod tests {
             ),
             "inclusive upper bound"
         );
-        // The complemented form: min > max means "outside the band".
-        assert!(!range_contains(
-            DateRange {
-                min: Some(151),
-                max: Some(49)
-            },
-            v
-        ));
-        assert!(range_contains(
-            DateRange {
-                min: Some(151),
-                max: Some(49)
-            },
-            200
-        ));
-        assert!(range_contains(
-            DateRange {
-                min: Some(151),
-                max: Some(49)
-            },
-            10
-        ));
+        // The complemented form: min > max means "outside the band [max, min]", exclusively at both
+        // ends. `(151, 49)` is the complement of `[49, 151]` — which is what `DateRange::negate()`
+        // produces, and an off-by-one there would drop the boundary instants.
+        let complement = DateRange {
+            min: Some(151),
+            max: Some(49),
+        };
+        assert!(!range_contains(complement, v));
+        assert!(range_contains(complement, 200));
+        assert!(range_contains(complement, 10));
+        assert!(!range_contains(complement, 49), "the lower edge is inside");
+        assert!(!range_contains(complement, 151), "the upper edge is inside");
+        assert!(range_contains(complement, 48));
+        assert!(range_contains(complement, 152));
     }
 }

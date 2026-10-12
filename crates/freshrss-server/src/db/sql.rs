@@ -117,27 +117,6 @@ pub fn chunks<T>(items: &[T]) -> impl Iterator<Item = &[T]> {
     items.chunks(MAX_BIND_PARAMS.max(1))
 }
 
-/// Escapes the `%`, `_` and `\` characters so a user-supplied string can be embedded in a `LIKE`
-/// pattern as a literal.
-///
-/// Only useful with a matching `ESCAPE '\'` clause, or with [`crate::db::udf`]'s `frss_ilike`,
-/// which honours backslash escapes the way MySQL's `LIKE` does by default.
-pub fn escape_like(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// Wraps an escaped literal as a `%…%` substring pattern.
-pub fn contains_pattern(text: &str) -> String {
-    format!("%{}%", escape_like(text))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,43 +207,5 @@ mod tests {
     #[test]
     fn chunks_of_an_empty_slice_yields_nothing() {
         assert_eq!(chunks::<i64>(&[]).count(), 0);
-    }
-
-    #[test]
-    fn escape_like_neutralizes_wildcards() {
-        assert_eq!(escape_like("plain"), "plain");
-        assert_eq!(escape_like("100%"), r"100\%");
-        assert_eq!(escape_like("a_b"), r"a\_b");
-        assert_eq!(escape_like(r"a\b"), r"a\\b");
-        assert_eq!(escape_like("%_%"), r"\%\_\%");
-    }
-
-    #[test]
-    fn contains_pattern_wraps_an_escaped_literal() {
-        assert_eq!(contains_pattern("rust"), "%rust%");
-        assert_eq!(contains_pattern("50%"), r"%50\%%");
-    }
-
-    #[test]
-    fn an_escaped_pattern_matches_literally_in_sqlite() {
-        let conn = Connection::open_in_memory().expect("db");
-        conn.execute_batch("CREATE TABLE t (s TEXT); INSERT INTO t VALUES ('50%'),('500');")
-            .expect("seed");
-        let pattern = contains_pattern("50%");
-        let escaped: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM t WHERE s LIKE ? ESCAPE '\\'",
-                rusqlite::params![pattern],
-                |r| r.get(0),
-            )
-            .expect("escaped");
-        assert_eq!(escaped, 1, "only the literal '50%' row");
-
-        let unescaped: i64 = conn
-            .query_row("SELECT COUNT(*) FROM t WHERE s LIKE '%50%%'", [], |r| {
-                r.get(0)
-            })
-            .expect("unescaped");
-        assert_eq!(unescaped, 2, "without escaping the % is a wildcard");
     }
 }

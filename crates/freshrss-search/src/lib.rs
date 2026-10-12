@@ -15,9 +15,10 @@
 //!  sql.rs     matcher.rs     render.rs     visibility.rs
 //! ```
 //!
-//! The AST stores **plaintext** only. Normalization ([`normalize::fold`]) happens inside `sql.rs`
-//! before binding and inside `matcher.rs` before comparing — both calling the same function, so
-//! the two backends agree by construction.
+//! The AST stores **plaintext** only. Every comparison goes through [`normalize::Text`], which holds
+//! a value both as stored and accent-folded: a substring needle is matched against the folded form, a
+//! regex against the stored one. `sql.rs` and `matcher.rs` make that same choice, so the two backends
+//! agree by construction — and `tests/search_equivalence.rs` in the server crate checks that they do.
 
 pub mod ast;
 pub mod dateinterval;
@@ -35,7 +36,7 @@ pub use ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 pub use error::SearchError;
 pub use lexer::{tokenize, Token, Value};
 pub use matcher::{matches, SearchTarget};
-pub use normalize::{fold, ilike};
+pub use normalize::{fold, ieq, ilike, Text};
 pub use parser::parse;
 pub use regex::{Flags, Pattern};
 pub use render::{enforce, prepend, remove, render, round_trip};

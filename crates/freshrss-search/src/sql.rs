@@ -2,18 +2,20 @@
 //!
 //! Two properties this module exists to guarantee:
 //!
-//! - **Text comparison goes through `frss_ilike`, never `LIKE`.** SQLite's `LIKE` is
+//! - **Text comparison goes through `frss_ilike`/`frss_ieq`, never `LIKE`.** SQLite's `LIKE` is
 //!   case-insensitive for ASCII only, so `intitle:ecole` does not match "École". FreshRSS's SQL path
 //!   has that behaviour while its in-memory matcher accent-folds, meaning the same query gives
 //!   different answers depending on whether it ran as a listing or as a filter action. Both backends
-//!   here call [`crate::normalize::fold`], so they agree by construction. There is no index cost:
-//!   `'%x%'` could not use one either way.
+//!   here consult [`crate::normalize::Text`] the same way — folded for containment, stored for a
+//!   regex — so they agree by construction. There is no index cost: a substring search could not use
+//!   one either way.
 //! - **Values are always bound, never interpolated.** A search string is untrusted user input that
 //!   ends up in a `WHERE` clause; the only difference between this being safe and being an injection
 //!   hole is that every literal here is a `?`.
 
 use crate::ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 use crate::error::SearchError;
+use crate::regex::Pattern;
 
 /// What the compiler needs to know about the query it is being spliced into.
 #[derive(Debug, Clone)]
@@ -215,16 +217,16 @@ fn category_condition(alias: &str, ids: &[i64], negated: bool) -> Fragment {
 fn text_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
     let not = if negated { "NOT " } else { "" };
     match pat {
+        // `frss_ilike` is a literal substring test over accent-folded values, so the needle is bound
+        // as-is. It is *not* SQL `LIKE`: binding `"%a_b%"` here would make a user's underscore match
+        // any character, which is what FreshRSS does and what the in-memory matcher does not.
         TextPat::Contains(needle) => Fragment {
-            // The wildcards are part of the bound value, so a needle containing `%` or `_` would act
-            // as a wildcard. That matches FreshRSS, whose `LIKE "%$value%"` does the same, and is
-            // what a user typing `%` into a search box usually wants anyway.
             sql: format!("{not}frss_ilike({col}, ?)"),
-            params: vec![Param::Text(format!("%{needle}%"))],
+            params: vec![Param::Text(needle.clone())],
         },
         TextPat::Regex(re) => Fragment {
             sql: format!("{not}frss_regexp({col}, ?)"),
-            params: vec![Param::Text(re.render())],
+            params: vec![Param::Text(re.inline())],
         },
     }
 }
@@ -247,24 +249,41 @@ fn free_text_condition(title: &str, content: &str, pat: &TextPat, negated: bool)
 /// A `#tag` predicate.
 ///
 /// Tags are stored as `"#a #b"`, so a whole-tag match appends `' #'` to the haystack and looks for
-/// `"%needle #%"`. Without the trailing marker, `#ru` would match the tag `rust`.
+/// `"#needle #"`. Without the trailing marker `#ru` would match the tag `rust`; without the leading
+/// one `#st` would match it too. The in-memory matcher gets the same rule by splitting the column and
+/// comparing whole tags.
 fn tag_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
     let not = if negated { "NOT " } else { "" };
     match pat {
         TextPat::Contains(needle) => Fragment {
             sql: format!("{not}frss_ilike(TRIM({col}) || ' #', ?)"),
-            params: vec![Param::Text(format!("%{needle} #%"))],
+            params: vec![Param::Text(format!("#{needle} #"))],
         },
         TextPat::Regex(re) => {
             // Rewrite `#a #b` into `\na\nb` so `^` and `$` anchor a single tag, which is what a
-            // regex over tags means to someone writing one. FreshRSS does the same REPLACE chain.
+            // regex over tags means to someone writing one. FreshRSS does the same REPLACE chain, and
+            // the matcher gets it by evaluating the pattern against each tag on its own.
             Fragment {
                 sql: format!(
                     "{not}frss_regexp(REPLACE(REPLACE({col}, ' #', '#'), '#', CHAR(10)), ?)"
                 ),
-                params: vec![Param::Text(re.render())],
+                params: vec![Param::Text(per_tag_line(re))],
             }
         }
+    }
+}
+
+/// Forces the multiline flag onto a pattern that will be matched against the one-tag-per-line
+/// rewrite of the tags column.
+///
+/// Without it `^` means "the start of the whole column", and since the rewrite begins with a newline
+/// `#/^rust/` would match nothing at all. The matcher needs no such flag because it never joins the
+/// tags together in the first place.
+fn per_tag_line(re: &Pattern) -> String {
+    if re.flags.multiline {
+        re.inline()
+    } else {
+        format!("(?m){}", re.inline())
     }
 }
 
@@ -305,8 +324,8 @@ fn label_condition(ctx: &SqlCtx<'_>, ids: &IdSet, negated: bool) -> Result<Fragm
 ///
 /// Several names are ORed together, matching how every other list-valued operator behaves. A plain
 /// name is matched **whole**, not as a substring: `labels:todo` must not match a label called
-/// "todos". `frss_ilike` with no `%` wildcards is an accent-folded exact comparison, which is exactly
-/// the semantics wanted, and it means one call per name rather than two.
+/// "todos". That is `frss_ieq` rather than `frss_ilike` — one accent-folded comparison per name, and
+/// the same rule the matcher applies when it compares against each of the target's label names.
 fn label_name_condition(
     ctx: &SqlCtx<'_>,
     names: &[TextPat],
@@ -328,8 +347,8 @@ fn label_name_condition(
     let mut params = Vec::with_capacity(names.len());
     for name in names {
         let (function, param) = match name {
-            TextPat::Contains(needle) => ("frss_ilike", Param::Text(needle.clone())),
-            TextPat::Regex(re) => ("frss_regexp", Param::Text(re.render())),
+            TextPat::Contains(needle) => ("frss_ieq", Param::Text(needle.clone())),
+            TextPat::Regex(re) => ("frss_regexp", Param::Text(re.inline())),
         };
         clauses.push(format!("{function}(t.name, ?)"));
         params.push(param);
@@ -352,26 +371,39 @@ fn label_name_condition(
 /// has always meant "when it was added") and it is kept for fidelity; `pubdate:` is the publication
 /// time. The reader's help dialog says so, because it is otherwise genuinely surprising.
 fn date_condition(alias: &str, field: DateField, range: DateRange, negated: bool) -> Fragment {
+    let (col, scale, nullable): (String, i64, bool) = match field {
+        DateField::Ingestion => (format!("{alias}.id"), 1_000_000, false),
+        DateField::Publication => (format!("{alias}.date"), 1, false),
+        // The two edit timestamps are NULL on an article that was never edited.
+        DateField::Modified => (format!("{alias}.lastModified"), 1, true),
+        DateField::UserModified => (format!("{alias}.lastUserModified"), 1, true),
+    };
+
+    // An unbounded range matches every row that has a value at all, so its complement matches none.
+    // This has to be settled before `negate()`: `DateRange` has no way to say "empty" (`min > max`
+    // already means "outside the band"), so complementing an unbounded range would return it
+    // unchanged and quietly invert the predicate.
+    if range.is_unbounded() {
+        return Fragment::new(if negated {
+            "1=0".to_owned()
+        } else {
+            format!("{col} IS NOT NULL")
+        });
+    }
+
     // A negated range is complemented here rather than wrapped in `NOT (…)`, which keeps the
     // predicate index-usable: `NOT (id BETWEEN a AND b)` becomes the OR of the two disjoint halves.
     // The complement of a two-sided range has `min > max`, which the match below reads as exactly that.
     let range = if negated { range.negate() } else { range };
-    let (column, scale): (String, i64) = match field {
-        DateField::Ingestion => (format!("{alias}.id"), 1_000_000),
-        DateField::Publication => (format!("{alias}.date"), 1),
-        DateField::Modified => (format!("{alias}.lastModified"), 1),
-        DateField::UserModified => (format!("{alias}.lastUserModified"), 1),
-    };
-    let col = column;
 
     let (min, max) = (
         range.min.map(|v| v.saturating_mul(scale)),
         range.max.map(|v| v.saturating_mul(scale)),
     );
 
-    match (min, max) {
+    let mut f = match (min, max) {
         (Some(lo), Some(hi)) if lo > hi => Fragment {
-            // The complement of [hi+1 .. lo-1]: everything below or above the original band.
+            // The complement of [hi .. lo]: everything strictly below or above the original band.
             sql: format!("({col} < ? OR {col} > ?)"),
             params: vec![Param::Int(hi), Param::Int(lo)],
         },
@@ -387,8 +419,18 @@ fn date_condition(alias: &str, field: DateField, range: DateRange, negated: bool
             sql: format!("{col} <= ?"),
             params: vec![Param::Int(hi)],
         },
-        (None, None) => Fragment::new("1=1"),
+        (None, None) => unreachable!("settled by the is_unbounded arm above"),
+    };
+
+    // A NULL comparison is not `false` in SQL, it is NULL — and `NOT (NULL OR …)` is NULL again, which
+    // a WHERE clause drops. So on its own `NULL BETWEEN …` would be harmless, but inside a negated
+    // group `!(mdate:… OR …)` it would silently exclude every article that was never edited. The
+    // matcher reports a missing timestamp as false in *both* polarities; this guard is what makes the
+    // SQL say the same thing.
+    if nullable {
+        f.sql = format!("({col} IS NOT NULL AND {})", f.sql);
     }
+    f
 }
 
 #[cfg(test)]
@@ -474,7 +516,7 @@ mod tests {
             f.sql
         );
         assert!(
-            f.params.contains(&Param::Text("%1=1%".into())),
+            f.params.contains(&Param::Text("1=1".into())),
             "{:?}",
             f.params
         );
@@ -509,10 +551,23 @@ mod tests {
     fn a_substring_uses_frss_ilike_not_like() {
         let f = compile_query("intitle:rust");
         assert_eq!(f.sql, "frss_ilike(e.title, ?)");
-        assert_eq!(f.params, vec![Param::Text("%rust%".into())]);
+        // Bound bare, not wrapped in `%…%`: `frss_ilike` is a literal substring test.
+        assert_eq!(f.params, vec![Param::Text("rust".into())]);
         assert!(
             !f.sql.contains(" LIKE "),
             "LIKE is ASCII-only case-insensitive"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_looking_needle_stays_literal() {
+        // FreshRSS binds `%a_b%` here, so `intitle:a_b` matches "axb" in a listing but not in a
+        // filter action. Both backends treat the needle as text.
+        let f = compile_query("intitle:a_b");
+        assert_eq!(f.params, vec![Param::Text("a_b".into())]);
+        assert!(
+            !crate::normalize::ilike("axb", "a_b"),
+            "`_` is not a single-character wildcard"
         );
     }
 
@@ -551,10 +606,12 @@ mod tests {
     }
 
     #[test]
-    fn a_regex_uses_frss_regexp_and_keeps_its_flags() {
+    fn a_regex_uses_frss_regexp_and_inlines_its_flags() {
         let f = compile_query("intitle:/^ru.t$/i");
         assert_eq!(f.sql, "frss_regexp(e.title, ?)");
-        assert_eq!(f.params, vec![Param::Text("/^ru.t$/i".into())]);
+        // The PHP spelling `/^ru.t$/i` is what `render()` produces for display; binding that would
+        // compile a pattern matching the literal text "/^ru.t$/i".
+        assert_eq!(f.params, vec![Param::Text("(?i)^ru.t$".into())]);
     }
 
     #[test]
@@ -568,7 +625,7 @@ mod tests {
         // Both backends fold; folding here means the database never sees an accented needle that its
         // collation could not match.
         let f = compile_query("intitle:Café");
-        assert_eq!(f.params, vec![Param::Text("%cafe%".into())]);
+        assert_eq!(f.params, vec![Param::Text("cafe".into())]);
     }
 
     // --- tags --------------------------------------------------------------
@@ -577,18 +634,27 @@ mod tests {
     fn a_tag_matches_whole_tags_only() {
         let f = compile_query("#rust");
         assert_eq!(f.sql, "frss_ilike(TRIM(e.tags) || ' #', ?)");
-        // The trailing " #" is what stops `#ru` from matching the tag `rust`.
-        assert_eq!(f.params, vec![Param::Text("%rust #%".into())]);
+        // Both markers are load-bearing: the trailing " #" stops `#ru` matching the tag `rust`, and
+        // the leading one stops `#st` matching it too.
+        assert_eq!(f.params, vec![Param::Text("#rust #".into())]);
     }
 
     #[test]
-    fn a_tag_prefix_does_not_match_a_longer_tag() {
-        let f = compile_query("#ru");
-        assert_eq!(f.params, vec![Param::Text("%ru #%".into())]);
-        // Against "#rust #axum #" the pattern "%ru #%" does not occur.
-        assert!(!"#rust #axum #".contains("%ru #%"));
-        assert!(!crate::normalize::ilike("#rust #axum #", "%ru #%"));
-        assert!(crate::normalize::ilike("#ru #axum #", "%ru #%"));
+    fn a_tag_prefix_or_suffix_does_not_match_a_longer_tag() {
+        let column = "#rust #axum #";
+        for q in ["#ru", "#st", "#rus"] {
+            let f = compile_query(q);
+            let needle = match &f.params[0] {
+                Param::Text(t) => t.as_str(),
+                other => panic!("{other:?}"),
+            };
+            assert!(
+                !crate::normalize::ilike(column, needle),
+                "{q} bound {needle:?}, which occurs in {column:?}"
+            );
+        }
+        assert!(crate::normalize::ilike(column, "#rust #"));
+        assert!(crate::normalize::ilike("#ru #axum #", "#ru #"));
     }
 
     #[test]
@@ -606,7 +672,15 @@ mod tests {
             "{}",
             f.sql
         );
-        assert_eq!(f.params, vec![Param::Text("/^ru/".into())]);
+        // `(?m)` is forced on: the rewrite puts one tag per line and starts with a newline, so
+        // without it `^` means the start of the whole column and this pattern matches nothing.
+        assert_eq!(f.params, vec![Param::Text("(?m)^ru".into())]);
+    }
+
+    #[test]
+    fn a_tag_regex_that_already_asked_for_multiline_is_not_prefixed_twice() {
+        let f = compile_query("#/^ru$/m");
+        assert_eq!(f.params, vec![Param::Text("(?m)^ru$".into())]);
     }
 
     // --- ids ---------------------------------------------------------------
@@ -680,15 +754,15 @@ mod tests {
     #[test]
     fn a_label_name_matches_the_whole_name() {
         let f = compile_query("labels:todo");
-        // `frss_ilike(t.name, ?)` with an un-wildcarded needle is an exact, accent-folded
-        // comparison — one bound value per name, not two.
+        // `frss_ieq` is an accent-folded equality — one bound value per name, and the reason labels
+        // do not use `frss_ilike`, which would let `labels:todo` match a label called "todos".
         assert_eq!(f.params, vec![Param::Text("todo".into())]);
-        assert!(f.sql.contains("t.name"), "{}", f.sql);
+        assert!(f.sql.contains("frss_ieq(t.name, ?)"), "{}", f.sql);
         assert!(
-            !crate::normalize::ilike("todos", "todo"),
+            !crate::normalize::ieq("todos", "todo"),
             "a prefix must not match"
         );
-        assert!(crate::normalize::ilike("todo", "todo"));
+        assert!(crate::normalize::ieq("Étiquette", "etiquette"));
     }
 
     #[test]
@@ -766,9 +840,81 @@ mod tests {
     }
 
     #[test]
+    fn negating_a_band_reuses_the_bands_own_bounds() {
+        // `< lo OR > hi`, with the very bounds the positive form uses. An off-by-one in
+        // `DateRange::negate` shows up here as the day either side of the band going missing.
+        let positive = compile_query("date:2006-01-02/2006-01-05");
+        let negative = compile_query("-date:2006-01-02/2006-01-05");
+        assert_eq!(positive.sql, "e.id BETWEEN ? AND ?");
+        assert_eq!(negative.params, positive.params);
+    }
+
+    #[test]
     fn a_negated_one_sided_range_flips_the_comparison() {
         let f = compile_query("-date:P1W");
         assert_eq!(f.sql, "e.id <= ?", "NOT (>= min) is <= max");
+    }
+
+    /// An unbounded range cannot be reached from the grammar — `date:` always produces at least one
+    /// bound — but a saved query or a programmatically built AST can hold one, and its complement is
+    /// "nothing", which `DateRange` has no way to spell.
+    fn unbounded(field: DateField, negated: bool) -> Fragment {
+        compile(
+            &Expr::pred(Pred::Date {
+                field,
+                range: DateRange::default(),
+                negated,
+            }),
+            &ctx(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unbounded_range_is_not_null_rather_than_true() {
+        // `mdate:` over a row that was never edited must not match: a NULL timestamp fails a range in
+        // both polarities, and `1=1` would say otherwise.
+        let f = unbounded(DateField::Modified, false);
+        assert_eq!(f.sql, "e.lastModified IS NOT NULL");
+        assert!(f.params.is_empty());
+    }
+
+    #[test]
+    fn a_negated_unbounded_range_matches_nothing() {
+        // Complementing an unbounded range through `DateRange::negate()` returns it unchanged, so
+        // this arm has to be settled before the complement is taken.
+        let f = unbounded(DateField::Publication, true);
+        assert_eq!(f.sql, "1=0");
+        assert!(f.params.is_empty());
+    }
+
+    #[test]
+    fn a_nullable_timestamp_column_is_guarded_against_null() {
+        // `NULL BETWEEN …` is NULL, not false, and `NOT (NULL OR …)` is NULL again — which a WHERE
+        // clause drops. So without the guard, `!(mdate:2006 OR rust)` would exclude every article
+        // that was never edited. The matcher reports a missing timestamp as false in both polarities.
+        let f = compile_query("mdate:2006-01-02");
+        assert_eq!(
+            f.sql,
+            "(e.lastModified IS NOT NULL AND e.lastModified BETWEEN ? AND ?)"
+        );
+        let f = compile_query("userdate:2006-01-02");
+        assert!(
+            f.sql.starts_with("(e.lastUserModified IS NOT NULL AND "),
+            "{}",
+            f.sql
+        );
+    }
+
+    #[test]
+    fn the_non_nullable_timestamp_columns_are_left_alone() {
+        // `entry.id` and `entry.date` cannot be NULL, and `date:` is by far the most common operator —
+        // paying for a guard there would be noise in every listing query.
+        assert_eq!(compile_query("date:2006-01-02").sql, "e.id BETWEEN ? AND ?");
+        assert_eq!(
+            compile_query("pubdate:2006-01-02").sql,
+            "e.date BETWEEN ? AND ?"
+        );
     }
 
     // --- boolean structure -------------------------------------------------
@@ -878,8 +1024,9 @@ mod tests {
     #[test]
     fn helpers_are_reachable_for_the_golden_tests() {
         // Guards the constructors used by `crates/freshrss-search/tests/golden.rs`.
-        assert!(contains("x").matches_folded("axb"));
-        assert!(regex("x").matches_folded("axb"));
+        let text = crate::normalize::Text::of("axb");
+        assert!(contains("x").matches(&text));
+        assert!(regex("x").matches(&text));
         assert!(!Fragment::new("1=1").is_empty());
     }
 }
