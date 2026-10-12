@@ -5,5 +5,6 @@
 
 pub mod auth;
 pub mod entries;
+pub mod ingest;
 pub mod search;
 pub mod tree;
