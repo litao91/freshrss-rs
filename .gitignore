@@ -3,5 +3,7 @@ static/
 node_modules/
 web/dist/
 data/
+# A real config carries the session secret; config.example.toml is the tracked one.
+config.toml
 *.sqlite*
 .DS_Store
