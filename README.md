@@ -78,9 +78,16 @@ that matter most:
 2. **One shared SQLite database.** FreshRSS gives each user their own file. Sharing one database
    means entry ids must come from a global allocator rather than FreshRSS's
    `MAX(id) - COUNT(*)` renumbering, which would collide across users.
-3. **`frss_ilike` instead of `LIKE`.** SQLite's `LIKE` is ASCII-case-insensitive only. The
-   registered UDF shares one accent-folding function with the in-memory matcher, so listing queries
-   and filter actions cannot disagree — a bug FreshRSS itself has.
+3. **Folded columns instead of `LIKE`.** SQLite's `LIKE` is ASCII-case-insensitive only, and the
+   database driver cannot register a function that could do better. So every searchable column
+   carries an accent-folded copy written at ingest (`title_folded`, `tags_folded`, …), searches
+   compare folded to folded with `instr()`, and the in-memory matcher folds with the same function —
+   so listing queries and filter actions cannot disagree, a bug FreshRSS itself has. A
+   `fold_version` key re-runs the backfill if the fold ever changes.
+4. **No `/regex/` in a listing.** SQLite has no regex operator without a user-defined function, so a
+   regex in a search box is a `400` that names the pattern. Filter actions still evaluate regexes,
+   because they run in Rust over the parsed feed rather than in SQL. The two backends differ only in
+   a loud refusal against an answer, never in two answers.
 
 ## Tests
 
@@ -88,10 +95,16 @@ that matter most:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm --prefix web run check
+node web/tools/browser-check.mjs http://127.0.0.1:8080 <user> <password>
 ```
 
 Tests are offline: feed parsing runs against `fixtures/`, and HTTP behaviour is exercised through
 the `Fetcher` trait rather than the network.
+
+The last command drives the built reader in a real Chromium: sign-in, the first page, infinite
+scroll with a no-duplicate-rows assertion, opening an article, `j k s m u b / Escape`, sorting,
+searching, mark-all-read and all three themes — 52 checks, and it fails on any console error. It
+needs a running server with a user that has some articles.
 
 ## License
 
