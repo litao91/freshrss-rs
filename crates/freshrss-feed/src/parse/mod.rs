@@ -7,6 +7,7 @@ mod atom;
 mod common;
 pub mod date;
 pub(crate) mod dom;
+mod dotnotation;
 mod jsonfeed;
 mod rdf;
 mod rss;
@@ -19,7 +20,7 @@ use crate::error::FeedError;
 use crate::kind::FeedKind;
 use crate::raw::{FeedFormat, RawFeed};
 
-pub use date::{parse_date, parse_millis, parse_with_php_format};
+pub use date::{parse_date, parse_millis, parse_with_php_format, scraped_timestamp};
 
 /// Parses a feed document.
 ///
@@ -50,37 +51,113 @@ pub fn parse(body: &[u8], hint: FeedKind) -> Result<RawFeed, FeedError> {
     }
 }
 
+/// Everything a scraping kind needs besides the document bytes.
+///
+/// All of it comes off the feed row, which is why it is one struct rather than five arguments: the
+/// refresh pipeline builds it once per feed and hands it to [`scrape`].
+#[derive(Debug, Clone)]
+pub struct Scrape<'a> {
+    /// Which scraper runs, and therefore how the bytes are read.
+    pub kind: FeedKind,
+    /// The `frss:xPathItem*` or `frss:jsonItem*` map.
+    pub map: &'a BTreeMap<String, String>,
+    /// `frss:xPathToJson`: the expression that finds the JSON inside an HTML page. Only
+    /// [`FeedKind::HtmlXpathJsonDotNotation`] reads it.
+    pub x_path_to_json: &'a str,
+    /// Where the document came from. Becomes the feed's website and resolves its relative links.
+    pub url: &'a str,
+    /// The subscription's configured name, used when the map has no `feedTitle` or it finds nothing.
+    pub fallback_title: &'a str,
+}
+
 /// Scrapes a feed out of a document that is not one.
 ///
-/// `kind` decides how the bytes are read: [`FeedKind::HtmlXpath`] parses them as HTML — leniently,
-/// with element names lowercased, the way a browser and `DOMDocument::loadHTML` both do — and
-/// [`FeedKind::XmlXpath`] parses them as XML, strictly and with namespaces resolved. The selector map
-/// is then evaluated the same way against either, which is the point of having one data model.
+/// The kind decides how the bytes are read and which vocabulary the map uses:
 ///
-/// `url` is where the document came from, used to resolve relative links and as the feed's website;
-/// `fallback_title` is the subscription's configured name, used when the map has no `feedTitle`
-/// expression or that expression matches nothing.
+/// | kind | bytes read as | map |
+/// |---|---|---|
+/// | [`FeedKind::HtmlXpath`] | HTML — lenient, names lowercased | `frss:xPathItem*` |
+/// | [`FeedKind::XmlXpath`] | XML — strict, namespaces resolved | `frss:xPathItem*` |
+/// | [`FeedKind::JsonDotNotation`] | JSON | `frss:jsonItem*` |
+/// | [`FeedKind::HtmlXpathJsonDotNotation`] | HTML, then the JSON `x_path_to_json` finds | `frss:jsonItem*` |
+///
+/// One data model backs both XML and HTML, so the same expressions behave the same way against
+/// either; the JSON kinds do not use XPath at all, because a JSON document has no axes and
+/// `items.0.title` already says everything an expression would.
 ///
 /// # Errors
 ///
-/// [`FeedError::Empty`] when the body is empty, [`FeedError::Parse`] when it is not valid UTF-8 or
-/// not well-formed XML for a kind that requires XML, [`FeedError::BadConfig`] when the map has no
-/// `item` expression or any expression is invalid, [`FeedError::Empty`] when the `item` expression
-/// matched nothing, and [`FeedError::UnsupportedKind`] for a kind this function does not scrape.
-pub fn scrape(
-    body: &[u8],
-    kind: FeedKind,
-    map: &BTreeMap<String, String>,
-    url: &str,
-    fallback_title: &str,
-) -> Result<RawFeed, FeedError> {
+/// [`FeedError::Empty`] when the body is empty or the item selector matched nothing,
+/// [`FeedError::Parse`] when the bytes are not valid UTF-8, not well-formed XML for a kind that
+/// requires it, or not valid JSON for one that does, [`FeedError::BadConfig`] when an expression is
+/// invalid or a required one is missing, and [`FeedError::UnsupportedKind`] for a kind this function
+/// does not scrape — the syndication formats go through [`parse`], and kind 20 is vestigial.
+pub fn scrape(body: &[u8], config: &Scrape<'_>) -> Result<RawFeed, FeedError> {
     let text = decode_body(body)?;
-    let document = match kind {
-        FeedKind::HtmlXpath => dom::Doc::from_html(&text),
-        FeedKind::XmlXpath => dom::Doc::from_xml(&text)?,
-        other => return Err(FeedError::UnsupportedKind(other.as_i16())),
-    };
-    xpath::scrape(&document, map, url, fallback_title)
+    match config.kind {
+        FeedKind::HtmlXpath => {
+            let document = dom::Doc::from_html(&text);
+            xpath::scrape(&document, config.map, config.url, config.fallback_title)
+        }
+        FeedKind::XmlXpath => {
+            let document = dom::Doc::from_xml(&text)?;
+            xpath::scrape(&document, config.map, config.url, config.fallback_title)
+        }
+        FeedKind::JsonDotNotation => {
+            let document = parse_json(&text)?;
+            dotnotation::scrape(&document, config.map, config.url, config.fallback_title)
+        }
+        FeedKind::HtmlXpathJsonDotNotation => {
+            let document = dom::Doc::from_html(&text);
+            let json = json_from_html(&document, config.x_path_to_json)?;
+            dotnotation::scrape(&json, config.map, config.url, config.fallback_title)
+        }
+        other => Err(FeedError::UnsupportedKind(other.as_i16())),
+    }
+}
+
+/// Reads a JSON document, reporting the position the parser gave.
+fn parse_json(text: &str) -> Result<serde_json::Value, FeedError> {
+    serde_json::from_str(text).map_err(|err| FeedError::Parse(format!("not valid JSON: {err}")))
+}
+
+/// Finds the JSON inside an HTML page with `frss:xPathToJson`.
+///
+/// An expression that evaluates to a string yields that string as the document. One that matches
+/// nodes yields each node's text decoded and collected into an **array**, so a page with a single
+/// `<script type="application/ld+json">` produces a one-element array and the map's `item` path has
+/// to start at `0.`. That is surprising, and it is also what PHP FreshRSS does, which means the
+/// configurations already written against it depend on it.
+fn json_from_html(document: &dom::Doc, expression: &str) -> Result<serde_json::Value, FeedError> {
+    if expression.trim().is_empty() {
+        return Err(FeedError::BadConfig(
+            "an HTML+XPath+JSON feed needs an `xPathToJson` expression to find the JSON".to_owned(),
+        ));
+    }
+    let expression = dom::Doc::compile(expression)?;
+    use xpath_eval::Node as _;
+    match document.evaluate(&expression, document.root())? {
+        xpath_eval::Value::String(text) => parse_json(&text),
+        xpath_eval::Value::NodeSet(nodes) => {
+            let mut found = Vec::new();
+            for node in nodes {
+                // Only objects and arrays are kept: a node whose text is `42` or `null` is not a
+                // document a dot-notation map can read, and PHP's `is_array` check drops it too.
+                if let Ok(value @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
+                    serde_json::from_str(&node.string_value())
+                {
+                    found.push(value);
+                }
+            }
+            if found.is_empty() {
+                return Err(FeedError::Parse(
+                    "the `xPathToJson` expression matched no JSON document".to_owned(),
+                ));
+            }
+            Ok(serde_json::Value::Array(found))
+        }
+        other => parse_json(&other.to_xpath_string()),
+    }
 }
 
 /// Interprets the body as XML and picks the RSS/Atom/RDF reader from the root element.

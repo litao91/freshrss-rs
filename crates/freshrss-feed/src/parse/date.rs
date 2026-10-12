@@ -327,6 +327,29 @@ fn php_directive(c: char) -> Option<&'static str> {
     })
 }
 
+/// Parses a timestamp scraped from a page or a JSON document.
+///
+/// With no format the value goes through the general parser, which handles RFC 822, RFC 3339, bare
+/// unix seconds and a dozen more spellings. With a format, that format decides — and a format that
+/// does not fit falls back to the general parser, because `itemTimeFormat` is free text that users
+/// routinely get wrong and losing every date over a typo is worse than guessing.
+///
+/// `U` goes to the epoch parser rather than to a strptime pattern. PHP special-cases it — "if the
+/// format is `U` and the value is longer than ten characters, drop the last three" — which is a
+/// millisecond workaround; [`parse_millis`] already tells seconds from milliseconds, so the special
+/// case is unnecessary here.
+pub fn scraped_timestamp(raw: &str, php_format: &str) -> Option<i64> {
+    match php_format {
+        "" => parse_date(raw),
+        "U" => parse_millis(raw).map(seconds_from_millis),
+        format => parse_with_php_format(raw, format).map(seconds_from_millis),
+    }
+}
+
+fn seconds_from_millis(millis: i64) -> i64 {
+    millis.div_euclid(1000)
+}
+
 /// Parses a date using a PHP `date()` format string, as the scraping kinds require.
 ///
 /// When the pattern does not match, this falls back to the general parser rather than returning

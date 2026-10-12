@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use sha1::{Digest as _, Sha1};
 use xpath_eval::{Expr, Node as _, Value};
 
-use super::date::{parse_date, parse_millis, parse_with_php_format};
+use super::date::scraped_timestamp;
 use super::dom::{Doc, NodeRef};
 use crate::error::FeedError;
 use crate::raw::{FeedFormat, RawFeed, RawItem, RawThumbnail};
@@ -155,7 +155,7 @@ fn scrape_item(doc: &Doc, map: &Compiled, node: NodeRef<'_>) -> Result<Option<Ra
         guid_is_permalink: false,
         title,
         link,
-        date: timestamp.and_then(|value| date(&value, &map.time_format)),
+        date: timestamp.and_then(|value| scraped_timestamp(&value, &map.time_format)),
         updated: None,
         content_html: content,
         content_text: None,
@@ -182,26 +182,6 @@ fn synthetic_guid(title: &str, content: &str, link: &str) -> String {
     digest.update(content.as_bytes());
     digest.update(link.as_bytes());
     format!("urn:sha1:{}", hex::encode(digest.finalize()))
-}
-
-/// Parses a scraped timestamp.
-///
-/// With no `itemTimeFormat` the value goes through the same heuristic parser the feed parsers use,
-/// which handles RFC 822, RFC 3339, bare unix seconds and a dozen more. With a format, that format
-/// decides. `U` is special-cased to the epoch parser rather than to a strptime pattern, because
-/// PHP's own special case — "if the format is `U` and the value is longer than ten characters, drop
-/// the last three" — is a millisecond workaround, and the epoch parser already tells seconds from
-/// milliseconds.
-fn date(timestamp: &str, format: &str) -> Option<i64> {
-    match format {
-        "" => parse_date(timestamp),
-        "U" => parse_millis(timestamp).map(seconds),
-        format => parse_with_php_format(timestamp, format).map(seconds),
-    }
-}
-
-fn seconds(millis: i64) -> i64 {
-    millis.div_euclid(1000)
 }
 
 /// Evaluates an expression already wrapped in `normalize-space`, and yields `None` for an empty
@@ -365,12 +345,23 @@ mod tests {
 
     /// The public entry point, which is what the refresh pipeline calls: bytes in, `RawFeed` out.
     fn scrape_html(body: &str, map: &BTreeMap<String, String>) -> Result<RawFeed, FeedError> {
+        entry(body.as_bytes(), FeedKind::HtmlXpath, map)
+    }
+
+    fn entry(
+        body: &[u8],
+        kind: FeedKind,
+        map: &BTreeMap<String, String>,
+    ) -> Result<RawFeed, FeedError> {
         crate::parse::scrape(
-            body.as_bytes(),
-            FeedKind::HtmlXpath,
-            map,
-            "https://e.example/blog/index.html",
-            "Configured name",
+            body,
+            &crate::parse::Scrape {
+                kind,
+                map,
+                x_path_to_json: "",
+                url: "https://e.example/blog/index.html",
+                fallback_title: "Configured name",
+            },
         )
     }
 
@@ -635,21 +626,15 @@ mod tests {
         assert_eq!(feed.items.len(), 2);
         assert_eq!(feed.title.as_deref(), Some("Café & News"));
 
-        // The JSON kinds are not XPath scrapers, and saying so beats a confusing parse error.
+        // The syndication formats go through `parse`, and kind 20 is vestigial: neither is an XPath
+        // scraper, and saying so beats a confusing "unrecognized XML root element <html>".
         for kind in [
             FeedKind::Rss,
+            FeedKind::RssForced,
             FeedKind::JsonFeed,
-            FeedKind::JsonDotNotation,
-            FeedKind::HtmlXpathJsonDotNotation,
+            FeedKind::JsonXpath,
         ] {
-            let err = crate::parse::scrape(
-                PAGE.as_bytes(),
-                kind,
-                &bridge_map(),
-                "https://e.example/",
-                "name",
-            )
-            .unwrap_err();
+            let err = entry(PAGE.as_bytes(), kind, &bridge_map()).unwrap_err();
             assert!(
                 matches!(err, FeedError::UnsupportedKind(_)),
                 "{kind:?}: {err}"
@@ -657,25 +642,16 @@ mod tests {
         }
 
         // An empty body is not a configuration problem.
-        let err = crate::parse::scrape(
-            b"",
-            FeedKind::HtmlXpath,
-            &bridge_map(),
-            "https://e.example/",
-            "name",
-        )
-        .unwrap_err();
+        let err = entry(b"", FeedKind::HtmlXpath, &bridge_map()).unwrap_err();
         assert!(matches!(err, FeedError::Empty), "{err}");
     }
 
     #[test]
     fn xml_scraping_through_the_public_entry_point_rejects_malformed_bytes() {
-        let err = crate::parse::scrape(
+        let err = entry(
             b"<catalog><entry>",
             FeedKind::XmlXpath,
             &BTreeMap::from([("item".to_owned(), "//entry".to_owned())]),
-            "https://e.example/c.xml",
-            "name",
         )
         .unwrap_err();
         assert!(matches!(err, FeedError::Parse(_)), "{err}");
