@@ -7,6 +7,7 @@
 pub mod discovery;
 pub mod entities;
 pub mod error;
+pub mod fulltext;
 pub mod guid;
 pub mod hash;
 pub mod http;
@@ -17,9 +18,10 @@ pub mod raw;
 pub mod sanitize;
 pub mod text;
 
-pub use discovery::{discover, Candidate, Discovered, Probe, Source};
+pub use discovery::{discover, Candidate, Discovered, Source};
 pub use entities::{encode_specials, html_only_entity_decode};
 pub use error::FeedError;
+pub use fulltext::Extracted;
 pub use guid::{decide_guid, load_guids, GuidInput, GuidResolution, UnicityCriteria};
 pub use hash::{content_hash, content_hash_hex, HashInput};
 pub use http::{FetchOutcome, FetchRequest, FetchedBody, Fetcher};
