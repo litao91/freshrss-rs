@@ -11,6 +11,7 @@ pub mod hash;
 pub mod kind;
 pub mod parse;
 pub mod raw;
+pub mod sanitize;
 pub mod text;
 
 pub use entities::{encode_specials, html_only_entity_decode};
@@ -20,3 +21,4 @@ pub use hash::{content_hash, content_hash_hex, HashInput};
 pub use kind::FeedKind;
 pub use parse::parse as parse_feed;
 pub use raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};
+pub use sanitize::{sanitize_html, SanitizeOptions};
