@@ -9,6 +9,7 @@ pub mod error;
 pub mod guid;
 pub mod hash;
 pub mod kind;
+pub mod parse;
 pub mod raw;
 pub mod text;
 
@@ -17,4 +18,5 @@ pub use error::FeedError;
 pub use guid::{decide_guid, load_guids, GuidInput, GuidResolution, UnicityCriteria};
 pub use hash::{content_hash, content_hash_hex, HashInput};
 pub use kind::FeedKind;
+pub use parse::parse as parse_feed;
 pub use raw::{FeedFormat, RawEnclosure, RawFeed, RawItem, RawThumbnail};

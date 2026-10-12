@@ -77,6 +77,88 @@ fn entity_name(bytes: &[u8]) -> Option<&[u8]> {
     Some(&rest[..len])
 }
 
+/// Resolves the five XML entities and numeric character references, and leaves everything else
+/// verbatim.
+///
+/// This is deliberately *not* `quick_xml::escape::unescape`, which errors on an unrecognized name.
+/// Real feeds carry HTML-only entities (`&eacute;`) inside XML text, and that is a parse failure to
+/// a strict unescaper. Here it is passed through untouched so [`html_only_entity_decode`] — which
+/// knows the HTML table — can resolve it one step later. Being total is the point: a single odd
+/// entity must never cost us a whole article body.
+pub fn xml_unescape(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('&') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut resolved_any = false;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+
+        // A reference must terminate with `;` before any whitespace or `<`, per XML.
+        let semi = after
+            .find(';')
+            .filter(|end| !after[..*end].bytes().any(|b| b.is_ascii_whitespace() || b == b'<'));
+
+        match semi {
+            Some(0) => {
+                // `&;` is not a reference.
+                out.push('&');
+                rest = after;
+            }
+            Some(end) => {
+                let body = &after[..end];
+                match resolve_xml_reference(body) {
+                    Some(value) => {
+                        out.push_str(&value);
+                        resolved_any = true;
+                    }
+                    // An HTML-only name: leave `&eacute;` exactly as it was.
+                    None => {
+                        out.push('&');
+                        out.push_str(body);
+                        out.push(';');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+
+    out.push_str(rest);
+    if resolved_any {
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// Resolves one XML reference body (the part between `&` and `;`).
+fn resolve_xml_reference(body: &str) -> Option<String> {
+    match body {
+        "amp" => return Some("&".into()),
+        "lt" => return Some("<".into()),
+        "gt" => return Some(">".into()),
+        "quot" => return Some("\"".into()),
+        "apos" => return Some("'".into()),
+        _ => {}
+    }
+    let digits = body.strip_prefix('#')?;
+    let code = match digits.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => digits.parse::<u32>().ok()?,
+    };
+    // `char::from_u32` already rejects surrogates and anything past U+10FFFF, which XML also does.
+    char::from_u32(code).map(|c| c.to_string())
+}
+
 /// Escapes the five XML specials, for the places that need to emit text into markup.
 ///
 /// Note this is the *inverse* of [`html_only_entity_decode`] only for those five; the HTML-only
@@ -174,5 +256,67 @@ mod tests {
         assert_eq!(html_only_entity_decode(""), "");
         assert_eq!(html_only_entity_decode("&"), "&");
         assert_eq!(html_only_entity_decode("&&&&"), "&&&&");
+    }
+
+    // --- xml_unescape ------------------------------------------------------
+
+    #[test]
+    fn resolves_the_five_predefined_entities() {
+        assert_eq!(xml_unescape("&amp;&lt;&gt;&quot;&apos;"), "&<>\"'");
+        assert_eq!(xml_unescape("a &lt; b &amp;&amp; c &gt; d"), "a < b && c > d");
+    }
+
+    #[test]
+    fn resolves_numeric_references_in_both_bases() {
+        assert_eq!(xml_unescape("&#233;&#x65;&#XE9;"), "éeé");
+        assert_eq!(xml_unescape("&#8212;"), "\u{2014}");
+        assert_eq!(xml_unescape("&#10;"), "\n");
+    }
+
+    #[test]
+    fn leaves_html_only_names_for_the_next_pass() {
+        // This is the whole reason the function exists: a strict unescaper errors here.
+        assert_eq!(xml_unescape("Caf&eacute; &mdash; x"), "Caf&eacute; &mdash; x");
+        assert_eq!(
+            html_only_entity_decode(&xml_unescape("&lt;b&gt;Caf&eacute;&lt;/b&gt;")),
+            "<b>Café</b>"
+        );
+    }
+
+    #[test]
+    fn invalid_references_are_left_verbatim() {
+        assert_eq!(xml_unescape("&;"), "&;");
+        assert_eq!(xml_unescape("&#;"), "&#;");
+        assert_eq!(xml_unescape("&#xZZ;"), "&#xZZ;");
+        // A surrogate has no character representation.
+        assert_eq!(xml_unescape("&#xD800;"), "&#xD800;");
+        // Beyond the Unicode range.
+        assert_eq!(xml_unescape("&#x110000;"), "&#x110000;");
+        // An unterminated reference stops being a reference at whitespace.
+        assert_eq!(xml_unescape("&amp here;"), "&amp here;");
+        assert_eq!(xml_unescape("&lt;p&gt;;"), "<p>;");
+    }
+
+    #[test]
+    fn a_bare_ampersand_survives() {
+        assert_eq!(xml_unescape("Tom & Jerry"), "Tom & Jerry");
+        assert_eq!(xml_unescape("a & b & c"), "a & b & c");
+        assert_eq!(xml_unescape("&"), "&");
+    }
+
+    #[test]
+    fn borrows_when_there_is_nothing_to_resolve() {
+        let text = String::from("Caf&eacute; and a bare & sign");
+        let out = xml_unescape(&text);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert!(std::ptr::eq(out.as_ptr(), text.as_ptr()));
+    }
+
+    #[test]
+    fn resolution_is_not_recursive() {
+        // `&amp;lt;` must become the text `&lt;`, not `<`. XML forbids recursive expansion and a
+        // feed that wants to display an entity reference depends on it.
+        assert_eq!(xml_unescape("&amp;lt;"), "&lt;");
+        assert_eq!(xml_unescape("&amp;amp;"), "&amp;");
     }
 }
