@@ -2,20 +2,23 @@
 //!
 //! Two properties this module exists to guarantee:
 //!
-//! - **Text comparison goes through `frss_ilike`/`frss_ieq`, never `LIKE`.** SQLite's `LIKE` is
-//!   case-insensitive for ASCII only, so `intitle:ecole` does not match "École". FreshRSS's SQL path
-//!   has that behaviour while its in-memory matcher accent-folds, meaning the same query gives
-//!   different answers depending on whether it ran as a listing or as a filter action. Both backends
-//!   here consult [`crate::normalize::Text`] the same way — folded for containment, stored for a
-//!   regex — so they agree by construction. There is no index cost: a substring search could not use
-//!   one either way.
+//! - **Text comparison goes through `instr()` on the stored fold, never `LIKE`.** SQLite's `LIKE` is
+//!   case-insensitive for ASCII only, so `intitle:ecole` does not match "École", and it would make a
+//!   user's `_` or `%` a wildcard. The searchable columns carry an accent-folded copy written at
+//!   ingest (see the server crate's `db::fold`), the needle is folded at parse time, and `instr` is a
+//!   literal substring test — so SQL and the in-memory matcher agree by construction, which is what
+//!   makes the equivalence test meaningful.
+//! - **Regular expressions are refused here.** SQLite has no regex operator without a user-defined
+//!   function and the driver cannot register one, so a regex predicate is
+//!   [`SearchError::Unsupported`] in a listing. The matcher still evaluates regexes, so filter actions
+//!   keep them; the two backends differ only in that a listing says "no" loudly where a filter action
+//!   answers.
 //! - **Values are always bound, never interpolated.** A search string is untrusted user input that
 //!   ends up in a `WHERE` clause; the only difference between this being safe and being an injection
 //!   hole is that every literal here is a `?`.
 
 use crate::ast::{DateField, DateRange, Expr, IdSet, Op, Pred, QueryRef, TextPat};
 use crate::error::SearchError;
-use crate::regex::Pattern;
 
 /// What the compiler needs to know about the query it is being spliced into.
 #[derive(Debug, Clone)]
@@ -144,10 +147,10 @@ fn compile_leaf(preds: &[Pred], ctx: &SqlCtx<'_>) -> Result<Fragment, SearchErro
 
 fn compile_pred(pred: &Pred, ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> {
     let a = ctx.alias;
-    Ok(match pred {
-        Pred::EntryIds { ids, negated } => id_condition(&format!("{a}.id"), ids, *negated),
-        Pred::FeedIds { ids, negated } => id_condition(&format!("{a}.id_feed"), ids, *negated),
-        Pred::CategoryIds { ids, negated } => category_condition(a, ids, *negated),
+    match pred {
+        Pred::EntryIds { ids, negated } => Ok(id_condition(&format!("{a}.id"), ids, *negated)),
+        Pred::FeedIds { ids, negated } => Ok(id_condition(&format!("{a}.id_feed"), ids, *negated)),
+        Pred::CategoryIds { ids, negated } => Ok(category_condition(a, ids, *negated)),
         Pred::Title { pat, negated } => text_condition(&format!("{a}.title"), pat, *negated),
         Pred::Content { pat, negated } => text_condition(&format!("{a}.content"), pat, *negated),
         Pred::FreeText { pat, negated } => free_text_condition(
@@ -159,20 +162,18 @@ fn compile_pred(pred: &Pred, ctx: &SqlCtx<'_>) -> Result<Fragment, SearchError> 
         Pred::Author { pat, negated } => text_condition(&format!("{a}.author"), pat, *negated),
         Pred::Url { pat, negated } => text_condition(&format!("{a}.link"), pat, *negated),
         Pred::Tag { pat, negated } => tag_condition(&format!("{a}.tags"), pat, *negated),
-        Pred::LabelIds { ids, negated } => label_condition(ctx, ids, *negated)?,
-        Pred::LabelNames { names, negated } => label_name_condition(ctx, names, *negated)?,
+        Pred::LabelIds { ids, negated } => label_condition(ctx, ids, *negated),
+        Pred::LabelNames { names, negated } => label_name_condition(ctx, names, *negated),
         Pred::Date {
             field,
             range,
             negated,
-        } => date_condition(a, *field, *range, *negated),
-        Pred::SavedQuery { target, .. } => {
-            return Err(SearchError::Unsupported(match target {
-                QueryRef::Ids(_) => "S:".to_owned(),
-                QueryRef::Names(_) => "search:".to_owned(),
-            }))
-        }
-    })
+        } => Ok(date_condition(a, *field, *range, *negated)),
+        Pred::SavedQuery { target, .. } => Err(SearchError::Unsupported(match target {
+            QueryRef::Ids(_) => "S:".to_owned(),
+            QueryRef::Names(_) => "search:".to_owned(),
+        })),
+    }
 }
 
 /// `col IN (…)` / `col NOT IN (…)`, with the empty list collapsed.
@@ -214,20 +215,23 @@ fn category_condition(alias: &str, ids: &[i64], negated: bool) -> Fragment {
 ///
 /// Both UDFs are registered with `SQLITE_DETERMINISTIC` and take `(text, pattern)` in that order,
 /// which is the reverse of SQLite's infix operators — worth remembering when reading the SQL.
-fn text_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
-    let not = if negated { "NOT " } else { "" };
+fn text_condition(col: &str, pat: &TextPat, negated: bool) -> Result<Fragment, SearchError> {
+    // The comparison is against the stored fold of the column, so the needle — folded at parse time —
+    // meets it on equal terms. `instr` rather than `LIKE` because LIKE would make a user's `_` or `%`
+    // a wildcard; `instr` is a literal substring test and nothing else.
+    let cmp = if negated { "= 0" } else { "> 0" };
     match pat {
-        // `frss_ilike` is a literal substring test over accent-folded values, so the needle is bound
-        // as-is. It is *not* SQL `LIKE`: binding `"%a_b%"` here would make a user's underscore match
-        // any character, which is what FreshRSS does and what the in-memory matcher does not.
-        TextPat::Contains(needle) => Fragment {
-            sql: format!("{not}frss_ilike({col}, ?)"),
+        TextPat::Contains(needle) => Ok(Fragment {
+            sql: format!("instr({col}_folded, ?) {cmp}"),
             params: vec![Param::Text(needle.clone())],
-        },
-        TextPat::Regex(re) => Fragment {
-            sql: format!("{not}frss_regexp({col}, ?)"),
-            params: vec![Param::Text(re.inline())],
-        },
+        }),
+        // SQLite has no regex operator without a user-defined function, and the driver cannot
+        // register one. The matcher still evaluates regexes, so filter actions keep them; a listing
+        // says so plainly rather than quietly matching nothing.
+        TextPat::Regex(re) => Err(SearchError::Unsupported(format!(
+            "the regular expression /{}/ in a listing query",
+            re.source
+        ))),
     }
 }
 
@@ -236,14 +240,19 @@ fn text_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
 /// Negation has to be pushed inside: `NOT (title LIKE x OR content LIKE x)` is
 /// `title NOT LIKE x AND content NOT LIKE x`. Emitting the `NOT` outside would be correct too, but
 /// this form is what FreshRSS produces and it keeps the two branches independently indexable.
-fn free_text_condition(title: &str, content: &str, pat: &TextPat, negated: bool) -> Fragment {
-    let a = text_condition(title, pat, negated);
-    let b = text_condition(content, pat, negated);
+fn free_text_condition(
+    title: &str,
+    content: &str,
+    pat: &TextPat,
+    negated: bool,
+) -> Result<Fragment, SearchError> {
+    let a = text_condition(title, pat, negated)?;
+    let b = text_condition(content, pat, negated)?;
     let op = if negated { " AND " } else { " OR " };
-    Fragment {
+    Ok(Fragment {
         sql: format!("({a}{op}{b})", a = a.sql, b = b.sql),
         params: [a.params, b.params].concat(),
-    }
+    })
 }
 
 /// A `#tag` predicate.
@@ -252,38 +261,20 @@ fn free_text_condition(title: &str, content: &str, pat: &TextPat, negated: bool)
 /// `"#needle #"`. Without the trailing marker `#ru` would match the tag `rust`; without the leading
 /// one `#st` would match it too. The in-memory matcher gets the same rule by splitting the column and
 /// comparing whole tags.
-fn tag_condition(col: &str, pat: &TextPat, negated: bool) -> Fragment {
-    let not = if negated { "NOT " } else { "" };
+fn tag_condition(col: &str, pat: &TextPat, negated: bool) -> Result<Fragment, SearchError> {
+    let cmp = if negated { "= 0" } else { "> 0" };
     match pat {
-        TextPat::Contains(needle) => Fragment {
-            sql: format!("{not}frss_ilike(TRIM({col}) || ' #', ?)"),
+        // Both markers are load-bearing: the trailing " #" stops `#ru` matching the tag `rust`, and
+        // the leading one stops `#st` matching it too. The matcher gets the same rule by splitting the
+        // column and comparing whole tags.
+        TextPat::Contains(needle) => Ok(Fragment {
+            sql: format!("instr(TRIM({col}_folded) || ' #', ?) {cmp}"),
             params: vec![Param::Text(format!("#{needle} #"))],
-        },
-        TextPat::Regex(re) => {
-            // Rewrite `#a #b` into `\na\nb` so `^` and `$` anchor a single tag, which is what a
-            // regex over tags means to someone writing one. FreshRSS does the same REPLACE chain, and
-            // the matcher gets it by evaluating the pattern against each tag on its own.
-            Fragment {
-                sql: format!(
-                    "{not}frss_regexp(REPLACE(REPLACE({col}, ' #', '#'), '#', CHAR(10)), ?)"
-                ),
-                params: vec![Param::Text(per_tag_line(re))],
-            }
-        }
-    }
-}
-
-/// Forces the multiline flag onto a pattern that will be matched against the one-tag-per-line
-/// rewrite of the tags column.
-///
-/// Without it `^` means "the start of the whole column", and since the rewrite begins with a newline
-/// `#/^rust/` would match nothing at all. The matcher needs no such flag because it never joins the
-/// tags together in the first place.
-fn per_tag_line(re: &Pattern) -> String {
-    if re.flags.multiline {
-        re.inline()
-    } else {
-        format!("(?m){}", re.inline())
+        }),
+        TextPat::Regex(re) => Err(SearchError::Unsupported(format!(
+            "the regular expression /{}/ in a listing query",
+            re.source
+        ))),
     }
 }
 
@@ -346,12 +337,19 @@ fn label_name_condition(
     let mut clauses = Vec::with_capacity(names.len());
     let mut params = Vec::with_capacity(names.len());
     for name in names {
-        let (function, param) = match name {
-            TextPat::Contains(needle) => ("frss_ieq", Param::Text(needle.clone())),
-            TextPat::Regex(re) => ("frss_regexp", Param::Text(re.inline())),
-        };
-        clauses.push(format!("{function}(t.name, ?)"));
-        params.push(param);
+        match name {
+            // Whole-name equality on the stored fold: `labels:todo` must not match a label "todos".
+            TextPat::Contains(needle) => {
+                clauses.push("t.name_folded = ?".to_owned());
+                params.push(Param::Text(needle.clone()));
+            }
+            TextPat::Regex(re) => {
+                return Err(SearchError::Unsupported(format!(
+                    "the regular expression /{}/ in a listing query",
+                    re.source
+                )))
+            }
+        }
     }
 
     Ok(Fragment {
@@ -453,6 +451,10 @@ mod tests {
         compile(&parse(q, NOW).unwrap(), &ctx()).unwrap()
     }
 
+    fn compile_err(q: &str) -> SearchError {
+        compile(&parse(q, NOW).unwrap(), &ctx()).unwrap_err()
+    }
+
     fn contains(needle: &str) -> TextPat {
         TextPat::contains(needle)
     }
@@ -533,7 +535,7 @@ mod tests {
             "date:2006-01-02/2006-01-05 pubdate:P1W",
             "labels:x,y #t1 #t2",
             "l:1,2 l:*",
-            "intitle:/re/ intext:/re2/i",
+            "intitle:a #t labels:x,y",
         ] {
             let f = compile_query(q);
             assert_eq!(
@@ -548,15 +550,24 @@ mod tests {
     // --- text predicates ---------------------------------------------------
 
     #[test]
-    fn a_substring_uses_frss_ilike_not_like() {
+    fn a_substring_is_an_instr_over_the_folded_column() {
         let f = compile_query("intitle:rust");
-        assert_eq!(f.sql, "frss_ilike(e.title, ?)");
-        // Bound bare, not wrapped in `%…%`: `frss_ilike` is a literal substring test.
+        assert_eq!(f.sql, "instr(e.title_folded, ?) > 0");
+        // Bound bare: `instr` is a literal substring test, so a user's `_` or `%` cannot become a
+        // wildcard the way it would under LIKE.
         assert_eq!(f.params, vec![Param::Text("rust".into())]);
-        assert!(
-            !f.sql.contains(" LIKE "),
-            "LIKE is ASCII-only case-insensitive"
-        );
+        assert!(!f.sql.contains("LIKE"), "LIKE is ASCII-only case-insensitive");
+    }
+
+    #[test]
+    fn a_regex_is_refused_in_a_listing() {
+        // SQLite has no regex operator without a user-defined function, and the driver cannot
+        // register one. Saying so is better than matching nothing: the reader can show the message,
+        // and filter actions still evaluate regexes through the matcher.
+        for q in ["intitle:/^ru.t$/i", "-intitle:/x/", "#/^ru/", "labels:/to.*/"] {
+            let e = compile_err(q);
+            assert!(matches!(&e, SearchError::Unsupported(what) if what.contains("regular expression")), "{q}: {e}");
+        }
     }
 
     #[test]
@@ -590,7 +601,7 @@ mod tests {
         let f = compile_query("rust");
         assert_eq!(
             f.sql,
-            "(frss_ilike(e.title, ?) OR frss_ilike(e.content, ?))"
+            "(instr(e.title_folded, ?) > 0 OR instr(e.content_folded, ?) > 0)"
         );
         assert_eq!(f.params.len(), 2, "the needle is bound twice");
         assert_eq!(f.params[0], f.params[1]);
@@ -601,23 +612,8 @@ mod tests {
         let f = compile_query("-rust");
         assert_eq!(
             f.sql,
-            "(NOT frss_ilike(e.title, ?) AND NOT frss_ilike(e.content, ?))"
+            "(instr(e.title_folded, ?) = 0 AND instr(e.content_folded, ?) = 0)"
         );
-    }
-
-    #[test]
-    fn a_regex_uses_frss_regexp_and_inlines_its_flags() {
-        let f = compile_query("intitle:/^ru.t$/i");
-        assert_eq!(f.sql, "frss_regexp(e.title, ?)");
-        // The PHP spelling `/^ru.t$/i` is what `render()` produces for display; binding that would
-        // compile a pattern matching the literal text "/^ru.t$/i".
-        assert_eq!(f.params, vec![Param::Text("(?i)^ru.t$".into())]);
-    }
-
-    #[test]
-    fn a_negated_regex() {
-        let f = compile_query("-intitle:/x/");
-        assert_eq!(f.sql, "NOT frss_regexp(e.title, ?)");
     }
 
     #[test]
@@ -633,7 +629,7 @@ mod tests {
     #[test]
     fn a_tag_matches_whole_tags_only() {
         let f = compile_query("#rust");
-        assert_eq!(f.sql, "frss_ilike(TRIM(e.tags) || ' #', ?)");
+        assert_eq!(f.sql, "instr(TRIM(e.tags_folded) || ' #', ?) > 0");
         // Both markers are load-bearing: the trailing " #" stops `#ru` matching the tag `rust`, and
         // the leading one stops `#st` matching it too.
         assert_eq!(f.params, vec![Param::Text("#rust #".into())]);
@@ -649,38 +645,28 @@ mod tests {
                 other => panic!("{other:?}"),
             };
             assert!(
-                !crate::normalize::ilike(column, needle),
+                !column.contains(needle),
                 "{q} bound {needle:?}, which occurs in {column:?}"
             );
         }
-        assert!(crate::normalize::ilike(column, "#rust #"));
-        assert!(crate::normalize::ilike("#ru #axum #", "#ru #"));
+        assert!(column.contains("#rust #"));
+        assert!("#ru #axum #".contains("#ru #"));
     }
 
     #[test]
     fn a_negated_tag() {
         let f = compile_query("-#rust");
-        assert_eq!(f.sql, "NOT frss_ilike(TRIM(e.tags) || ' #', ?)");
+        assert_eq!(f.sql, "instr(TRIM(e.tags_folded) || ' #', ?) = 0");
     }
 
     #[test]
-    fn a_tag_regex_anchors_per_tag() {
-        let f = compile_query("#/^ru/");
-        assert!(
-            f.sql
-                .contains("REPLACE(REPLACE(e.tags, ' #', '#'), '#', CHAR(10))"),
-            "{}",
-            f.sql
-        );
-        // `(?m)` is forced on: the rewrite puts one tag per line and starts with a newline, so
-        // without it `^` means the start of the whole column and this pattern matches nothing.
-        assert_eq!(f.params, vec![Param::Text("(?m)^ru".into())]);
-    }
-
-    #[test]
-    fn a_tag_regex_that_already_asked_for_multiline_is_not_prefixed_twice() {
-        let f = compile_query("#/^ru$/m");
-        assert_eq!(f.params, vec![Param::Text("(?m)^ru$".into())]);
+    fn a_tag_regex_is_refused_like_any_other() {
+        // The one-tag-per-line rewrite existed only to give a regex something to anchor against; with
+        // regexes out of listing SQL there is nothing left to rewrite.
+        assert!(matches!(
+            compile_err("#/^ru/"),
+            SearchError::Unsupported(_)
+        ));
     }
 
     // --- ids ---------------------------------------------------------------
@@ -757,7 +743,7 @@ mod tests {
         // `frss_ieq` is an accent-folded equality — one bound value per name, and the reason labels
         // do not use `frss_ilike`, which would let `labels:todo` match a label called "todos".
         assert_eq!(f.params, vec![Param::Text("todo".into())]);
-        assert!(f.sql.contains("frss_ieq(t.name, ?)"), "{}", f.sql);
+        assert!(f.sql.contains("t.name_folded = ?"), "{}", f.sql);
         assert!(
             !crate::normalize::ieq("todos", "todo"),
             "a prefix must not match"
@@ -939,7 +925,7 @@ mod tests {
         let f = compile_query("intitle:a intext:b");
         assert_eq!(
             f.sql,
-            "(frss_ilike(e.title, ?)) AND (frss_ilike(e.content, ?))"
+            "(instr(e.title_folded, ?) > 0) AND (instr(e.content_folded, ?) > 0)"
         );
     }
 

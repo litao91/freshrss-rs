@@ -107,10 +107,6 @@ const TEXT_NEEDLES: &[&str] = &[
     "body", "ada", "lovelace", "hopper", "bot", "example.com", "other.test", "the", "",
 ];
 
-/// Regex needles. Few and simple on purpose: each compiles a `fancy-regex`, and a strategy that
-/// produced thousands of distinct patterns would spend the whole run inside the regex compiler.
-const REGEX_NEEDLES: &[&str] = &["^rust", "axum$", "ru.t", "^a", "100|caf"];
-
 // ---------------------------------------------------------------------------
 // The corpus
 // ---------------------------------------------------------------------------
@@ -385,10 +381,13 @@ fn build_harness() -> Harness {
             }
 
             let mut insert_entry = conn.prepare_cached(
+                // The folded columns are what the SQL backend compares against, so a harness that
+                // skipped them would be comparing the matcher against empty strings.
                 "INSERT INTO entry
                    (id, id_user, guid, title, author, content, link, date, lastSeen,
-                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags,
+                    title_folded, content_folded, author_folded, link_folded, tags_folded)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             )?;
 
             let mut rows = Vec::new();
@@ -426,6 +425,11 @@ fn build_harness() -> Harness {
                     is_favorite,
                     feed_id,
                     tags,
+                    freshrss_search::fold(title),
+                    freshrss_search::fold(content),
+                    freshrss_search::fold(author),
+                    freshrss_search::fold(link),
+                    freshrss_search::fold(tags),
                 ])?;
 
                 // Zero to four labels per row, with a fifth of the corpus carrying none at all so
@@ -476,8 +480,10 @@ fn build_harness() -> Harness {
                 conn.execute(
                     "INSERT INTO entry
                        (id, id_user, guid, title, author, content, link, date, lastSeen,
-                        hash, is_read, is_favorite, id_feed, tags)
-                     VALUES (?1,?2,?3,?4,'Ada Lovelace',' ',?5,?6,?6,?7,0,0,?8,'#rust #todo')",
+                        hash, is_read, is_favorite, id_feed, tags,
+                        title_folded, content_folded, author_folded, link_folded, tags_folded)
+                     VALUES (?1,?2,?3,?4,'Ada Lovelace',' ',?5,?6,?6,?7,0,0,?8,'#rust #todo',
+                             ?9, '', 'ada lovelace', ?10, '#rust #todo')",
                     params![
                         NOW * 1_000_000 + (i as i64) * INGESTION_SPAN * 1_000_000 + 1,
                         other_user,
@@ -487,6 +493,8 @@ fn build_harness() -> Harness {
                         PUBLICATION_EPOCH + (i as i64) * PUBLICATION_SPAN,
                         vec![8u8; 16],
                         foreign.id,
+                        freshrss_search::fold(title),
+                        format!("https://other.test/{i}"),
                     ],
                 )?;
             }
@@ -517,17 +525,14 @@ fn build_harness() -> Harness {
 
 /// A text pattern drawn from the corpus.
 ///
-/// Containment dominates regex because a regex compiles a `fancy-regex` per pattern and the point of
-/// the run is the comparison, not the compiler.
+/// Containment only: the SQL backend refuses regexes outright (SQLite has no regex operator without a
+/// user-defined function), so a generated regex would turn every case into an error assertion. The
+/// regex half of the matcher is covered by `a_regex_is_refused_by_sql_but_answered_by_the_matcher`
+/// below and by the matcher's own unit tests.
 fn text_pat() -> BoxedStrategy<TextPat> {
-    prop_oneof![
-        9 => prop::sample::select(TEXT_NEEDLES.to_vec())
-            .prop_map(TextPat::contains),
-        1 => prop::sample::select(REGEX_NEEDLES.to_vec()).prop_map(|source| {
-            TextPat::Regex(Pattern::parse(&format!("/{source}/")).expect("needle is a valid regex"))
-        }),
-    ]
-    .boxed()
+    prop::sample::select(TEXT_NEEDLES.to_vec())
+        .prop_map(TextPat::contains)
+        .boxed()
 }
 
 fn date_field() -> BoxedStrategy<DateField> {
@@ -728,6 +733,82 @@ fn the_vocabulary_splits_the_corpus() {
     }
 }
 
+/// A regex is refused by the SQL backend and answered by the matcher.
+///
+/// This is the one place the two backends now disagree on purpose: SQLite has no regex operator
+/// without a user-defined function and the driver cannot register one, so a listing says "no, and
+/// here is why" while a filter action — which runs before an article has an id, over the parsed feed —
+/// still evaluates the pattern. The divergence is a loud error against an answer, never two different
+/// answers, which is the shape it has to keep.
+#[test]
+fn a_regex_is_refused_by_sql_but_answered_by_the_matcher() {
+    let h = &HARNESS;
+
+    let cases: &[(&str, Expr)] = &[
+        (
+            "anchored at the start",
+            Expr::pred(Pred::Title {
+                pat: TextPat::Regex(Pattern::parse("/^rust/i").unwrap()),
+                negated: false,
+            }),
+        ),
+        (
+            "case-insensitive over an accent",
+            Expr::pred(Pred::Title {
+                pat: TextPat::Regex(Pattern::parse("/CAFÉ/i").unwrap()),
+                negated: false,
+            }),
+        ),
+        (
+            "negated",
+            Expr::pred(Pred::Title {
+                pat: TextPat::Regex(Pattern::parse("/ru.t/").unwrap()),
+                negated: true,
+            }),
+        ),
+        (
+            "over the body",
+            Expr::pred(Pred::Content {
+                pat: TextPat::Regex(Pattern::parse("/axum/").unwrap()),
+                negated: false,
+            }),
+        ),
+        (
+            "over tags, per tag",
+            Expr::pred(Pred::Tag {
+                pat: TextPat::Regex(Pattern::parse("/^rus/").unwrap()),
+                negated: false,
+            }),
+        ),
+    ];
+
+    for (name, expr) in cases {
+        let err = compile(expr, &SqlCtx::default()).expect_err("SQL refuses regexes");
+        assert!(
+            matches!(err, freshrss_search::SearchError::Unsupported(_)),
+            "{name}: {err}"
+        );
+
+        // The matcher answers, and for the title cases its answer is checked here against the regex
+        // engine directly rather than against itself.
+        let matched = h.matcher_ids(expr);
+        if let Pred::Title { pat, negated } = &expr.preds()[0] {
+            let TextPat::Regex(re) = pat else { unreachable!() };
+            let expected: BTreeSet<i64> = h
+                .rows
+                .iter()
+                .filter(|row| re.is_match(&row.title) != *negated)
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(matched, expected, "{name}");
+        }
+        assert!(
+            !matched.is_empty(),
+            "{name}: the matcher found nothing, so the case proves little"
+        );
+    }
+}
+
 /// `date:` (ingestion, the id in µs) and `pubdate:` (publication, seconds) select different rows.
 ///
 /// If the two spans ever collapsed onto each other a units bug would cancel out and the property
@@ -809,10 +890,6 @@ fn the_sql_backend_never_crosses_the_user_boundary() {
 fn the_hard_cases_agree() {
     let h = &HARNESS;
     let contains = |pat: &str| TextPat::contains(pat);
-    let regex = |source: &str| {
-        TextPat::Regex(Pattern::parse(&format!("/{source}/i")).expect("needle is a valid regex"))
-    };
-
     let cases: Vec<(&str, Expr)> = vec![
         // `_` and `%` are LIKE wildcards; `frss_ilike` must escape them or `a_b` matches `axum`.
         ("underscore is not a wildcard", Expr::pred(Pred::Title { pat: contains("a_b"), negated: false })),
@@ -821,11 +898,6 @@ fn the_hard_cases_agree() {
         ("folded needle vs accented text", Expr::pred(Pred::Title { pat: contains("ecole"), negated: false })),
         ("accented needle vs accented text", Expr::pred(Pred::Title { pat: contains("école"), negated: false })),
         ("accented needle against the body", Expr::pred(Pred::Content { pat: contains("École"), negated: false })),
-        // A regex runs through `fancy-regex` in the matcher and `frss_regexp` in SQLite — two
-        // different engines over the same folded text.
-        ("regex anchored at the start", Expr::pred(Pred::Title { pat: regex("^rust"), negated: false })),
-        ("regex case-insensitive", Expr::pred(Pred::Title { pat: regex("CAFÉ"), negated: false })),
-        ("negated regex", Expr::pred(Pred::Title { pat: regex("ru.t"), negated: true })),
         // Whole-tag matching: `#rus` must not match `#rust`, but `#rust` must match `#rust #rss`.
         ("whole tag, not a prefix", Expr::pred(Pred::Tag { pat: contains("rus"), negated: false })),
         ("whole tag exact", Expr::pred(Pred::Tag { pat: contains("rust"), negated: false })),

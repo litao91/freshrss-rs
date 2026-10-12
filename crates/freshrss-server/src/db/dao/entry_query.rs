@@ -1417,7 +1417,7 @@ mod tests {
         };
         let built = ids(&q);
         assert!(
-            built.sql.contains("AND ((frss_ilike(e.title, ?)) AND (e.id_feed IN (?)))"),
+            built.sql.contains("AND ((instr(e.title_folded, ?) > 0) AND (e.id_feed IN (?)))"),
             "{}",
             built.sql
         );

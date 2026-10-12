@@ -108,10 +108,13 @@ fn corpus() -> Corpus {
             }
 
             let mut insert = conn.prepare_cached(
+                // The folded columns are what the search SQL reads, so the seed has to write them the
+                // way the DAOs would.
                 "INSERT INTO entry
                    (id, id_user, guid, title, author, content, link, date, lastSeen,
-                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                    lastModified, lastUserModified, hash, is_read, is_favorite, id_feed, tags,
+                    title_folded, content_folded, author_folded, link_folded, tags_folded)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             )?;
 
             for i in 0..ARTICLES {
@@ -143,6 +146,14 @@ fn corpus() -> Corpus {
                     favorite as i64,
                     feed,
                     if i % 4 == 0 { "#rust #rss" } else { "#rust" },
+                    freshrss_search::fold(&title),
+                    freshrss_search::fold(&format!(
+                        "<p>body {i} with {} words</p>",
+                        "filler ".repeat((i % 23) as usize)
+                    )),
+                    freshrss_search::fold(if i % 2 == 0 { "Ada Lovelace" } else { "bot" }),
+                    freshrss_search::fold(&format!("https://example.com/post/{i}")),
+                    freshrss_search::fold(if i % 4 == 0 { "#rust #rss" } else { "#rust" }),
                 ])?;
 
                 if i % 6 == 0 {
@@ -160,8 +171,10 @@ fn corpus() -> Corpus {
                 conn.execute(
                     "INSERT INTO entry
                        (id, id_user, guid, title, author, content, link, date, lastSeen,
-                        hash, is_read, is_favorite, id_feed, tags)
-                     VALUES (?1,?2,?3,?4,'Ada Lovelace','<p>body</p>',?5,?6,?6,?7,0,1,?8,'#rust')",
+                        hash, is_read, is_favorite, id_feed, tags,
+                        title_folded, content_folded, author_folded, link_folded, tags_folded)
+                     VALUES (?1,?2,?3,?4,'Ada Lovelace','<p>body</p>',?5,?6,?6,?7,0,1,?8,'#rust',
+                             ?9, '<p>body</p>', 'ada lovelace', ?10, '#rust')",
                     params![
                         id.micros(),
                         other_user,
@@ -171,6 +184,8 @@ fn corpus() -> Corpus {
                         NOW - 86_400 * 60 + i * 3_600,
                         vec![8u8; 16],
                         bob_feed.id,
+                        freshrss_search::fold(&format!("Article {:03}", i % 17)),
+                        format!("https://other.test/{i}"),
                     ],
                 )?;
             }

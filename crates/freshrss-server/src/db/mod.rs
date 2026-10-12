@@ -12,7 +12,6 @@ pub mod dao;
 pub mod fold;
 pub mod migrate;
 pub mod sql;
-pub mod udf;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +45,6 @@ fn init_connection(conn: &mut Connection, busy_timeout_ms: u32, wal: bool) -> ru
     // Negative value = KiB, so this is a 16 MiB page cache.
     conn.pragma_update(None, "cache_size", -16_000)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
-    udf::register(conn)?;
     Ok(())
 }
 
@@ -335,13 +333,20 @@ mod tests {
     }
 
     #[test]
-    fn udfs_are_available_on_pooled_connections() {
+    fn every_pooled_connection_sees_the_same_schema() {
+        // The pool hands out several connections; a migration or pragma applied to only the first
+        // would show up as a missing table on the second request.
         let db = Db::in_memory().expect("open");
-        let hit: i64 = db
-            .blocking_with(|c| {
-                Ok(c.query_row("SELECT frss_ilike('École', 'ecole')", [], |r| r.get(0))?)
-            })
-            .expect("udf");
-        assert_eq!(hit, 1);
+        db.blocking_with(|c| {
+            c.execute("INSERT INTO meta (key, value) VALUES ('probe', '1')", [])?;
+            Ok(())
+        })
+        .expect("write");
+        for _ in 0..4 {
+            let v: String = db
+                .blocking_with(|c| Ok(c.query_row("SELECT value FROM meta WHERE key = 'probe'", [], |r| r.get(0))?))
+                .expect("read");
+            assert_eq!(v, "1");
+        }
     }
 }
