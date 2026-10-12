@@ -121,7 +121,10 @@ mod tests {
         assert!(ilike("100% sure", "100%"));
         assert!(!ilike("100 things", "100%"), "`%` is not a run-of-anything");
         assert!(ilike("a_b underscore", "a_b"));
-        assert!(!ilike("axb", "a_b"), "`_` is not a single-character wildcard");
+        assert!(
+            !ilike("axb", "a_b"),
+            "`_` is not a single-character wildcard"
+        );
     }
 
     #[test]
@@ -130,7 +133,10 @@ mod tests {
         assert!(ilike("hello", "hello"));
         assert!(!ilike("hello", "hellp"));
         assert!(!ilike("hell", "hello"));
-        assert!(ilike("anything", ""), "the empty needle is contained everywhere");
+        assert!(
+            ilike("anything", ""),
+            "the empty needle is contained everywhere"
+        );
     }
 
     #[test]

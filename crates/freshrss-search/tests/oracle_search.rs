@@ -1461,12 +1461,7 @@ static PARENTHESES_ROWS: &[Row] = &[
         &[],
     ),
     // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
-    (
-        "!/^(ab|cd)/",
-        "Leaf[!free]",
-        "-/^(ab|cd)/",
-        &[],
-    ),
+    ("!/^(ab|cd)/", "Leaf[!free]", "-/^(ab|cd)/", &[]),
     // Divergence: regexes are refused in listing SQL; the matcher still evaluates them for filter actions.
     (
         "intitle:/^(ab|cd)/",
@@ -1534,8 +1529,7 @@ fn parentheses_rows() {
     // Free text binds the same needle twice: once for the title, once for the body.
     let f = fragment("ab");
     assert_eq!(
-        f.sql,
-        "(instr(e.title_folded, ?) > 0 OR instr(e.content_folded, ?) > 0)",
+        f.sql, "(instr(e.title_folded, ?) > 0 OR instr(e.content_folded, ?) > 0)",
         "{}",
         f.sql
     );
@@ -1861,7 +1855,12 @@ static REGEX_ROWS: &[Row] = &[
         &[t("/shorts/"), t("/spam/")],
     ),
     // Regex with literal 'or'
-    ("intitle:/^A or B/i", "Leaf[intitle]", "intitle:/^A or B/i", &[]),
+    (
+        "intitle:/^A or B/i",
+        "Leaf[intitle]",
+        "intitle:/^A or B/i",
+        &[],
+    ),
     // Regex with literal 'OR' — inside the delimiters it is not an operator, and the pattern's own
     // case is preserved because a regex is matched against the stored text, not its folded form.
     (

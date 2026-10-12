@@ -375,14 +375,8 @@ mod tests {
     fn the_multiline_flag_changes_what_anchors_mean() {
         let single = Pattern::parse("/^b/").unwrap();
         let multi = Pattern::parse("/^b/m").unwrap();
-        assert!(
-            !single.is_match("a\nb"),
-            "without m, ^ is the string start"
-        );
-        assert!(
-            multi.is_match("a\nb"),
-            "with m, ^ matches a line start"
-        );
+        assert!(!single.is_match("a\nb"), "without m, ^ is the string start");
+        assert!(multi.is_match("a\nb"), "with m, ^ matches a line start");
     }
 
     #[test]

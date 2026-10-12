@@ -521,7 +521,10 @@ mod tests {
         // verdict PHP reaches via `strtotime` returning false.
         for text in ["2014-02-03/é", "aébcdef", "2014—03"] {
             let err = parse(text, NOW).unwrap_err();
-            assert!(matches!(err, SearchError::BadDateInterval { .. }), "{text}: {err}");
+            assert!(
+                matches!(err, SearchError::BadDateInterval { .. }),
+                "{text}: {err}"
+            );
         }
     }
 

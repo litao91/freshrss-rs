@@ -56,11 +56,7 @@ pub trait QueryResolver {
 /// - [`SearchError::BudgetExceeded`] after [`MAX_EXPANSIONS`] opens.
 /// - Any parse error from a saved search's own text, which surfaces as the error it is rather than as
 ///   a broken tree.
-pub fn expand(
-    expr: &Expr,
-    resolver: &dyn QueryResolver,
-    now: i64,
-) -> Result<Expr, SearchError> {
+pub fn expand(expr: &Expr, resolver: &dyn QueryResolver, now: i64) -> Result<Expr, SearchError> {
     let mut state = State {
         resolver,
         now,
@@ -264,14 +260,20 @@ mod tests {
     fn a_query_with_no_reference_is_returned_unchanged() {
         let saved = Saved::default();
         for q in ["rust", "intitle:a f:1", "-(a OR b)", "#tag labels:todo"] {
-            assert_eq!(text(q, &saved), crate::render::render(&parse(q, NOW).unwrap()));
+            assert_eq!(
+                text(q, &saved),
+                crate::render::render(&parse(q, NOW).unwrap())
+            );
         }
     }
 
     #[test]
     fn a_reference_by_name_becomes_the_saved_subtree() {
         let saved = Saved::new(&[(1, "unread-rust", "intitle:rust -author:bot")]);
-        assert_eq!(text("search:unread-rust", &saved), "intitle:rust -author:bot");
+        assert_eq!(
+            text("search:unread-rust", &saved),
+            "intitle:rust -author:bot"
+        );
     }
 
     #[test]
@@ -370,7 +372,10 @@ mod tests {
     fn a_saved_query_that_references_itself_is_a_cycle() {
         let saved = Saved::new(&[(1, "loop", "S:1")]);
         let e = expand_with("S:1", &saved).unwrap_err();
-        assert!(matches!(&e, SearchError::QueryCycle { name } if name == "S:1"), "{e}");
+        assert!(
+            matches!(&e, SearchError::QueryCycle { name } if name == "S:1"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -378,7 +383,10 @@ mod tests {
         let saved = Saved::new(&[(1, "a", "S:2"), (2, "b", "S:3"), (3, "c", "search:a")]);
         let e = expand_with("S:1", &saved).unwrap_err();
         // The name reported is the one that was already open, not the one that closed the loop.
-        assert!(matches!(&e, SearchError::QueryCycle { name } if name == "S:2"), "{e}");
+        assert!(
+            matches!(&e, SearchError::QueryCycle { name } if name == "S:2"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -403,12 +411,12 @@ mod tests {
         // reference on one path. The stack cannot catch this; the budget has to.
         let mut saved = Saved::default();
         let levels = MAX_EXPANSIONS;
-        saved.by_id.insert(levels as i64 + 1, "intitle:leaf".to_owned());
+        saved
+            .by_id
+            .insert(levels as i64 + 1, "intitle:leaf".to_owned());
         for level in (1..=levels).rev() {
             let next = level as i64 + 1;
-            saved
-                .by_id
-                .insert(level as i64, format!("S:{next},{next}"));
+            saved.by_id.insert(level as i64, format!("S:{next},{next}"));
         }
         let e = expand_with("S:1", &saved).unwrap_err();
         assert!(
@@ -423,14 +431,20 @@ mod tests {
     fn a_missing_name_is_an_error_not_a_silent_match_everything() {
         let saved = Saved::new(&[(1, "a", "intitle:one")]);
         let e = expand_with("search:nope", &saved).unwrap_err();
-        assert!(matches!(&e, SearchError::QueryNotFound { name } if name == "search:nope"), "{e}");
+        assert!(
+            matches!(&e, SearchError::QueryNotFound { name } if name == "search:nope"),
+            "{e}"
+        );
     }
 
     #[test]
     fn a_missing_id_is_an_error() {
         let saved = Saved::new(&[(1, "a", "intitle:one")]);
         let e = expand_with("S:99", &saved).unwrap_err();
-        assert!(matches!(&e, SearchError::QueryNotFound { name } if name == "S:99"), "{e}");
+        assert!(
+            matches!(&e, SearchError::QueryNotFound { name } if name == "S:99"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -487,7 +501,10 @@ mod tests {
         ]);
         let expanded = expand_with("S:3 intext:x", &saved).unwrap();
         assert!(
-            expanded.preds().iter().all(|p| !matches!(p, Pred::SavedQuery { .. })),
+            expanded
+                .preds()
+                .iter()
+                .all(|p| !matches!(p, Pred::SavedQuery { .. })),
             "an unexpanded reference survived: {expanded:?}"
         );
         // And both backends can now evaluate it rather than refusing.

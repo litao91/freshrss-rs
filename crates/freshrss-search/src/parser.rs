@@ -670,8 +670,14 @@ mod tests {
             assert!(e.to_string().contains("a search term"), "{q}: {e}");
         }
         // A space is not an operand either, and `intitle: rust` reads as two tokens.
-        assert!(matches!(err("intitle: rust"), SearchError::BadOperand { .. }));
-        assert!(matches!(err(r#"intitle:"""#), SearchError::BadOperand { .. }));
+        assert!(matches!(
+            err("intitle: rust"),
+            SearchError::BadOperand { .. }
+        ));
+        assert!(matches!(
+            err(r#"intitle:"""#),
+            SearchError::BadOperand { .. }
+        ));
     }
 
     #[test]
@@ -686,7 +692,10 @@ mod tests {
         match pred("labels:a,,b") {
             Pred::LabelNames { names, .. } => {
                 assert_eq!(names.len(), 2, "{names:?}");
-                assert!(names.iter().all(|n| n != &TextPat::contains("")), "{names:?}");
+                assert!(
+                    names.iter().all(|n| n != &TextPat::contains("")),
+                    "{names:?}"
+                );
             }
             other => panic!("{other:?}"),
         }

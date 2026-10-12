@@ -52,8 +52,10 @@ pub struct Fragment {
 
 /// One bound value.
 ///
-/// Deliberately not `rusqlite::types::ToSql`: this crate has no database dependency, which is what
-/// lets it be tested without a connection. The server converts.
+/// Deliberately this crate's own type rather than a driver's: `freshrss-search` has no database
+/// dependency at all, which is what lets the compiled SQL be asserted on as text and the whole
+/// grammar be tested without a connection. The server converts a `Param` into a sqlx bind value in
+/// `db::sql`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Param {
     Text(String),
@@ -556,7 +558,10 @@ mod tests {
         // Bound bare: `instr` is a literal substring test, so a user's `_` or `%` cannot become a
         // wildcard the way it would under LIKE.
         assert_eq!(f.params, vec![Param::Text("rust".into())]);
-        assert!(!f.sql.contains("LIKE"), "LIKE is ASCII-only case-insensitive");
+        assert!(
+            !f.sql.contains("LIKE"),
+            "LIKE is ASCII-only case-insensitive"
+        );
     }
 
     #[test]
@@ -564,9 +569,17 @@ mod tests {
         // SQLite has no regex operator without a user-defined function, and the driver cannot
         // register one. Saying so is better than matching nothing: the reader can show the message,
         // and filter actions still evaluate regexes through the matcher.
-        for q in ["intitle:/^ru.t$/i", "-intitle:/x/", "#/^ru/", "labels:/to.*/"] {
+        for q in [
+            "intitle:/^ru.t$/i",
+            "-intitle:/x/",
+            "#/^ru/",
+            "labels:/to.*/",
+        ] {
             let e = compile_err(q);
-            assert!(matches!(&e, SearchError::Unsupported(what) if what.contains("regular expression")), "{q}: {e}");
+            assert!(
+                matches!(&e, SearchError::Unsupported(what) if what.contains("regular expression")),
+                "{q}: {e}"
+            );
         }
     }
 
@@ -663,10 +676,7 @@ mod tests {
     fn a_tag_regex_is_refused_like_any_other() {
         // The one-tag-per-line rewrite existed only to give a regex something to anchor against; with
         // regexes out of listing SQL there is nothing left to rewrite.
-        assert!(matches!(
-            compile_err("#/^ru/"),
-            SearchError::Unsupported(_)
-        ));
+        assert!(matches!(compile_err("#/^ru/"), SearchError::Unsupported(_)));
     }
 
     // --- ids ---------------------------------------------------------------

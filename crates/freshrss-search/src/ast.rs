@@ -701,7 +701,10 @@ mod tests {
         };
         let n = at_least.negate();
         assert_eq!((n.min, n.max), (None, Some(9)), "NOT (>= 10) is <= 9");
-        assert!(!n.is_complemented(), "a half-open range is not complemented");
+        assert!(
+            !n.is_complemented(),
+            "a half-open range is not complemented"
+        );
 
         let at_most = DateRange {
             min: None,

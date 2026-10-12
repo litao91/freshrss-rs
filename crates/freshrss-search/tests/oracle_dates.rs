@@ -52,21 +52,54 @@ enum Bound {
 /// The rows of `provideDateIntervals`, verbatim and in order.
 const ORACLE_ROWS: &[(&str, Bound, Bound)] = &[
     ("", Bound::Null, Bound::Null), // Empty string
-
     // Year intervals
-    ("2014", Bound::At("2014-01-01 00:00:00"), Bound::At("2014-12-31 23:59:59")),
-    (" 2015 ", Bound::At("2015-01-01 00:00:00"), Bound::At("2015-12-31 23:59:59")), // With whitespace to be trimmed
-
+    (
+        "2014",
+        Bound::At("2014-01-01 00:00:00"),
+        Bound::At("2014-12-31 23:59:59"),
+    ),
+    (
+        " 2015 ",
+        Bound::At("2015-01-01 00:00:00"),
+        Bound::At("2015-12-31 23:59:59"),
+    ), // With whitespace to be trimmed
     // Year-month intervals
-    ("2014-03", Bound::At("2014-03-01 00:00:00"), Bound::At("2014-03-31 23:59:59")),
-    ("2016-02", Bound::At("2016-02-01 00:00:00"), Bound::At("2016-02-29 23:59:59")), // Leap year
-    ("2014-02", Bound::At("2014-02-01 00:00:00"), Bound::At("2014-02-28 23:59:59")), // Non-leap year
-    ("201404", Bound::At("2014-04-01 00:00:00"), Bound::At("2014-04-30 23:59:59")), // Without hyphen
-
+    (
+        "2014-03",
+        Bound::At("2014-03-01 00:00:00"),
+        Bound::At("2014-03-31 23:59:59"),
+    ),
+    (
+        "2016-02",
+        Bound::At("2016-02-01 00:00:00"),
+        Bound::At("2016-02-29 23:59:59"),
+    ), // Leap year
+    (
+        "2014-02",
+        Bound::At("2014-02-01 00:00:00"),
+        Bound::At("2014-02-28 23:59:59"),
+    ), // Non-leap year
+    (
+        "201404",
+        Bound::At("2014-04-01 00:00:00"),
+        Bound::At("2014-04-30 23:59:59"),
+    ), // Without hyphen
     // Specific dates
-    ("2014-03-30", Bound::At("2014-03-30 00:00:00"), Bound::At("2014-03-30 23:59:59")),
-    ("2014-05-30T13", Bound::At("2014-05-30 13:00:00"), Bound::At("2014-05-30 13:59:59")),
-    ("2014-05-30T13:30", Bound::At("2014-05-30 13:30:00"), Bound::At("2014-05-30 13:30:59")),
+    (
+        "2014-03-30",
+        Bound::At("2014-03-30 00:00:00"),
+        Bound::At("2014-03-30 23:59:59"),
+    ),
+    (
+        "2014-05-30T13",
+        Bound::At("2014-05-30 13:00:00"),
+        Bound::At("2014-05-30 13:59:59"),
+    ),
+    (
+        "2014-05-30T13:30",
+        Bound::At("2014-05-30 13:30:00"),
+        Bound::At("2014-05-30 13:30:59"),
+    ),
     // With negative timezone offset. The expectation pins the same offset the input does, so PHP's
     // `strtotime` and the UTC-only port compute the identical instant: no divergence here.
     (
@@ -74,53 +107,115 @@ const ORACLE_ROWS: &[(&str, Bound, Bound)] = &[
         Bound::At("2014-05-30T13:30:00-05:00"),
         Bound::At("2014-05-30T13:30:59-05:00"),
     ),
-
     // Date ranges with explicit end dates
-    ("2014-02/2014-04", Bound::At("2014-02-01 00:00:00"), Bound::At("2014-04-30 23:59:59")),
-    ("2014-02--2014-04", Bound::At("2014-02-01 00:00:00"), Bound::At("2014-04-30 23:59:59")), // Same with -- separator
-    ("2014-02/04", Bound::At("2014-02-01 00:00:00"), Bound::At("2014-04-30 23:59:59")),
-    ("2014-02-03/05", Bound::At("2014-02-03 00:00:00"), Bound::At("2014-02-05 23:59:59")),
-
+    (
+        "2014-02/2014-04",
+        Bound::At("2014-02-01 00:00:00"),
+        Bound::At("2014-04-30 23:59:59"),
+    ),
+    (
+        "2014-02--2014-04",
+        Bound::At("2014-02-01 00:00:00"),
+        Bound::At("2014-04-30 23:59:59"),
+    ), // Same with -- separator
+    (
+        "2014-02/04",
+        Bound::At("2014-02-01 00:00:00"),
+        Bound::At("2014-04-30 23:59:59"),
+    ),
+    (
+        "2014-02-03/05",
+        Bound::At("2014-02-03 00:00:00"),
+        Bound::At("2014-02-05 23:59:59"),
+    ),
     // Time ranges within same day
-    ("2014-02-03T22:00/22:15", Bound::At("2014-02-03 22:00:00"), Bound::At("2014-02-03 22:15:59")),
-    ("2014-02-03T22:00/15", Bound::At("2014-02-03 22:00:00"), Bound::At("2014-02-03 22:15:59")),
-
+    (
+        "2014-02-03T22:00/22:15",
+        Bound::At("2014-02-03 22:00:00"),
+        Bound::At("2014-02-03 22:15:59"),
+    ),
+    (
+        "2014-02-03T22:00/15",
+        Bound::At("2014-02-03 22:00:00"),
+        Bound::At("2014-02-03 22:15:59"),
+    ),
     // Open intervals
     ("2014-03/", Bound::At("2014-03-01 00:00:00"), Bound::Null),
     ("/2014-03", Bound::Null, Bound::At("2014-03-31 23:59:59")),
-
     // Period-based intervals
-    ("2014-03/P1W", Bound::At("2014-03-01 00:00:00"), Bound::At("2014-03-07 23:59:59")),
+    (
+        "2014-03/P1W",
+        Bound::At("2014-03-01 00:00:00"),
+        Bound::At("2014-03-07 23:59:59"),
+    ),
     (
         "P1W/2014-05-25T23:59:59",
         Bound::At("2014-05-19 00:00:00"),
         Bound::At("2014-05-25 23:59:59"),
     ),
-
     // Fixed date periods with known anchors
-    ("2014-01-01/P1Y", Bound::At("2014-01-01 00:00:00"), Bound::At("2014-12-31 23:59:59")),
-    ("2014-06-15/P6M", Bound::At("2014-06-15 00:00:00"), Bound::At("2014-12-14 23:59:59")),
-    ("2014-03-01/P2W", Bound::At("2014-03-01 00:00:00"), Bound::At("2014-03-14 23:59:59")),
-    ("2014-12-25/P10D", Bound::At("2014-12-25 00:00:00"), Bound::At("2015-01-03 23:59:59")),
-    ("2014-01-01T12:00/PT6H", Bound::At("2014-01-01 12:00:00"), Bound::At("2014-01-01 17:59:59")),
-    ("2014-01-01 12:00/PT6H", Bound::At("2014-01-01 12:00:00"), Bound::At("2014-01-01 17:59:59")), // Space instead of T
-    ("2014-01-01T12:00/PT6h", Bound::At("2014-01-01 12:00:00"), Bound::At("2014-01-01 17:59:59")), // Lowercase h
-    ("2014-05-01T10:30/PT90M", Bound::At("2014-05-01 10:30:00"), Bound::At("2014-05-01 11:59:59")),
+    (
+        "2014-01-01/P1Y",
+        Bound::At("2014-01-01 00:00:00"),
+        Bound::At("2014-12-31 23:59:59"),
+    ),
+    (
+        "2014-06-15/P6M",
+        Bound::At("2014-06-15 00:00:00"),
+        Bound::At("2014-12-14 23:59:59"),
+    ),
+    (
+        "2014-03-01/P2W",
+        Bound::At("2014-03-01 00:00:00"),
+        Bound::At("2014-03-14 23:59:59"),
+    ),
+    (
+        "2014-12-25/P10D",
+        Bound::At("2014-12-25 00:00:00"),
+        Bound::At("2015-01-03 23:59:59"),
+    ),
+    (
+        "2014-01-01T12:00/PT6H",
+        Bound::At("2014-01-01 12:00:00"),
+        Bound::At("2014-01-01 17:59:59"),
+    ),
+    (
+        "2014-01-01 12:00/PT6H",
+        Bound::At("2014-01-01 12:00:00"),
+        Bound::At("2014-01-01 17:59:59"),
+    ), // Space instead of T
+    (
+        "2014-01-01T12:00/PT6h",
+        Bound::At("2014-01-01 12:00:00"),
+        Bound::At("2014-01-01 17:59:59"),
+    ), // Lowercase h
+    (
+        "2014-05-01T10:30/PT90M",
+        Bound::At("2014-05-01 10:30:00"),
+        Bound::At("2014-05-01 11:59:59"),
+    ),
     (
         "2014-07-04T14:15:30/PT45S",
         Bound::At("2014-07-04 14:15:30"),
         Bound::At("2014-07-04 14:16:14"),
     ),
-
     // Reverse periods. PHP reads the second operand as an exact instant rather than a ceiling when
     // the first is a duration, which is why two of these end at midnight and start a second later.
-    ("P1M/2014-02-28", Bound::At("2014-01-28 00:00:01"), Bound::At("2014-02-28 00:00:00")),
+    (
+        "P1M/2014-02-28",
+        Bound::At("2014-01-28 00:00:01"),
+        Bound::At("2014-02-28 00:00:00"),
+    ),
     (
         "P3D/2014-01-10T23:59:59",
         Bound::At("2014-01-08 00:00:00"),
         Bound::At("2014-01-10 23:59:59"),
     ),
-    ("PT12H/2014-06-01T12:00", Bound::At("2014-06-01 00:00:01"), Bound::At("2014-06-01 12:00:00")),
+    (
+        "PT12H/2014-06-01T12:00",
+        Bound::At("2014-06-01 00:00:01"),
+        Bound::At("2014-06-01 12:00:00"),
+    ),
 ];
 
 /// Rows the PHP provider does *not* contain, covering the `false` arm of its return type.
@@ -197,7 +292,9 @@ fn check(interval: &str, want_min: Bound, want_max: Bound) -> Vec<String> {
     if matches!(want_min, Bound::Invalid) || matches!(want_max, Bound::Invalid) {
         return match got {
             Err(SearchError::BadDateInterval { .. }) => Vec::new(),
-            Err(other) => vec![format!("  {interval:?}: expected a bad-interval error, got {other}")],
+            Err(other) => vec![format!(
+                "  {interval:?}: expected a bad-interval error, got {other}"
+            )],
             Ok(range) => vec![format!(
                 "  {interval:?}: expected an unparseable interval, got min={} max={}",
                 show_actual(range.min),
@@ -212,10 +309,7 @@ fn check(interval: &str, want_min: Bound, want_max: Bound) -> Vec<String> {
     };
 
     let mut problems = Vec::new();
-    for (end, want, got) in [
-        ("min", want_min, range.min),
-        ("max", want_max, range.max),
-    ] {
+    for (end, want, got) in [("min", want_min, range.min), ("max", want_max, range.max)] {
         // `Bound::Invalid` was handled above and never reaches here.
         let want_secs = match want {
             Bound::At(iso) => Some(at(iso)),
@@ -241,11 +335,14 @@ fn check_all(rows: &[(&str, Bound, Bound)]) {
     if failures.is_empty() {
         return;
     }
-    failures.insert(0, format!(
-        "{} of {} rows disagree with the php oracle:",
-        failures.len(),
-        rows.len()
-    ));
+    failures.insert(
+        0,
+        format!(
+            "{} of {} rows disagree with the php oracle:",
+            failures.len(),
+            rows.len()
+        ),
+    );
     panic!("{}", failures.join("\n"));
 }
 
