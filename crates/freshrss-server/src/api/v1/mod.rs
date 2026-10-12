@@ -9,8 +9,10 @@ use crate::router::AppState;
 
 pub mod auth;
 pub mod categories;
+pub mod entries;
 pub mod feeds;
 pub mod me;
+pub mod search;
 pub mod tree;
 
 /// All versioned API routes, mounted at `/api/v1`.
@@ -27,4 +29,6 @@ pub fn router() -> Router<AppState> {
         .route("/counts", get(tree::counts))
         .nest("/categories", categories::router())
         .nest("/feeds", feeds::router())
+        .nest("/entries", entries::router())
+        .nest("/search", search::router())
 }

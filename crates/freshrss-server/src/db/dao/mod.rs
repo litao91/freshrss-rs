@@ -16,6 +16,7 @@ pub mod meta;
 pub mod session;
 pub mod tag;
 pub mod user;
+pub mod user_query;
 
 use rusqlite::Row;
 

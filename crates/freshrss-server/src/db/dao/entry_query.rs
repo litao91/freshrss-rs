@@ -131,14 +131,14 @@ pub struct Cursor {
 /// Everything is explicit rather than defaulted at the call site, so the SQL a request produces is a
 /// pure function of this struct and can be asserted on directly.
 #[derive(Debug, Clone)]
-pub struct EntryQuery<'a> {
+pub struct EntryQuery {
     pub id_user: i64,
     pub scope: ListType,
     /// The category, feed or tag id — required exactly when [`ListType::needs_id`].
     pub scope_id: i64,
     pub state: EntryState,
     /// An already-parsed and already-expanded search. `None` is no search, not an empty one.
-    pub search: Option<&'a Expr>,
+    pub search: Option<Expr>,
     /// Inclusive lower bound on the entry id.
     pub id_min: Option<EntryId>,
     /// Inclusive upper bound on the entry id. The API defaults this to now, so a refresh landing
@@ -154,7 +154,7 @@ pub struct EntryQuery<'a> {
     pub limit: usize,
 }
 
-impl Default for EntryQuery<'_> {
+impl Default for EntryQuery {
     fn default() -> Self {
         Self {
             id_user: 0,
@@ -236,7 +236,7 @@ struct Rung {
     value: SqlValue,
 }
 
-impl EntryQuery<'_> {
+impl EntryQuery {
     /// Checks the combination before building anything.
     ///
     /// These are caller mistakes rather than database errors, so they surface as `400` and not `500`.
@@ -463,7 +463,7 @@ impl EntryQuery<'_> {
 
         // An empty search compiles to `1=1`, which is correct and pointless; leaving it out keeps the
         // common case — no search at all and a search that turned out to be empty — identical.
-        if let Some(expr) = self.search.filter(|expr| !expr.is_true()) {
+        if let Some(expr) = self.search.as_ref().filter(|expr| !expr.is_true()) {
             let fragment = compile(expr, &self.sql_ctx())?;
             if !fragment.sql.is_empty() {
                 w.bind(
@@ -525,6 +525,7 @@ impl EntryQuery<'_> {
         // feed has to lift it into the listing, or `f:12` could never return anything.
         let visibility = self
             .search
+            .as_ref()
             .and_then(|expr| min_priority(expr).map(Priority::new));
         self.scope.priority_floor(visibility)
     }
@@ -633,7 +634,7 @@ fn secondary_expr(sort: SecondarySort, a: &Aliases) -> String {
 }
 
 /// The `ORDER BY` clause, identical in shape for both statements.
-fn order_by(q: &EntryQuery<'_>, a: &Aliases) -> String {
+fn order_by(q: &EntryQuery, a: &Aliases) -> String {
     let order = q.order.as_str();
     let mut out = format!(" ORDER BY {} {order}", sort_expr(q.sort, a));
     if q.sort == Sort::CategoryName {
@@ -658,8 +659,81 @@ fn order_by(q: &EntryQuery<'_>, a: &Aliases) -> String {
     out
 }
 
+/// The cursor that resumes immediately after `id`, under this query's sort.
+///
+/// This is what makes prev/next work for any sort rather than only for the id sort: the reader asks for
+/// the article beside the one it is showing, and "beside" means beside *in the current listing order*.
+/// Building it needs the boundary row's sort values, so they are read back with the same expressions the
+/// `ORDER BY` uses — one row, by primary key.
+pub fn cursor_after(conn: &Connection, q: &EntryQuery, id: EntryId) -> Result<Cursor> {
+    q.validate()?;
+    if q.sort == Sort::Id {
+        // The id sort carries no boundary values, and the ladder would be a single rung anyway.
+        return Ok(Cursor {
+            id,
+            values: Vec::new(),
+        });
+    }
+    let a = INNER;
+    let mut selects = vec![(sort_expr(q.sort, &a), q.sort.value_is_numeric())];
+    if q.sort == Sort::CategoryName {
+        selects.push((format!("{}.name", a.feed), false));
+    }
+    if q.sort.takes_secondary_sort() && q.secondary_sort != SecondarySort::Id {
+        selects.push((
+            secondary_expr(q.secondary_sort, &a),
+            q.secondary_sort.value_is_numeric(),
+        ));
+    }
+
+    let mut sql = format!(
+        "SELECT {} FROM entry {} INNER JOIN feed {} ON {f}.id = {e}.id_feed ",
+        selects
+            .iter()
+            .map(|(expr, _)| expr.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        a.entry,
+        a.feed,
+        e = a.entry,
+        f = a.feed
+    );
+    if q.sort.joins_category() {
+        sql.push_str(&format!(
+            "LEFT JOIN category {c} ON {c}.id = {f}.category ",
+            c = a.category,
+            f = a.feed
+        ));
+    }
+    sql.push_str(&format!("WHERE {} = ?", col(&a, "id")));
+
+    let numeric: Vec<bool> = selects.iter().map(|(_, n)| *n).collect();
+    let values = conn
+        .query_row(&sql, [id.micros()], |row| {
+            (0..numeric.len())
+                .map(|i| {
+                    // The type has to match the column's, because SQLite orders every INTEGER below
+                    // every TEXT and a mismatched bind would resume from the wrong end of the list.
+                    Ok(match row.get_ref(i)? {
+                        rusqlite::types::ValueRef::Integer(v) if numeric[i] => CursorValue::Int(v),
+                        rusqlite::types::ValueRef::Integer(v) => CursorValue::Text(v.to_string()),
+                        rusqlite::types::ValueRef::Text(t) => {
+                            CursorValue::Text(String::from_utf8_lossy(t).into_owned())
+                        }
+                        rusqlite::types::ValueRef::Null => CursorValue::Text(String::new()),
+                        rusqlite::types::ValueRef::Real(v) => CursorValue::Text(v.to_string()),
+                        rusqlite::types::ValueRef::Blob(_) => CursorValue::Text(String::new()),
+                    })
+                })
+                .collect::<SqlResult<Vec<_>>>()
+        })
+        .map_err(Error::from)?;
+
+    Ok(Cursor { id, values })
+}
+
 /// Runs the listing and reads the rows.
-pub fn list(conn: &Connection, q: &EntryQuery<'_>) -> Result<Vec<Entry>> {
+pub fn list(conn: &Connection, q: &EntryQuery) -> Result<Vec<Entry>> {
     let built = q.build_rows()?;
     let mut stmt = conn.prepare(&built.sql)?;
     let rows = stmt
@@ -672,7 +746,7 @@ pub fn list(conn: &Connection, q: &EntryQuery<'_>) -> Result<Vec<Entry>> {
 }
 
 /// How many unread articles the same scope, fences and search admit.
-pub fn count_unread(conn: &Connection, q: &EntryQuery<'_>) -> Result<i64> {
+pub fn count_unread(conn: &Connection, q: &EntryQuery) -> Result<i64> {
     let built = q.build_unread_count()?;
     Ok(conn.query_row(
         &built.sql,
@@ -691,22 +765,22 @@ mod tests {
 
     const NOW: i64 = 1_700_000_000;
 
-    fn base() -> EntryQuery<'static> {
+    fn base() -> EntryQuery {
         EntryQuery {
             id_user: 7,
             ..EntryQuery::default()
         }
     }
 
-    fn ids(q: &EntryQuery<'_>) -> Built {
+    fn ids(q: &EntryQuery) -> Built {
         q.build_ids().expect("builds")
     }
 
-    fn rows(q: &EntryQuery<'_>) -> Built {
+    fn rows(q: &EntryQuery) -> Built {
         q.build_rows().expect("builds")
     }
 
-    fn err(q: &EntryQuery<'_>) -> Error {
+    fn err(q: &EntryQuery) -> Error {
         q.build_ids().expect_err("should have been rejected")
     }
 
@@ -733,7 +807,7 @@ mod tests {
         let expr = parse("labels:todo", NOW).unwrap();
         let q = EntryQuery {
             scope: ListType::AnyTag,
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         };
         let built = ids(&q);
@@ -792,7 +866,7 @@ mod tests {
         // filter out the very row the search asked for.
         let expr = parse("f:12", NOW).unwrap();
         let q = EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         };
         let built = ids(&q);
@@ -808,7 +882,7 @@ mod tests {
         // `-f:12` excludes a feed, so there is no reason to widen the listing to reach it.
         let expr = parse("-f:12", NOW).unwrap();
         let q = EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         };
         assert!(
@@ -1337,7 +1411,7 @@ mod tests {
     fn a_search_is_parenthesized_and_bound_after_the_fences() {
         let expr = parse("intitle:rust f:3", NOW).unwrap();
         let q = EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             id_max: Some(EntryId::from_micros(9)),
             ..base()
         };
@@ -1358,7 +1432,7 @@ mod tests {
         let expr = Expr::TRUE;
         let bare = ids(&base());
         let with_empty = ids(&EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         });
         assert_eq!(bare.sql, with_empty.sql);
@@ -1374,7 +1448,7 @@ mod tests {
             negated: false,
         });
         let e = EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         }
         .build_ids()
@@ -1479,7 +1553,7 @@ mod tests {
                 ..base()
             },
             EntryQuery {
-                search: Some(&expr),
+                search: Some(expr.clone()),
                 ..base()
             },
             EntryQuery {
@@ -1521,7 +1595,7 @@ mod tests {
         // every value here is a `?`.
         let expr = parse(r#"intitle:"'; DROP TABLE entry; --""#, NOW).unwrap();
         let built = ids(&EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         });
         assert!(
@@ -1543,7 +1617,7 @@ mod tests {
         let expr = parse("intitle:rust f:1", NOW).unwrap();
         let q = EntryQuery {
             sort: Sort::Title,
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base()
         };
         assert_eq!(ids(&q), ids(&q));

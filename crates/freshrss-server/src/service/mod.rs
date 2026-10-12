@@ -4,4 +4,6 @@
 //! with which side effects) live in one place and are testable without an HTTP request.
 
 pub mod auth;
+pub mod entries;
+pub mod search;
 pub mod tree;

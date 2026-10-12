@@ -189,7 +189,7 @@ fn corpus() -> Corpus {
     }
 }
 
-fn base(c: &Corpus) -> EntryQuery<'static> {
+fn base(c: &Corpus) -> EntryQuery {
     EntryQuery {
         id_user: c.id_user,
         id_max: Some(EntryId::from_unix(NOW)),
@@ -199,7 +199,7 @@ fn base(c: &Corpus) -> EntryQuery<'static> {
 }
 
 /// Reads the boundary values a cursor needs for the last row of a page, with hand-written SQL.
-fn boundary(c: &Corpus, q: &EntryQuery<'_>, id: EntryId) -> Cursor {
+fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
     // The id sort *is* the keyset, so its cursor carries no boundary values at all.
     if q.sort == Sort::Id {
         return Cursor {
@@ -271,7 +271,7 @@ fn boundary(c: &Corpus, q: &EntryQuery<'_>, id: EntryId) -> Cursor {
 }
 
 /// Pages all the way through and returns every id in the order the pages arrived.
-fn page_through(c: &Corpus, mut q: EntryQuery<'_>) -> Vec<EntryId> {
+fn page_through(c: &Corpus, mut q: EntryQuery) -> Vec<EntryId> {
     let mut seen = Vec::new();
     q.cursor = None;
     // One more iteration than could possibly be needed, so a cursor that stops making progress fails
@@ -301,7 +301,7 @@ fn page_through(c: &Corpus, mut q: EntryQuery<'_>) -> Vec<EntryId> {
 }
 
 /// Every article in the scope, in one query, for comparison.
-fn whole_scope(c: &Corpus, q: &EntryQuery<'_>) -> Vec<EntryId> {
+fn whole_scope(c: &Corpus, q: &EntryQuery) -> Vec<EntryId> {
     let mut all = q.clone();
     all.limit = ARTICLES as usize * 2;
     all.cursor = None;
@@ -496,7 +496,7 @@ fn a_random_sort_can_be_listed_but_not_resumed() {
 #[test]
 fn each_scope_admits_exactly_its_articles() {
     let c = corpus();
-    let all = |q: EntryQuery<'_>| -> Vec<EntryId> {
+    let all = |q: EntryQuery| -> Vec<EntryId> {
         let mut q = q;
         q.limit = ARTICLES as usize * 2;
         c.db
@@ -531,7 +531,7 @@ fn each_scope_admits_exactly_its_articles() {
     let expr = parse(&format!("f:{hidden_feed}"), NOW).unwrap();
     let lifted = all(EntryQuery {
         scope: ListType::AllButHidden,
-        search: Some(&expr),
+        search: Some(expr.clone()),
         ..base(&c)
     });
     assert_eq!(lifted.len() as i64, expected_in(hidden_feed));
@@ -587,7 +587,7 @@ fn each_scope_admits_exactly_its_articles() {
 #[test]
 fn the_label_scopes_count_an_article_once() {
     let c = corpus();
-    let count = |q: EntryQuery<'_>| -> usize {
+    let count = |q: EntryQuery| -> usize {
         let mut q = q;
         q.limit = ARTICLES as usize * 2;
         c.db
@@ -680,7 +680,7 @@ fn a_search_narrows_the_listing() {
     let c = corpus();
     let expr = parse("intitle:003 author:bot", NOW).unwrap();
     let q = EntryQuery {
-        search: Some(&expr),
+        search: Some(expr.clone()),
         limit: ARTICLES as usize * 2,
         ..base(&c)
     };
@@ -713,7 +713,7 @@ fn the_unread_count_agrees_with_the_listing_it_describes() {
             ..base(&c)
         },
         EntryQuery {
-            search: Some(&expr),
+            search: Some(expr.clone()),
             ..base(&c)
         },
         // A nullable sort excludes the rows it cannot order, so the count has to as well or the header
@@ -842,7 +842,7 @@ fn an_empty_page_is_not_an_error() {
     let c = corpus();
     let expr = parse("intitle:nothing-in-the-corpus-matches-this", NOW).unwrap();
     let q = EntryQuery {
-        search: Some(&expr),
+        search: Some(expr.clone()),
         ..base(&c)
     };
     assert!(c.db.blocking_with(|conn| list(conn, &q)).expect("lists").is_empty());

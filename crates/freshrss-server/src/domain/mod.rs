@@ -19,6 +19,7 @@ pub mod state;
 pub mod tag;
 pub mod ttl;
 pub mod user;
+pub mod user_query;
 
 pub use attributes::{keys as attribute_keys, Attributes};
 pub use category::{Category, CategoryKind, DEFAULT_CATEGORY_NAME};
@@ -34,3 +35,4 @@ pub use state::{Cond, EntryState};
 pub use tag::Tag;
 pub use ttl::Ttl;
 pub use user::{SortOrder, User, UserConfig};
+pub use user_query::SavedQuery;
