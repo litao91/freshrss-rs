@@ -18,6 +18,11 @@ const sidebar = async () =>
   Number((await page.locator('.rd-tree > li').first().locator('.rd-count > span').first().innerText()).trim());
 const listUnread = async () =>
   Number((await page.locator('.rd-segment-count').first().innerText()).trim());
+/** The badge on the feed row the first article belongs to: the per-feed aggregate. */
+const feedBadge = async () =>
+  Number(
+    (await page.locator('.rd-tree--nested .rd-count > span').first().innerText().catch(() => '0')).trim(),
+  );
 
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.locator('#auth-username').fill('tester');
@@ -28,14 +33,18 @@ await page.waitForTimeout(600);
 
 ok('sidebar and list agree before', (await sidebar()) === (await listUnread()), `${await sidebar()} vs ${await listUnread()}`);
 const before = await sidebar();
+const beforeFeed = await feedBadge();
 
 await page.locator('.rd-items .rd-item').first().click();
-await page.waitForTimeout(1200);
+// The sync is debounced, so give it its window plus the round trip.
+await page.waitForTimeout(1500);
 
 const afterSide = await sidebar();
 const afterList = await listUnread();
+const afterFeed = await feedBadge();
 ok('both drop by one after marking read', afterSide === before - 1 && afterList === before - 1, `${before} → sidebar ${afterSide}, list ${afterList}`);
 ok('sidebar and list agree after', afterSide === afterList);
+ok('the feed row’s badge follows too', afterFeed === beforeFeed - 1, `${beforeFeed} → ${afterFeed}`);
 
 await browser.close();
 console.log(failures.length === 0 ? '\nALL PASS' : `\nFAILURES: ${failures.join(', ')}`);

@@ -485,8 +485,6 @@ export const api = {
 
   tree: () => request<Tree>('/tree'),
 
-  counts: () => request<Counts>('/counts'),
-
   categories: () => request<CategoryNode[]>('/categories'),
 
   createCategory: (name: string) =>

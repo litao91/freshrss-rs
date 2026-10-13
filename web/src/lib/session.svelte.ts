@@ -11,7 +11,6 @@ import {
   ApiError,
   type AuthPolicy,
   type Bootstrap,
-  type Counts,
   type Tree,
   type User,
   type UserConfig,
@@ -118,24 +117,23 @@ export async function refreshTree(): Promise<void> {
   tree.data = await api.tree();
 }
 
-/** Replaces the counts in place, used after a mutation changed unread numbers. */
-export function applyCounts(counts: Counts): void {
-  if (tree.data) tree.data = { ...tree.data, counts };
-}
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Re-reads just the counts, for the sidebar badges after a read or star mutation.
+ * Reloads the sidebar a beat after a read, star or label mutation, coalescing bursts of them.
  *
- * Cheaper than `refreshTree` and enough: the mutation already reloaded what it touched, and a badge
- * that keeps claiming three unread after the last one was marked read is the kind of lie a reader
- * notices. A failed sync is cosmetic, so it is swallowed rather than toasted.
+ * The badges are per-feed and per-folder aggregates that only `GET /tree` recomputes; replacing
+ * just the scope counts left the feed rows claiming unread articles the reader had just read,
+ * which is the kind of lie a reader notices. Reading moves quickly — `j` marks one article read
+ * per press — so consecutive mutations share one request instead of paying for each. A failed
+ * sync is cosmetic and swallowed: the next mutation or refresh picks the numbers up.
  */
-export async function syncCounts(): Promise<void> {
-  try {
-    applyCounts(await api.counts());
-  } catch {
-    // The next mutation or refresh will pick the counts up.
-  }
+export function scheduleTreeSync(): void {
+  if (syncTimer !== null) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncTimer = null;
+    refreshTree().catch(() => {});
+  }, 250);
 }
 
 /** Call from any handler that sees a 401. */
