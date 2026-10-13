@@ -14,6 +14,10 @@ npm --prefix web run build
 # 2. Build and run the server (creates and migrates data/freshrss.sqlite)
 cargo run -- serve
 # → http://127.0.0.1:8080
+
+# 3. Create the first account. Registration is closed by default, so the web UI
+#    offers no sign-up form until the operator opens it (see Accounts below).
+cargo run -- create-user alice --admin
 ```
 
 For frontend development with hot reload, run the server and Vite side by side:
@@ -51,15 +55,16 @@ Whether the web UI offers a sign-up form at all is `[registration] mode`:
 
 | mode            | behaviour                                                            |
 | --------------- | -------------------------------------------------------------------- |
-| `open`          | anyone may register (the default)                                     |
+| `closed`        | no web registration; accounts are created by `create-user` only (the default) |
 | `first-user-only` | registration closes once the first account exists                   |
-| `closed`        | no web registration; accounts are created by `create-user` only       |
+| `open`          | anyone may register                                                   |
 
 With `closed` the login page hides the sign-up form and says registration is closed, and
 `POST /api/v1/auth/register` answers `403 registration_closed` regardless — the page only spares a
 visitor the round trip. `create-user` ignores the policy by design: it is how a closed server gains
 its second account. Unless `registration.first_user_is_admin = false`, the first account on a fresh
-database becomes its administrator.
+database becomes its administrator. A server that starts with no accounts and a closed policy logs
+a line saying so, rather than leaving the operator to wonder why the login page has no sign-up.
 
 ## Layout
 

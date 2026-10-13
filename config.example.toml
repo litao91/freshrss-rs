@@ -35,7 +35,8 @@ allow_insecure_secret = true
 [registration]
 # "open" = anyone may register, "first-user-only" = registration closes after the first
 # account exists, "closed" = accounts are created by `freshrss-rs create-user` only.
-mode = "open"
+# Closed is the default: a reader facing the internet should not hand out accounts.
+mode = "closed"
 # The first registered account becomes an administrator.
 first_user_is_admin = true
 

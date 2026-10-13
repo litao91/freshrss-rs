@@ -163,23 +163,17 @@ mod tests {
     use crate::domain::attributes::keys;
     use crate::domain::feed::Feed;
     use crate::router::AppState;
-    use crate::service::auth::{self, ClientInfo, LoginRequest, RegisterRequest};
+    use crate::service::auth::{self, ClientInfo, LoginRequest};
 
     /// A routed app with one signed-in user, plus the cookie that authenticates as them.
     async fn authed(fetcher: Arc<dyn Fetcher>) -> (Router, String, Db, i64) {
         let db = Db::in_memory().await.expect("db");
         let config = AppConfig::default();
-        let user = auth::register(
-            &db,
-            &config,
-            RegisterRequest {
-                username: "alice".into(),
-                email: None,
-                password: "correct horse".into(),
-            },
-        )
-        .await
-        .expect("register");
+        // The policy-free path: these tests are about import and export, not registration, and
+        // must not flip when the shipped default mode changes.
+        let user = auth::create_user(&db, "alice", None, "correct horse", false)
+            .await
+            .expect("user");
         let (_, session) = auth::login(
             &db,
             &config,

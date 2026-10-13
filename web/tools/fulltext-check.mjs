@@ -46,6 +46,10 @@ const btn = page.locator('.rd-fulltext-btn');
 ok('full-article button exists', (await btn.count()) === 1);
 ok('button starts unpressed', (await btn.getAttribute('aria-pressed')) === 'false');
 
+// Whether the server already holds a scraped body for this article decides what the first press
+// does: a cold entry fetches once, a warm one not at all. Both are correct, so the check asserts
+// the contract that holds either way — at most one fetch, and every later open served from
+// storage. Extraction correctness itself lives in the Rust integration tests.
 const before = (await page.locator('.rd-read .rd-prose').innerHTML()).length;
 const title = await page.locator('.rd-article-title').innerText();
 console.log(`article: ${title.trim().slice(0, 60)} (prose ${before} bytes)`);
@@ -60,7 +64,11 @@ await page.waitForTimeout(1200);
 const after = (await page.locator('.rd-read .rd-prose').innerHTML()).length;
 const pressed = await btn.getAttribute('aria-pressed');
 ok('button flips to pressed', pressed === 'true', `aria-pressed=${pressed}`);
-ok('backend was called', apiCalls.length >= 1, JSON.stringify(apiCalls));
+ok(
+  'the first press fetches at most once',
+  apiCalls.length <= 1,
+  `${apiCalls.length} call(s): ${apiCalls.length ? 'cold entry, extracted' : 'warm entry, served from storage'}`,
+);
 ok('all calls succeeded', apiCalls.every((c) => c.status === 200), JSON.stringify(apiCalls));
 ok('prose changed', after !== before, `${before} → ${after} bytes`);
 await page.screenshot({ path: '/tmp/shots/fulltext-on.png' });
@@ -85,8 +93,8 @@ ok(
   apiCalls.length === callsBefore,
   `${apiCalls.length - callsBefore} new calls`,
 );
-const stored = (await page.locator('.rd-read .rd-prose').innerHTML()).length;
-ok('stored copy matches the fetch', stored === after, `${stored} vs ${after}`);
+const reopened = (await page.locator('.rd-read .rd-prose').innerHTML()).length;
+ok('stored copy matches the fetch', reopened === after, `${reopened} vs ${after}`);
 await page.screenshot({ path: '/tmp/shots/fulltext-reopen.png' });
 
 await browser.close();

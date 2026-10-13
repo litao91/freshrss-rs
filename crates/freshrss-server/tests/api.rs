@@ -105,7 +105,11 @@ async fn post(app: &Router, uri: &str, cookie: &str, body: Value) -> Reply {
 async fn signed_in() -> (Router, String) {
     let db = Db::in_memory().await.expect("db");
     let fetcher: Arc<dyn Fetcher> = Arc::new(FixtureFetcher::new().with(FEED_URL, rss(FEED_BODY)));
-    let app = router(AppState::with_fetcher(db, AppConfig::default(), fetcher));
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
 
     let registered = call(
         &app,
@@ -195,7 +199,11 @@ async fn subscribing_to_an_address_that_is_not_a_feed_leaves_nothing_behind() {
     let db = Db::in_memory().await.expect("db");
     let fetcher: Arc<dyn Fetcher> =
         Arc::new(FixtureFetcher::new().with(FEED_URL, rss("<html><body>not a feed</body></html>")));
-    let app = router(AppState::with_fetcher(db, AppConfig::default(), fetcher));
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
     let registered = call(
         &app,
         Method::POST,
@@ -471,7 +479,11 @@ async fn signed_in_with_pages() -> (Router, String) {
             .with("https://e.example/1", page(ARTICLE_PAGE))
             .with("https://e.example/2", page(ARTICLE_PAGE)),
     );
-    let app = router(AppState::with_fetcher(db, AppConfig::default(), fetcher));
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
     let registered = call(
         &app,
         Method::POST,
@@ -580,7 +592,11 @@ async fn a_page_with_no_recognisable_article_is_a_readable_refusal() {
                 page("<html><body><div>nothing semantic</div></body></html>"),
             ),
     );
-    let app = router(AppState::with_fetcher(db, AppConfig::default(), fetcher));
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
     let registered = call(
         &app,
         Method::POST,
@@ -641,11 +657,43 @@ fn register_body(username: &str) -> Value {
 
 #[tokio::test]
 async fn the_policy_endpoint_reports_an_open_server_without_a_session() {
-    let (app, _db) = app_with(AppConfig::default()).await;
+    let (app, _db) = app_with(registration(RegistrationMode::Open)).await;
     let reply = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.body["mode"], "open");
     assert_eq!(reply.body["can_register"], true);
+}
+
+#[tokio::test]
+async fn registration_is_closed_unless_the_operator_opens_it() {
+    // The shipped default: a reader reachable from the internet must not hand out accounts, so a
+    // fresh config refuses registration and says so, and the CLI path is the only way in.
+    let (app, db) = app_with(AppConfig::default()).await;
+
+    let reply = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
+    assert_eq!(reply.body["mode"], "closed");
+    assert_eq!(reply.body["can_register"], false);
+
+    let refused = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(register_body("mallory")),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    freshrss_server::service::auth::create_user(
+        &db,
+        "operator",
+        None,
+        "correct-horse-battery",
+        false,
+    )
+    .await
+    .expect("the CLI path is unaffected by the policy");
 }
 
 #[tokio::test]

@@ -85,23 +85,16 @@ mod tests {
     use crate::config::AppConfig;
     use crate::db::Db;
     use crate::router::AppState;
-    use crate::service::auth::{self, ClientInfo, LoginRequest, RegisterRequest};
+    use crate::service::auth::{self, ClientInfo, LoginRequest};
     use crate::service::packages;
 
     async fn authed() -> (Router, String, Db) {
         let db = Db::in_memory().await.expect("db");
         let config = AppConfig::default();
-        auth::register(
-            &db,
-            &config,
-            RegisterRequest {
-                username: "alice".into(),
-                email: None,
-                password: "correct horse".into(),
-            },
-        )
-        .await
-        .expect("register");
+        // The policy-free path: these tests are about starter packs, not registration.
+        auth::create_user(&db, "alice", None, "correct horse", false)
+            .await
+            .expect("user");
         let (_, session) = auth::login(
             &db,
             &config,

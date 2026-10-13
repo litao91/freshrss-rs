@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use freshrss_server::config::{AppConfig, LogFormat};
+use freshrss_server::config::{AppConfig, LogFormat, RegistrationMode};
+use freshrss_server::db::dao::user as user_dao;
 use freshrss_server::db::Db;
 use freshrss_server::router::{router, AppState};
 use freshrss_server::service::refresh::Settings;
@@ -81,6 +82,19 @@ async fn serve(config: AppConfig) -> Result<()> {
         pool_size = config.database.pool_size,
         "database ready"
     );
+
+    // A fresh database with registration closed cannot bootstrap itself from the web: without this
+    // line the operator's first clue would be a login page that offers no sign-up and no account.
+    if config.registration.mode == RegistrationMode::Closed {
+        let accounts = db
+            .with(|mut conn| async move { user_dao::count(&mut conn).await })
+            .await?;
+        if accounts == 0 {
+            tracing::warn!(
+                "no accounts exist and registration is closed; create the first one with `freshrss-rs create-user <name> --admin`"
+            );
+        }
+    }
 
     let state = AppState::new(db.clone(), config);
     let scheduler = Scheduler::spawn(

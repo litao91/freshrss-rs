@@ -192,23 +192,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_real_session_resolves_to_its_user() {
-        use crate::service::auth::{ClientInfo, LoginRequest, RegisterRequest};
+        use crate::service::auth::{ClientInfo, LoginRequest};
         let app = AppState::new(
             crate::db::Db::in_memory().await.expect("db"),
             crate::config::AppConfig::default(),
         );
 
-        auth::register(
-            &app.db,
-            &app.config,
-            RegisterRequest {
-                username: "alice".into(),
-                email: None,
-                password: "correct horse".into(),
-            },
-        )
-        .await
-        .expect("register");
+        // The policy-free path: this test is about session resolution, not registration.
+        auth::create_user(&app.db, "alice", None, "correct horse", false)
+            .await
+            .expect("user");
         let (_, session) = auth::login(
             &app.db,
             &app.config,

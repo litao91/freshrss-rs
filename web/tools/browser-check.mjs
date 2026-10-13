@@ -174,9 +174,17 @@ try {
   await page.keyboard.press('j');
   await page.waitForTimeout(900);
   check('j opens the next article', (await page.locator('.rd-read .rd-article').count()) === 1);
+  // Asserted as a toggle, not as "ends up starred": the scratch database this runs against may
+  // already carry a star on whichever article `j` landed on, and un-starring it is equally correct.
+  const star = page.locator('.rd-read-bar button[title="Star (s)"]');
+  const starredBefore = (await star.getAttribute('aria-pressed')) === 'true';
   await page.keyboard.press('s');
   await page.waitForTimeout(500);
-  check('s stars the open article', (await page.locator('.rd-read-bar .is-starred, .rd-read-bar [aria-pressed="true"]').count()) > 0);
+  check(
+    's toggles the open article’s star',
+    (await star.getAttribute('aria-pressed')) === String(!starredBefore),
+    `${starredBefore} → ${await star.getAttribute('aria-pressed')}`,
+  );
   await page.keyboard.press('m');
   await page.waitForTimeout(500);
   await page.keyboard.press('Escape');

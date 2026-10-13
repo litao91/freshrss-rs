@@ -130,11 +130,11 @@ impl Default for SessionConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum RegistrationMode {
     /// Anyone may register.
-    #[default]
     Open,
     /// Registration closes once the first account exists.
     FirstUserOnly,
     /// Accounts are created with the `create-user` CLI subcommand only.
+    #[default]
     Closed,
 }
 
@@ -148,7 +148,7 @@ pub struct RegistrationConfig {
 impl Default for RegistrationConfig {
     fn default() -> Self {
         Self {
-            mode: RegistrationMode::Open,
+            mode: RegistrationMode::default(),
             first_user_is_admin: true,
         }
     }
