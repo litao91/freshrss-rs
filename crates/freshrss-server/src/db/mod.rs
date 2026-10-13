@@ -16,7 +16,6 @@
 
 pub mod dao;
 pub mod fold;
-pub mod sql;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -334,7 +333,11 @@ mod tests {
         let (cfg, db) = file_db(dir.path()).await;
         drop(db);
         let again = Db::open(&cfg).await.expect("reopen");
-        assert_eq!(again.schema_version().await.expect("version"), 2);
+        assert_eq!(
+            again.schema_version().await.expect("version"),
+            bundled_schema_version(),
+            "a reopened database is already at the version this binary carries"
+        );
     }
 
     #[tokio::test]
@@ -356,6 +359,7 @@ mod tests {
             "entry",
             "entrytag",
             "entrytmp",
+            "favicon",
             "feed",
             "meta",
             "session",

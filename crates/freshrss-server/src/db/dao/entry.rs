@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, SqliteConnection};
+use sqlx::{QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::meta;
 use crate::db::dao::row_attributes;
-use crate::db::sql::{in_clause, sql, MAX_BIND_PARAMS};
+use crate::db::dao::{chunks, push_in_list};
+use crate::domain::attributes::Attributes;
 use crate::domain::entry::Entry;
 use crate::domain::ids::{now_unix, EntryId};
 use crate::error::Result;
@@ -67,14 +68,18 @@ pub async fn find_by_id(
     id: EntryId,
     id_user: i64,
 ) -> Result<Option<Entry>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM entry WHERE id = ?1 AND id_user = ?2"
-    )))
-    .bind(id.micros())
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM entry WHERE id = ")
+        .push_bind(id.micros())
+        .push(" AND id_user = ")
+        .push_bind(id_user);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn find_by_guid(
@@ -82,14 +87,18 @@ pub async fn find_by_guid(
     id_feed: i64,
     guid: &str,
 ) -> Result<Option<Entry>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM entry WHERE id_feed = ?1 AND guid = ?2"
-    )))
-    .bind(id_feed)
-    .bind(guid)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM entry WHERE id_feed = ")
+        .push_bind(id_feed)
+        .push(" AND guid = ")
+        .push_bind(guid);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn list_by_ids(
@@ -98,16 +107,19 @@ pub async fn list_by_ids(
     ids: &[EntryId],
 ) -> Result<Vec<Entry>> {
     let mut out = Vec::with_capacity(ids.len());
-    for chunk in ids.chunks(MAX_BIND_PARAMS) {
-        let placeholders = in_clause(2, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "SELECT {COLUMNS} FROM entry WHERE id_user = ?1 AND id IN {placeholders} ORDER BY id"
-        )))
-        .bind(id_user);
-        for id in chunk {
-            query = query.bind(id.micros());
-        }
-        out.extend(query.try_map(from_row).fetch_all(&mut *conn).await?);
+    for chunk in chunks(ids, 1) {
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+        builder.push(COLUMNS).push(" FROM entry WHERE id_user = ");
+        builder.push_bind(id_user).push(" AND id ");
+        push_in_list(&mut builder, chunk.iter().map(|id| id.micros()));
+        builder.push(" ORDER BY id");
+        out.extend(
+            builder
+                .build()
+                .try_map(from_row)
+                .fetch_all(&mut *conn)
+                .await?,
+        );
     }
     Ok(out)
 }
@@ -123,16 +135,13 @@ pub async fn list_hashes_for_guids(
     guids: &[String],
 ) -> Result<HashMap<String, [u8; 16]>> {
     let mut out = HashMap::with_capacity(guids.len());
-    for chunk in guids.chunks(MAX_BIND_PARAMS - 1) {
-        let placeholders = in_clause(2, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "SELECT guid, hash FROM entry WHERE id_feed = ?1 AND guid IN {placeholders}"
-        )))
-        .bind(id_feed);
-        for guid in chunk {
-            query = query.bind(guid.as_str());
-        }
-        let rows = query
+    for chunk in chunks(guids, 1) {
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT guid, hash FROM entry WHERE id_feed = ");
+        builder.push_bind(id_feed).push(" AND guid ");
+        push_in_list(&mut builder, chunk.iter().map(String::as_str));
+        let rows = builder
+            .build()
             .try_map(
                 |row: SqliteRow| -> std::result::Result<(String, Option<Vec<u8>>), sqlx::Error> {
                     Ok((row.try_get("guid")?, row.try_get("hash")?))
@@ -162,16 +171,15 @@ pub async fn ids_for_guids(
     guids: &[String],
 ) -> Result<HashMap<String, i64>> {
     let mut out = HashMap::with_capacity(guids.len());
-    for chunk in guids.chunks(MAX_BIND_PARAMS - 1) {
-        let placeholders = in_clause(2, chunk.len());
-        let mut query = sqlx::query_as::<_, (String, i64)>(sql(format!(
-            "SELECT guid, id FROM entry WHERE id_feed = ?1 AND guid IN {placeholders}"
-        )))
-        .bind(id_feed);
-        for guid in chunk {
-            query = query.bind(guid.as_str());
-        }
-        let rows = query.fetch_all(&mut *conn).await?;
+    for chunk in chunks(guids, 1) {
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT guid, id FROM entry WHERE id_feed = ");
+        builder.push_bind(id_feed).push(" AND guid ");
+        push_in_list(&mut builder, chunk.iter().map(String::as_str));
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&mut *conn)
+            .await?;
         out.extend(rows);
     }
     Ok(out)
@@ -188,16 +196,12 @@ pub async fn mark_unread_by_guids(
     guids: &[String],
 ) -> Result<usize> {
     let mut total = 0;
-    for chunk in guids.chunks(MAX_BIND_PARAMS - 2) {
-        let placeholders = in_clause(2, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "UPDATE entry SET is_read = 0 WHERE id_feed = ?1 AND guid IN {placeholders}"
-        )))
-        .bind(id_feed);
-        for guid in chunk {
-            query = query.bind(guid.as_str());
-        }
-        total += query.execute(&mut *conn).await?.rows_affected();
+    for chunk in chunks(guids, 1) {
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("UPDATE entry SET is_read = 0 WHERE id_feed = ");
+        builder.push_bind(id_feed).push(" AND guid ");
+        push_in_list(&mut builder, chunk.iter().map(String::as_str));
+        total += builder.build().execute(&mut *conn).await?.rows_affected();
     }
     Ok(total as usize)
 }
@@ -418,6 +422,29 @@ pub async fn update_existing(conn: &mut SqliteConnection, entry: &Entry) -> Resu
     Ok(updated > 0)
 }
 
+/// Writes one entry's attributes column, leaving every other column alone.
+///
+/// What an on-demand full-text fetch needs: the scraped body goes into the attributes, and
+/// rewriting the whole row for that would drag the content, the folded columns and the hash along,
+/// making the next refresh see an edit that upstream never made.
+pub async fn update_attributes(
+    conn: &mut SqliteConnection,
+    id: i64,
+    id_user: i64,
+    attributes: &Attributes,
+) -> Result<bool> {
+    Ok(
+        sqlx::query("UPDATE entry SET attributes = ?3 WHERE id = ?1 AND id_user = ?2")
+            .bind(id)
+            .bind(id_user)
+            .bind(attributes.to_db())
+            .execute(&mut *conn)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
 /// Stamps `lastSeen` on every guid a refresh saw upstream.
 ///
 /// Retention keys off this column: an article that stops appearing keeps its old `lastSeen` and
@@ -430,17 +457,15 @@ pub async fn update_last_seen(
     mtime: i64,
 ) -> Result<usize> {
     let mut total = 0;
-    for chunk in guids.chunks(MAX_BIND_PARAMS - 2) {
-        let placeholders = in_clause(3, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "UPDATE entry SET lastSeen = ?1 WHERE id_feed = ?2 AND guid IN {placeholders}"
-        )))
-        .bind(mtime)
-        .bind(id_feed);
-        for guid in chunk {
-            query = query.bind(guid.as_str());
-        }
-        total += query.execute(&mut *conn).await?.rows_affected() as usize;
+    for chunk in chunks(guids, 2) {
+        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE entry SET lastSeen = ");
+        builder
+            .push_bind(mtime)
+            .push(" WHERE id_feed = ")
+            .push_bind(id_feed)
+            .push(" AND guid ");
+        push_in_list(&mut builder, chunk.iter().map(String::as_str));
+        total += builder.build().execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(total)
 }
@@ -483,19 +508,21 @@ pub async fn mark_read(
     let flag = i64::from(read);
     let now = now_unix();
     let mut total = 0;
-    for chunk in ids.chunks(MAX_BIND_PARAMS - 3) {
-        let placeholders = in_clause(4, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "UPDATE entry SET is_read = ?1, lastUserModified = ?2
-             WHERE id_user = ?3 AND is_read <> ?1 AND id IN {placeholders}"
-        )))
-        .bind(flag)
-        .bind(now)
-        .bind(id_user);
-        for id in chunk {
-            query = query.bind(id.micros());
-        }
-        total += query.execute(&mut *conn).await?.rows_affected() as usize;
+    for chunk in chunks(ids, 4) {
+        // The flag appears twice, in the `SET` and in the "only rows that differ" guard, and an
+        // anonymous placeholder is bound once per occurrence, so it is pushed twice.
+        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE entry SET is_read = ");
+        builder
+            .push_bind(flag)
+            .push(", lastUserModified = ")
+            .push_bind(now)
+            .push(" WHERE id_user = ")
+            .push_bind(id_user)
+            .push(" AND is_read <> ")
+            .push_bind(flag)
+            .push(" AND id ");
+        push_in_list(&mut builder, chunk.iter().map(|id| id.micros()));
+        total += builder.build().execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(total)
 }
@@ -509,19 +536,19 @@ pub async fn mark_favorite(
     let flag = i64::from(favorite);
     let now = now_unix();
     let mut total = 0;
-    for chunk in ids.chunks(MAX_BIND_PARAMS - 3) {
-        let placeholders = in_clause(4, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "UPDATE entry SET is_favorite = ?1, lastUserModified = ?2
-             WHERE id_user = ?3 AND is_favorite <> ?1 AND id IN {placeholders}"
-        )))
-        .bind(flag)
-        .bind(now)
-        .bind(id_user);
-        for id in chunk {
-            query = query.bind(id.micros());
-        }
-        total += query.execute(&mut *conn).await?.rows_affected() as usize;
+    for chunk in chunks(ids, 4) {
+        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE entry SET is_favorite = ");
+        builder
+            .push_bind(flag)
+            .push(", lastUserModified = ")
+            .push_bind(now)
+            .push(" WHERE id_user = ")
+            .push_bind(id_user)
+            .push(" AND is_favorite <> ")
+            .push_bind(flag)
+            .push(" AND id ");
+        push_in_list(&mut builder, chunk.iter().map(|id| id.micros()));
+        total += builder.build().execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(total)
 }

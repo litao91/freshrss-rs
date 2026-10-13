@@ -1,10 +1,10 @@
 //! `feed` table access, including the due-feed selection query that drives the refresh scheduler.
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Connection as _, Row as _, SqliteConnection};
+use sqlx::{Connection as _, QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::{in_clause, sql, MAX_BIND_PARAMS};
+use crate::db::dao::{chunks, push_in_list};
 use crate::domain::attributes::Attributes;
 use crate::domain::feed::Feed;
 use crate::domain::kind::FeedKind;
@@ -82,14 +82,18 @@ pub async fn find_by_id(
     id: i64,
     id_user: i64,
 ) -> Result<Option<Feed>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM feed WHERE id = ?1 AND id_user = ?2"
-    )))
-    .bind(id)
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM feed WHERE id = ")
+        .push_bind(id)
+        .push(" AND id_user = ")
+        .push_bind(id_user);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 /// Duplicate check before subscribing. Scoped by user, so two people may follow the same feed.
@@ -98,24 +102,33 @@ pub async fn find_by_url(
     id_user: i64,
     url: &str,
 ) -> Result<Option<Feed>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM feed WHERE id_user = ?1 AND url = ?2 LIMIT 1"
-    )))
-    .bind(id_user)
-    .bind(url)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM feed WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" AND url = ")
+        .push_bind(url)
+        .push(" LIMIT 1");
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Feed>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM feed WHERE id_user = ?1 ORDER BY name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM feed WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" ORDER BY name COLLATE NOCASE");
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn list_by_category(
@@ -123,15 +136,22 @@ pub async fn list_by_category(
     id_user: i64,
     category: i64,
 ) -> Result<Vec<Feed>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM feed WHERE id_user = ?1 AND category = ?2
-         ORDER BY name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .bind(category)
-    .try_map(from_row)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM feed WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" AND category = ")
+        .push_bind(category)
+        .push(
+            "
+         ORDER BY name COLLATE NOCASE",
+        );
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn count(conn: &mut SqliteConnection, id_user: i64) -> Result<i64> {
@@ -159,21 +179,25 @@ pub async fn list_due(conn: &mut SqliteConnection, now: i64, limit: usize) -> Re
     // `json_extract` reads `ttl_default` out of the user's config blob. It stays there rather than
     // being promoted to a column so there is exactly one copy of the value; the query runs once per
     // scheduler tick over an indexed candidate set, so the extraction is not on a hot path.
-    let statement = sql(format!(
-        "SELECT {COLUMNS_ALIASED} FROM feed f
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder.push(COLUMNS_ALIASED).push(
+        " FROM feed f
          INNER JOIN user u ON u.id = f.id_user
          WHERE f.ttl >= 0 AND u.enabled = 1
            AND (CASE WHEN f.error > f.lastUpdate THEN f.error ELSE f.lastUpdate END)
-               < (?1 + 60 - COALESCE(
+               < (",
+    );
+    builder.push_bind(now).push(
+        " + 60 - COALESCE(
                      NULLIF(f.ttl, 0),
                      CAST(json_extract(u.config, '$.ttl_default') AS INTEGER),
                      3600))
          ORDER BY (CASE WHEN f.error > f.lastUpdate THEN f.error ELSE f.lastUpdate END) ASC
-         LIMIT ?2"
-    ));
-    Ok(sqlx::query(statement)
-        .bind(now)
-        .bind(limit as i64)
+         LIMIT ",
+    );
+    builder.push_bind(limit as i64);
+    Ok(builder
+        .build()
         .try_map(from_row)
         .fetch_all(&mut *conn)
         .await?)
@@ -186,22 +210,31 @@ pub async fn list_due_for_user(
     now: i64,
     limit: usize,
 ) -> Result<Vec<Feed>> {
-    let statement = sql(format!(
-        "SELECT {COLUMNS_ALIASED} FROM feed f
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS_ALIASED)
+        .push(
+            " FROM feed f
          INNER JOIN user u ON u.id = f.id_user
-         WHERE f.id_user = ?3 AND f.ttl >= 0
+         WHERE f.id_user = ",
+        )
+        .push_bind(id_user)
+        .push(
+            " AND f.ttl >= 0
            AND (CASE WHEN f.error > f.lastUpdate THEN f.error ELSE f.lastUpdate END)
-               < (?1 + 60 - COALESCE(
+               < (",
+        );
+    builder.push_bind(now).push(
+        " + 60 - COALESCE(
                      NULLIF(f.ttl, 0),
                      CAST(json_extract(u.config, '$.ttl_default') AS INTEGER),
                      3600))
          ORDER BY (CASE WHEN f.error > f.lastUpdate THEN f.error ELSE f.lastUpdate END) ASC
-         LIMIT ?2"
-    ));
-    Ok(sqlx::query(statement)
-        .bind(now)
-        .bind(limit as i64)
-        .bind(id_user)
+         LIMIT ",
+    );
+    builder.push_bind(limit as i64);
+    Ok(builder
+        .build()
         .try_map(from_row)
         .fetch_all(&mut *conn)
         .await?)
@@ -209,15 +242,23 @@ pub async fn list_due_for_user(
 
 /// Feeds with a recorded failure or muted, for the reader's "Feeds with problems" dialog.
 pub async fn list_with_problems(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Feed>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM feed
-         WHERE id_user = ?1 AND (error > 0 OR ttl < 0)
-         ORDER BY error DESC, name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(
+            " FROM feed
+         WHERE id_user = ",
+        )
+        .push_bind(id_user)
+        .push(
+            " AND (error > 0 OR ttl < 0)
+         ORDER BY error DESC, name COLLATE NOCASE",
+        );
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 // --- updates ---------------------------------------------------------------
@@ -443,19 +484,16 @@ pub async fn update_cached_values(conn: &mut SqliteConnection, ids: &[i64]) -> R
         return Ok(0);
     }
     let mut total = 0;
-    for chunk in ids.chunks(MAX_BIND_PARAMS) {
-        let placeholders = in_clause(1, chunk.len());
-        let mut query = sqlx::query(sql(format!(
+    for chunk in chunks(ids, 0) {
+        let mut builder = QueryBuilder::<Sqlite>::new(
             "UPDATE feed SET
                  cache_nbEntries = (SELECT COUNT(*) FROM entry e WHERE e.id_feed = feed.id),
                  cache_nbUnreads = (SELECT COUNT(*) FROM entry e
                                     WHERE e.id_feed = feed.id AND e.is_read = 0)
-             WHERE id IN {placeholders}"
-        )));
-        for id in chunk {
-            query = query.bind(*id);
-        }
-        total += query.execute(&mut *conn).await?.rows_affected() as usize;
+             WHERE id ",
+        );
+        push_in_list(&mut builder, chunk.iter().copied());
+        total += builder.build().execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(total)
 }

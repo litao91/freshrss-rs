@@ -26,14 +26,13 @@ use std::sync::LazyLock;
 use freshrss_search::ast::{DateField, DateRange, Expr, IdSet, Pred, TextPat};
 use freshrss_search::matcher::{matches, SearchTarget};
 use freshrss_search::regex::Pattern;
-use freshrss_search::sql::{compile, SqlCtx};
-use freshrss_server::db::sql::{bind_all, sql, SqlValue};
+use freshrss_search::sql::{compile, Param, SqlCtx};
 use freshrss_server::db::Db;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::subsequence;
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row as _;
+use sqlx::{QueryBuilder, Row as _, Sqlite};
 
 use common::{insert_entry, SeededEntry};
 
@@ -225,19 +224,36 @@ impl Harness {
     /// The ids the SQL backend returns, restricted to one user the way every listing query is.
     fn sql_ids(&self, expr: &Expr) -> BTreeSet<i64> {
         let fragment = compile(expr, &SqlCtx::default()).expect("compiles");
-        // The user fence is a bare `?` too, not `?1`: sqlx resolves an anonymous placeholder by
-        // counting the anonymous ones it has seen, so numbering this one would hand it the
-        // fragment's first parameter as well. The compiler emits bare `?` throughout.
-        let statement = format!(
-            "SELECT e.id FROM entry e WHERE e.id_user = ? AND ({}) ORDER BY e.id",
-            fragment.sql
-        );
-        let mut params = vec![SqlValue::Int(self.id_user)];
-        params.extend(fragment.params.iter().map(SqlValue::from));
+        // Every placeholder in the statement is anonymous, the user fence's included: sqlx's SQLite
+        // driver binds an anonymous `?` by counting the anonymous ones before it, so numbering any of
+        // them would hand the rest the wrong values. The fragment is taken apart at its own
+        // placeholders and pushed back piece by piece for the same reason — `push_bind` emits a
+        // placeholder of its own, so pushing the fragment's text whole would leave its `?`s unbound.
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT e.id FROM entry e WHERE e.id_user = ");
+        builder.push_bind(self.id_user).push(" AND (");
+        let mut parts = fragment.sql.split('?');
+        builder.push(parts.next().unwrap_or(""));
+        for (part, param) in parts.zip(&fragment.params) {
+            match param {
+                Param::Text(needle) => {
+                    builder.push_bind(needle.as_str());
+                }
+                Param::Int(id) => {
+                    builder.push_bind(*id);
+                }
+                Param::Null => {
+                    builder.push_bind(None::<i64>);
+                }
+            }
+            builder.push(part);
+        }
+        builder.push(") ORDER BY e.id");
 
         self.rt
             .block_on(self.db.with(|mut conn| async move {
-                Ok(bind_all(sqlx::query(sql(statement)), params)
+                Ok(builder
+                    .build()
                     .try_map(|row: SqliteRow| row.try_get::<i64, _>(0))
                     .fetch_all(&mut *conn)
                     .await?)

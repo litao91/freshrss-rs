@@ -4,9 +4,8 @@
 //! revoked individually, and swept when it expires. A signed-JWT cookie would be stateless but
 //! then "sign out everywhere" and the account menu's session list are both impossible.
 
-use sqlx::SqliteConnection;
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
-use crate::db::sql::sql;
 use crate::domain::ids::now_unix;
 use crate::error::Result;
 
@@ -72,33 +71,46 @@ const COLUMNS_ALIASED: &str = "s.id, s.id_user, s.created_at, s.expires_at, s.ip
 /// replayed after the account was disabled and because the sweep is opportunistic.
 pub async fn find_valid(conn: &mut SqliteConnection, id: &str) -> Result<Option<Session>> {
     let now = now_unix();
-    Ok(sqlx::query_as(sql(format!(
-        "SELECT {COLUMNS_ALIASED} FROM session s
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder.push(COLUMNS_ALIASED).push(
+        " FROM session s
          INNER JOIN user u ON u.id = s.id_user
-         WHERE s.id = ?1 AND s.expires_at > ?2 AND u.enabled = 1"
-    )))
-    .bind(id)
-    .bind(now)
-    .fetch_optional(&mut *conn)
-    .await?)
+         WHERE s.id = ",
+    );
+    builder
+        .push_bind(id)
+        .push(" AND s.expires_at > ")
+        .push_bind(now)
+        .push(" AND u.enabled = 1");
+    Ok(builder
+        .build_query_as::<Session>()
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn find(conn: &mut SqliteConnection, id: &str) -> Result<Option<Session>> {
-    Ok(
-        sqlx::query_as(sql(format!("SELECT {COLUMNS} FROM session WHERE id = ?1")))
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?,
-    )
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM session WHERE id = ")
+        .push_bind(id);
+    Ok(builder
+        .build_query_as::<Session>()
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn list_for_user(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Session>> {
-    Ok(sqlx::query_as(sql(format!(
-        "SELECT {COLUMNS} FROM session WHERE id_user = ?1 ORDER BY created_at DESC"
-    )))
-    .bind(id_user)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM session WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" ORDER BY created_at DESC");
+    Ok(builder
+        .build_query_as::<Session>()
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn revoke(conn: &mut SqliteConnection, id: &str) -> Result<bool> {

@@ -15,7 +15,6 @@ use freshrss_server::db::dao::entry_query::{count_unread, list, Cursor, CursorVa
 use freshrss_server::db::dao::{
     category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao,
 };
-use freshrss_server::db::sql::sql;
 use freshrss_server::db::Db;
 use freshrss_server::domain::attributes::Attributes;
 use freshrss_server::domain::category::CategoryKind;
@@ -27,7 +26,7 @@ use freshrss_server::domain::priority::Priority;
 use freshrss_server::domain::sort::{Order, SecondarySort, Sort};
 use freshrss_server::domain::state::EntryState;
 use freshrss_server::{Error, Result};
-use sqlx::{Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{QueryBuilder, Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use common::{insert_entry, SeededEntry};
 
@@ -251,20 +250,24 @@ async fn boundary(c: &Corpus, q: &EntryQuery, id: EntryId) -> Cursor {
     selects.extend(middle.map(str::to_owned));
     selects.extend(secondary.map(str::to_owned));
 
-    let statement = format!(
-        "SELECT {} FROM entry e
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    {
+        let mut columns = builder.separated(", ");
+        for select in &selects {
+            columns.push(select);
+        }
+    }
+    builder.push(
+        " FROM entry e
            INNER JOIN feed f ON f.id = e.id_feed
            LEFT JOIN category c ON c.id = f.category
-          WHERE e.id = ?1",
-        selects.join(", ")
+          WHERE e.id = ",
     );
+    builder.push_bind(id.micros());
 
     let values =
         c.db.with(|mut conn| async move {
-            let row = sqlx::query(sql(statement))
-                .bind(id.micros())
-                .fetch_one(&mut *conn)
-                .await?;
+            let row = builder.build().fetch_one(&mut *conn).await?;
             (0..selects.len())
                 .map(|i| {
                     // Numeric expressions come back as integers and everything else as text, which
@@ -361,10 +364,12 @@ async fn unread_count(c: &Corpus, q: &EntryQuery) -> i64 {
 }
 
 /// One `COUNT(*)` from hand-written SQL, so a listing is never checked against its own query.
-async fn count(c: &Corpus, statement: &str, params: Vec<i64>) -> i64 {
-    let owned = statement.to_owned();
+///
+/// The statement is a literal this file wrote, and every placeholder in it is numbered, so it goes
+/// straight to `query_scalar` rather than through a builder.
+async fn count(c: &Corpus, statement: &'static str, params: Vec<i64>) -> i64 {
     c.db.with(|mut conn| async move {
-        let mut query = sqlx::query_scalar(sql(owned));
+        let mut query = sqlx::query_scalar(statement);
         for value in params {
             query = query.bind(value);
         }

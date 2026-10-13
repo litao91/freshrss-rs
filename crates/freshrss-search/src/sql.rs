@@ -43,7 +43,13 @@ impl Default for SqlCtx<'_> {
     }
 }
 
-/// A compiled fragment: SQL text with `?` placeholders, and the values to bind in order.
+/// A compiled fragment: SQL text with a bare `?` per value, and the values to bind in order.
+///
+/// Bare rather than numbered `?N` on purpose. The server splices a fragment into a larger statement
+/// assembled by `sqlx::QueryBuilder`, whose placeholders are bare too, and sqlx's SQLite driver binds a
+/// bare `?` by counting the bare ones before it — so a fragment that numbered its own would take its
+/// values from the start of the surrounding list instead. Exactly one placeholder per parameter, and no
+/// `?` anywhere else in the text, is what makes the splice safe.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Fragment {
     pub sql: String,
@@ -54,8 +60,8 @@ pub struct Fragment {
 ///
 /// Deliberately this crate's own type rather than a driver's: `freshrss-search` has no database
 /// dependency at all, which is what lets the compiled SQL be asserted on as text and the whole
-/// grammar be tested without a connection. The server converts a `Param` into a sqlx bind value in
-/// `db::sql`.
+/// grammar be tested without a connection. The server turns a fragment back into bound values by
+/// splitting its text at these placeholders and binding one `Param` at each.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Param {
     Text(String),

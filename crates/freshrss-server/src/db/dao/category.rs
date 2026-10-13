@@ -4,10 +4,9 @@
 //! unique per user, so an unscoped lookup by name would return another user's folder.
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Connection as _, Row as _, SqliteConnection};
+use sqlx::{Connection as _, QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::sql;
 use crate::domain::attributes::Attributes;
 use crate::domain::category::{Category, CategoryKind};
 use crate::error::Result;
@@ -59,14 +58,18 @@ pub async fn find_by_id(
     id: i64,
     id_user: i64,
 ) -> Result<Option<Category>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM category WHERE id = ?1 AND id_user = ?2"
-    )))
-    .bind(id)
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM category WHERE id = ")
+        .push_bind(id)
+        .push(" AND id_user = ")
+        .push_bind(id_user);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 /// Looks a folder up by name, for "add this feed to the folder called X" during OPML import.
@@ -75,25 +78,33 @@ pub async fn find_by_name(
     id_user: i64,
     name: &str,
 ) -> Result<Option<Category>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM category WHERE id_user = ?1 AND name = ?2"
-    )))
-    .bind(id_user)
-    .bind(name)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM category WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" AND name = ")
+        .push_bind(name);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 /// All folders for a user, in sidebar order.
 pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Category>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM category WHERE id_user = ?1 ORDER BY position, name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM category WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" ORDER BY position, name COLLATE NOCASE");
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn count(conn: &mut SqliteConnection, id_user: i64) -> Result<i64> {

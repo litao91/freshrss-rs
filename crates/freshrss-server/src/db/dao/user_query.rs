@@ -7,10 +7,10 @@
 use std::collections::HashSet;
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Connection as _, Row as _, SqliteConnection};
+use sqlx::{Connection as _, QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::{chunks, in_clause, sql};
+use crate::db::dao::{chunks, push_in_list};
 use crate::domain::list_type::ListType;
 use crate::domain::state::EntryState;
 use crate::domain::user_query::SavedQuery;
@@ -43,13 +43,17 @@ fn from_row(row: SqliteRow) -> std::result::Result<SavedQuery, sqlx::Error> {
 }
 
 pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<SavedQuery>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM user_query WHERE id_user = ?1 ORDER BY position, name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user_query WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" ORDER BY position, name COLLATE NOCASE");
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn find_by_id(
@@ -57,14 +61,18 @@ pub async fn find_by_id(
     id: i64,
     id_user: i64,
 ) -> Result<Option<SavedQuery>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM user_query WHERE id = ?1 AND id_user = ?2"
-    )))
-    .bind(id)
-    .bind(id_user)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user_query WHERE id = ")
+        .push_bind(id)
+        .push(" AND id_user = ")
+        .push_bind(id_user);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn find_by_name(
@@ -72,14 +80,18 @@ pub async fn find_by_name(
     id_user: i64,
     name: &str,
 ) -> Result<Option<SavedQuery>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM user_query WHERE id_user = ?1 AND name = ?2"
-    )))
-    .bind(id_user)
-    .bind(name)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user_query WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" AND name = ")
+        .push_bind(name);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn insert(conn: &mut SqliteConnection, query: &SavedQuery) -> Result<i64> {
@@ -154,16 +166,11 @@ pub async fn set_positions(
     // One lookup of what this user actually owns, so the updates below cannot touch another user's row
     // however the id list was assembled.
     let mut owned = HashSet::new();
-    for chunk in chunks(ids) {
-        let placeholders = in_clause(2, chunk.len());
-        let mut query = sqlx::query(sql(format!(
-            "SELECT id FROM user_query WHERE id_user = ?1 AND id IN {placeholders}"
-        )))
-        .bind(id_user);
-        for id in chunk {
-            query = query.bind(*id);
-        }
-        for row in query.fetch_all(&mut *conn).await? {
+    for chunk in chunks(ids, 1) {
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT id FROM user_query WHERE id_user = ");
+        builder.push_bind(id_user).push(" AND id ");
+        push_in_list(&mut builder, chunk.iter().copied());
+        for row in builder.build().fetch_all(&mut *conn).await? {
             owned.insert(row.get::<i64, _>("id"));
         }
     }

@@ -1,10 +1,9 @@
 //! `user` table access.
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Connection as _, Row as _, SqliteConnection};
+use sqlx::{Connection as _, QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::sql;
 use crate::domain::attributes::Attributes;
 use crate::domain::ids::now_unix;
 use crate::domain::user::{User, UserConfig};
@@ -81,44 +80,54 @@ pub async fn insert(conn: &mut SqliteConnection, new: &NewUser<'_>) -> Result<i6
 }
 
 pub async fn find_by_id(conn: &mut SqliteConnection, id: i64) -> Result<Option<User>> {
-    Ok(
-        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user WHERE id = ?1")))
-            .bind(id)
-            .try_map(from_row)
-            .fetch_optional(&mut *conn)
-            .await?,
-    )
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user WHERE id = ")
+        .push_bind(id);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 /// Looks a user up by username. The column is `COLLATE NOCASE`, so this matches regardless of the
 /// case the visitor typed at the login form.
 pub async fn find_by_username(conn: &mut SqliteConnection, username: &str) -> Result<Option<User>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM user WHERE username = ?1"
-    )))
-    .bind(username)
-    .try_map(from_row)
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user WHERE username = ")
+        .push_bind(username);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn find_by_email(conn: &mut SqliteConnection, email: &str) -> Result<Option<User>> {
-    Ok(
-        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user WHERE email = ?1")))
-            .bind(email)
-            .try_map(from_row)
-            .fetch_optional(&mut *conn)
-            .await?,
-    )
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user WHERE email = ")
+        .push_bind(email);
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<User>> {
-    Ok(
-        sqlx::query(sql(format!("SELECT {COLUMNS} FROM user ORDER BY username")))
-            .try_map(from_row)
-            .fetch_all(&mut *conn)
-            .await?,
-    )
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder.push(COLUMNS).push(" FROM user ORDER BY username");
+    Ok(builder
+        .build()
+        .try_map(from_row)
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 pub async fn count(conn: &mut SqliteConnection) -> Result<i64> {

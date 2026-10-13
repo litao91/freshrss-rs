@@ -6,10 +6,9 @@
 //! the last refresh saw" clause is unconditional, so a feed that truncates its window to ten items
 //! cannot empty a reader's archive.
 
-use sqlx::SqliteConnection;
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 use crate::config::ArchivingOptions;
-use crate::db::sql::{bind_all, sql, SqlValue};
 use crate::error::Result;
 
 /// Deletes the articles one feed no longer keeps, and returns how many went.
@@ -28,44 +27,42 @@ pub async fn clean_old_entries(
     options: &ArchivingOptions,
     now: i64,
 ) -> Result<usize> {
-    let mut text = String::from("DELETE FROM entry WHERE id_feed = ?1");
-    let mut params: Vec<SqlValue> = vec![SqlValue::Int(id_feed)];
-    let mut next = 2usize;
+    let mut builder = QueryBuilder::<Sqlite>::new("DELETE FROM entry WHERE id_feed = ");
+    builder.push_bind(id_feed);
 
     if options.keep_favourites {
-        text.push_str(" AND is_favorite = 0");
+        builder.push(" AND is_favorite = 0");
     }
     if options.keep_unreads {
-        text.push_str(" AND is_read = 1");
+        builder.push(" AND is_read = 1");
     }
     if options.keep_labels {
-        text.push_str(" AND NOT EXISTS (SELECT 1 FROM entrytag WHERE id_entry = entry.id)");
+        builder.push(" AND NOT EXISTS (SELECT 1 FROM entrytag WHERE id_entry = entry.id)");
     }
     if options.keep_min.is_some_and(|n| n > 0) {
         // The `keep_min`-th most recently seen article's `lastSeen`, as a bound: everything seen
         // strictly before it is old enough to consider. The nested select is PHP's workaround for
         // MySQL's refusal to read the table it is deleting from; SQLite accepts it too.
-        text.push_str(&format!(
+        builder.push(
             " AND lastSeen < (SELECT lastSeen FROM (SELECT e2.lastSeen FROM entry e2 \
-             WHERE e2.id_feed = ?{a} ORDER BY e2.lastSeen DESC LIMIT 1 OFFSET ?{b}))",
-            a = next,
-            b = next + 1
-        ));
-        params.push(SqlValue::Int(id_feed));
-        params.push(SqlValue::Int(i64::from(options.keep_min.unwrap_or(0))));
-        next += 2;
+             WHERE e2.id_feed = ",
+        );
+        builder
+            .push_bind(id_feed)
+            .push(" ORDER BY e2.lastSeen DESC LIMIT 1 OFFSET ");
+        builder
+            .push_bind(i64::from(options.keep_min.unwrap_or(0)))
+            .push("))");
     }
     // Unconditional: whatever the most recent refresh still saw upstream stays, however old it is.
     // A feed that publishes once a year must not lose its only article to a three-month age bound.
-    text.push_str(&format!(
+    builder.push(
         " AND lastSeen < (SELECT maxlastseen FROM (SELECT MAX(e3.lastSeen) AS maxlastseen \
-         FROM entry e3 WHERE e3.id_feed = ?{a}))",
-        a = next
-    ));
-    params.push(SqlValue::Int(id_feed));
-    next += 1;
+         FROM entry e3 WHERE e3.id_feed = ",
+    );
+    builder.push_bind(id_feed).push("))");
 
-    text.push_str(" AND (1=0");
+    builder.push(" AND (1=0");
     let mut bounded = false;
     if let Some(period) = options
         .keep_period
@@ -75,9 +72,8 @@ pub async fn clean_old_entries(
     {
         match age_cutoff(period, now) {
             Some(cutoff) => {
-                text.push_str(&format!(" OR lastSeen < ?{a}", a = next));
-                params.push(SqlValue::Int(cutoff));
-                next += 1;
+                builder.push(" OR lastSeen < ");
+                builder.push_bind(cutoff);
                 bounded = true;
             }
             None => tracing::warn!(
@@ -88,25 +84,24 @@ pub async fn clean_old_entries(
         }
     }
     if options.keep_max.is_some_and(|n| n > 0) {
-        text.push_str(&format!(
+        builder.push(
             " OR lastSeen <= (SELECT lastSeen FROM (SELECT e4.lastSeen FROM entry e4 \
-             WHERE e4.id_feed = ?{a} ORDER BY e4.lastSeen DESC LIMIT 1 OFFSET ?{b}))",
-            a = next,
-            b = next + 1
-        ));
-        params.push(SqlValue::Int(id_feed));
-        params.push(SqlValue::Int(i64::from(options.keep_max.unwrap_or(0))));
+             WHERE e4.id_feed = ",
+        );
+        builder
+            .push_bind(id_feed)
+            .push(" ORDER BY e4.lastSeen DESC LIMIT 1 OFFSET ");
+        builder
+            .push_bind(i64::from(options.keep_max.unwrap_or(0)))
+            .push("))");
         bounded = true;
     }
-    text.push(')');
+    builder.push(')');
 
     if !bounded {
         return Ok(0);
     }
-    Ok(bind_all(sqlx::query(sql(text)), params)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected() as usize)
+    Ok(builder.build().execute(&mut *conn).await?.rows_affected() as usize)
 }
 
 /// `now` minus `period`, via the same ISO-8601 parser the `date:` search operator uses.

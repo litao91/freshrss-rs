@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Connection as _, Row as _, SqliteConnection};
+use sqlx::{Connection as _, QueryBuilder, Row as _, Sqlite, SqliteConnection};
 
 use crate::db::dao::row_attributes;
-use crate::db::sql::{in_clause, sql, MAX_BIND_PARAMS};
+use crate::db::dao::{chunks, push_in_list, MAX_BIND_PARAMS};
 use crate::domain::attributes::Attributes;
 use crate::domain::tag::Tag;
 use crate::error::Result;
@@ -70,14 +70,18 @@ pub async fn find_or_create(conn: &mut SqliteConnection, id_user: i64, name: &st
 }
 
 pub async fn find_by_id(conn: &mut SqliteConnection, id: i64, id_user: i64) -> Result<Option<Tag>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM tag WHERE id = ?1 AND id_user = ?2"
-    )))
-    .bind(id)
-    .bind(id_user)
-    .try_map(|row: SqliteRow| tag_of(&row))
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM tag WHERE id = ")
+        .push_bind(id)
+        .push(" AND id_user = ")
+        .push_bind(id_user);
+    Ok(builder
+        .build()
+        .try_map(|row: SqliteRow| tag_of(&row))
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn find_by_name(
@@ -85,24 +89,32 @@ pub async fn find_by_name(
     id_user: i64,
     name: &str,
 ) -> Result<Option<Tag>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM tag WHERE id_user = ?1 AND name = ?2"
-    )))
-    .bind(id_user)
-    .bind(name)
-    .try_map(|row: SqliteRow| tag_of(&row))
-    .fetch_optional(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM tag WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" AND name = ")
+        .push_bind(name);
+    Ok(builder
+        .build()
+        .try_map(|row: SqliteRow| tag_of(&row))
+        .fetch_optional(&mut *conn)
+        .await?)
 }
 
 pub async fn list(conn: &mut SqliteConnection, id_user: i64) -> Result<Vec<Tag>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS} FROM tag WHERE id_user = ?1 ORDER BY name COLLATE NOCASE"
-    )))
-    .bind(id_user)
-    .try_map(|row: SqliteRow| tag_of(&row))
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM tag WHERE id_user = ")
+        .push_bind(id_user)
+        .push(" ORDER BY name COLLATE NOCASE");
+    Ok(builder
+        .build()
+        .try_map(|row: SqliteRow| tag_of(&row))
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 /// Labels together with how many articles each is on, for the sidebar. One query rather than a
@@ -220,24 +232,17 @@ pub async fn tag_entries(
         return Ok(0);
     }
     let mut added = 0;
-    // One parameter is taken by the tag id, so the entry chunk must leave room for it.
-    for chunk in id_entries.chunks(MAX_BIND_PARAMS - 1) {
+    // Two parameters per row, because an anonymous placeholder is bound once per occurrence: the tag
+    // id cannot be written once and referenced by every row. The chunk is sized for that.
+    for chunk in id_entries.chunks(MAX_BIND_PARAMS / 2) {
         // One statement per chunk rather than per row: a refresh can commit thousands of articles
         // and a label rule matching most of them would otherwise issue thousands of inserts.
-        let mut statement =
-            String::from("INSERT OR IGNORE INTO entrytag (id_tag, id_entry) VALUES ");
-        for (i, _) in chunk.iter().enumerate() {
-            if i > 0 {
-                statement.push(',');
-            }
-            // ?1 is the tag; the entry ids follow.
-            statement.push_str(&format!("(?1,?{})", i + 2));
-        }
-        let mut query = sqlx::query(sql(statement)).bind(id_tag);
-        for entry_id in chunk {
-            query = query.bind(*entry_id);
-        }
-        added += query.execute(&mut *conn).await?.rows_affected() as usize;
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("INSERT OR IGNORE INTO entrytag (id_tag, id_entry)");
+        builder.push_values(chunk.iter().copied(), |mut row, id_entry| {
+            row.push_bind(id_tag).push_bind(id_entry);
+        });
+        added += builder.build().execute(&mut *conn).await?.rows_affected() as usize;
     }
     Ok(added)
 }
@@ -277,16 +282,24 @@ pub async fn set_entry_tags(
 }
 
 pub async fn labels_for_entry(conn: &mut SqliteConnection, id_entry: i64) -> Result<Vec<Tag>> {
-    Ok(sqlx::query(sql(format!(
-        "SELECT {COLUMNS_ALIASED} FROM tag t
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS_ALIASED)
+        .push(
+            " FROM tag t
          INNER JOIN entrytag et ON et.id_tag = t.id
-         WHERE et.id_entry = ?1
-         ORDER BY t.name COLLATE NOCASE"
-    )))
-    .bind(id_entry)
-    .try_map(|row: SqliteRow| tag_of(&row))
-    .fetch_all(&mut *conn)
-    .await?)
+         WHERE et.id_entry = ",
+        )
+        .push_bind(id_entry)
+        .push(
+            "
+         ORDER BY t.name COLLATE NOCASE",
+        );
+    Ok(builder
+        .build()
+        .try_map(|row: SqliteRow| tag_of(&row))
+        .fetch_all(&mut *conn)
+        .await?)
 }
 
 /// Labels for many articles in one query, keyed by entry id.
@@ -298,19 +311,23 @@ pub async fn labels_for_entries(
     id_entries: &[i64],
 ) -> Result<HashMap<i64, Vec<Tag>>> {
     let mut out: HashMap<i64, Vec<Tag>> = HashMap::new();
-    for chunk in id_entries.chunks(MAX_BIND_PARAMS) {
-        let placeholders = in_clause(1, chunk.len());
-        let mut query = sqlx::query(sql(format!(
+    for chunk in chunks(id_entries, 0) {
+        let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT et.id_entry, t.id, t.id_user, t.name, t.attributes, t.name_folded
              FROM entrytag et
              INNER JOIN tag t ON t.id = et.id_tag
-             WHERE et.id_entry IN {placeholders}
-             ORDER BY t.name COLLATE NOCASE"
-        )));
-        for entry_id in chunk {
-            query = query.bind(*entry_id);
-        }
-        let rows = query.try_map(entry_label_of).fetch_all(&mut *conn).await?;
+             WHERE et.id_entry ",
+        );
+        push_in_list(&mut builder, chunk.iter().copied());
+        builder.push(
+            "
+             ORDER BY t.name COLLATE NOCASE",
+        );
+        let rows = builder
+            .build()
+            .try_map(entry_label_of)
+            .fetch_all(&mut *conn)
+            .await?;
         for (entry_id, tag) in rows {
             out.entry(entry_id).or_default().push(tag);
         }

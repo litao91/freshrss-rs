@@ -1,9 +1,10 @@
 //! The entry-listing query builder — a port of FreshRSS's `sqlListWhere` + `listWhereRaw`.
 //!
 //! Isolated in its own module because it is the most intricate SQL in the crate and because the SQL
-//! half of it is *pure*: [`EntryQuery::build_rows`] turns a request into a string and a parameter list
-//! with no connection in sight, so every shape below is testable without a database. [`list`] and
-//! [`count_unread`] at the bottom are the only two functions that touch one.
+//! half of it is *pure*: [`EntryQuery::build_rows`] turns a request into a [`sqlx::QueryBuilder`] —
+//! statement text and bound values, in the same order — with no connection in sight, so every shape
+//! below is testable without a database. [`list`] and [`count_unread`] at the bottom are the only two
+//! functions that touch one.
 //!
 //! # Two statements, not one
 //!
@@ -41,14 +42,15 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, SqliteConnection, TypeInfo as _, ValueRef as _};
+use sqlx::{
+    Either, QueryBuilder, Row as _, Sqlite, SqliteConnection, TypeInfo as _, ValueRef as _,
+};
 
 use freshrss_search::ast::Expr;
-use freshrss_search::sql::{compile, SqlCtx};
+use freshrss_search::sql::{compile, Fragment, Param, SqlCtx};
 use freshrss_search::visibility::min_priority;
 
 use crate::db::dao::entry;
-use crate::db::sql::{bind_all, sql, SqlValue};
 use crate::domain::entry::Entry;
 use crate::domain::ids::EntryId;
 use crate::domain::list_type::ListType;
@@ -99,20 +101,22 @@ pub enum CursorValue {
 }
 
 impl CursorValue {
-    /// Binds as the type `numeric` says the column holds.
+    /// The boundary value in the type `numeric` says the column holds: [`Either::Left`] for a number,
+    /// [`Either::Right`] for text.
     ///
     /// A cursor is opaque client-held state, so one written by an older build can arrive with the wrong
     /// shape; converting it here costs one `parse` and beats returning the wrong page.
-    fn bind(&self, numeric: bool) -> SqlValue {
+    fn coerced(&self, numeric: bool) -> Either<i64, String> {
         match (self, numeric) {
-            (CursorValue::Int(v), true) => SqlValue::Int(*v),
-            (CursorValue::Text(t), false) => SqlValue::Text(t.clone()),
-            (CursorValue::Int(v), false) => SqlValue::Text(v.to_string()),
-            (CursorValue::Text(t), true) => t
-                .trim()
-                .parse::<i64>()
-                .map(SqlValue::Int)
-                .unwrap_or(SqlValue::Text(t.clone())),
+            (CursorValue::Int(v), true) => Either::Left(*v),
+            (CursorValue::Text(t), false) => Either::Right(t.clone()),
+            (CursorValue::Int(v), false) => Either::Right(v.to_string()),
+            // A boundary that will not parse stays text rather than becoming an error: it came from a
+            // column this listing sorted on, so it is the caller's data, not a mistake to report.
+            (CursorValue::Text(t), true) => match t.trim().parse::<i64>() {
+                Ok(v) => Either::Left(v),
+                Err(_) => Either::Right(t.clone()),
+            },
         }
     }
 }
@@ -175,12 +179,8 @@ impl Default for EntryQuery {
     }
 }
 
-/// A compiled statement: SQL with `?` placeholders, and the values to bind in order.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Built {
-    pub sql: String,
-    pub params: Vec<SqlValue>,
-}
+/// A compiled statement: the SQL text and the values to bind, in the order the text names them.
+pub type Built = QueryBuilder<Sqlite>;
 
 /// Which of the optional `WHERE` groups to emit.
 ///
@@ -205,28 +205,24 @@ const FOR_UNREAD_COUNT: Include = Include {
     unread_only: true,
 };
 
-/// A `WHERE` body under construction.
-#[derive(Default)]
-struct Conditions {
-    parts: Vec<String>,
-    params: Vec<SqlValue>,
+/// A `WHERE` body under construction: conditions ANDed together.
+///
+/// A condition is pushed onto the statement's own [`QueryBuilder`] rather than collected into a list of
+/// its own, so its text and its bound values are appended in one step and cannot drift apart. That is
+/// what makes an anonymous `?` safe here: sqlx's SQLite driver binds one by counting the anonymous
+/// placeholders before it, which only lines up with the value list if the two grow together.
+struct Conditions<'a> {
+    builder: &'a mut QueryBuilder<Sqlite>,
+    started: bool,
 }
 
-impl Conditions {
-    fn push(&mut self, sql: impl Into<String>) {
-        self.parts.push(sql.into());
-    }
-
-    fn bind(&mut self, sql: impl Into<String>, params: impl IntoIterator<Item = SqlValue>) {
-        self.parts.push(sql.into());
-        self.params.extend(params);
-    }
-
-    fn into_built(self, prefix: &str) -> Built {
-        Built {
-            sql: format!("{prefix}{}", self.parts.join(" AND ")),
-            params: self.params,
+impl<'a> Conditions<'a> {
+    fn and(&mut self) -> &mut QueryBuilder<Sqlite> {
+        if self.started {
+            self.builder.push(" AND ");
         }
+        self.started = true;
+        &mut *self.builder
     }
 }
 
@@ -234,7 +230,23 @@ impl Conditions {
 struct Rung {
     expr: String,
     sign: &'static str,
-    value: SqlValue,
+    /// The boundary value, already in the type its column holds.
+    value: Either<i64, String>,
+}
+
+impl Rung {
+    /// Pushes `expr <sign> ?` and binds the boundary value beside it.
+    fn push(&self, sign: &str, builder: &mut QueryBuilder<Sqlite>) {
+        builder.push(format_args!("{} {sign} ", self.expr));
+        match &self.value {
+            Either::Left(v) => {
+                builder.push_bind(*v);
+            }
+            Either::Right(t) => {
+                builder.push_bind(t.as_str());
+            }
+        }
+    }
 }
 
 impl EntryQuery {
@@ -277,91 +289,93 @@ impl EntryQuery {
 
     /// The inner id-select, with `LIMIT` bound as the last parameter.
     pub fn build_ids(&self) -> Result<Built> {
+        let mut builder = QueryBuilder::<Sqlite>::new("");
+        self.push_ids(&mut builder)?;
+        Ok(builder)
+    }
+
+    /// Appends the inner id-select — text and parameters — to `builder`.
+    ///
+    /// Appended rather than returned because the late-row-lookup below splices it as a subquery, and a
+    /// statement must be assembled by one builder: sqlx's SQLite driver binds an anonymous `?` by
+    /// counting the anonymous placeholders before it, so values contributed by a second builder would
+    /// be bound from the start of the list all over again.
+    fn push_ids(&self, builder: &mut QueryBuilder<Sqlite>) -> Result<()> {
         self.validate()?;
         let a = INNER;
-        let where_ = self.where_body(&a, FOR_LISTING)?.into_built("WHERE ");
 
         // `SELECT DISTINCT` requires every ORDER BY expression to appear in the select list. That is
         // only a constraint for the `T` scope, which joins `entrytag` and so can return an article once
         // per label.
         let distinct = self.scope.needs_distinct() && self.sort != Sort::Rand;
-        let mut select = String::from(if distinct {
+        builder.push(if distinct {
             "SELECT DISTINCT "
         } else {
             "SELECT "
         });
-        select.push_str(&col(&a, "id"));
+        builder.push(col(&a, "id"));
         if distinct && self.sort != Sort::Id {
-            select.push_str(", ");
-            select.push_str(&sort_expr(self.sort, &a));
+            builder.push(format_args!(", {}", sort_expr(self.sort, &a)));
         }
 
-        let mut sql = format!(
-            "{select} FROM entry {ae} INNER JOIN feed {af} ON {af}.id = {ae}.id_feed ",
+        builder.push(format_args!(
+            " FROM entry {ae} INNER JOIN feed {af} ON {af}.id = {ae}.id_feed ",
             ae = a.entry,
             af = a.feed
-        );
+        ));
         if self.sort.joins_category() {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 "INNER JOIN category {ac} ON {ac}.id = {af}.category ",
                 ac = a.category,
                 af = a.feed
             ));
         }
         if self.scope.joins_entrytag() {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 "INNER JOIN entrytag et ON et.id_entry = {} ",
                 col(&a, "id")
             ));
         }
-        sql.push_str(&where_.sql);
+        builder.push("WHERE ");
+        self.where_body(&a, FOR_LISTING, builder)?;
 
         // `DISTINCT` cannot be combined with a non-deterministic ORDER BY, so the random sort groups
         // instead, which collapses the duplicate label rows just as well.
         if self.scope.needs_distinct() && self.sort == Sort::Rand {
-            sql.push_str(&format!(" GROUP BY {}", col(&a, "id")));
+            builder.push(format_args!(" GROUP BY {}", col(&a, "id")));
         }
 
-        sql.push_str(&order_by(self, &a));
-        sql.push_str(" LIMIT ?");
-
-        let mut params = where_.params;
-        params.push(SqlValue::Int(self.limit as i64));
-        Ok(Built { sql, params })
+        push_order_by(self, &a, builder);
+        builder.push(" LIMIT ");
+        builder.push_bind(self.limit as i64);
+        Ok(())
     }
 
     /// The outer late-row-lookup: full columns for the ids the inner select chose.
     pub fn build_rows(&self) -> Result<Built> {
-        let inner = self.build_ids()?;
         let a = OUTER;
-
-        let mut sql = format!(
-            "SELECT {} FROM entry {ae} INNER JOIN ({inner}) e2 ON e2.id = {id}",
-            entry::columns_aliased(a.entry),
-            ae = a.entry,
-            inner = inner.sql,
-            id = col(&a, "id")
-        );
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+        builder
+            .push(entry::columns_aliased(a.entry))
+            .push(format_args!(" FROM entry {} INNER JOIN (", a.entry));
+        self.push_ids(&mut builder)?;
+        builder.push(format_args!(") e2 ON e2.id = {}", col(&a, "id")));
         if self.sort.joins_feed() {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 " INNER JOIN feed {af} ON {af}.id = {ae}.id_feed",
                 af = a.feed,
                 ae = a.entry
             ));
         }
         if self.sort.joins_category() {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 " INNER JOIN category {ac} ON {ac}.id = {af}.category",
                 ac = a.category,
                 af = a.feed
             ));
         }
-        sql.push_str(&order_by(self, &a));
-
-        Ok(Built {
-            sql,
-            params: inner.params,
-        })
+        push_order_by(self, &a, &mut builder);
+        Ok(builder)
     }
 
     /// How many unread articles the scope holds, ignoring the cursor and the read-state filter.
@@ -371,52 +385,57 @@ impl EntryQuery {
     pub fn build_unread_count(&self) -> Result<Built> {
         self.validate()?;
         let a = INNER;
-        let where_ = self.where_body(&a, FOR_UNREAD_COUNT)?;
 
         // The scope can reference the feed's priority, and `ST` reaches labels through an EXISTS that
         // needs no join, so `feed` is the only table this statement always needs.
-        let mut sql = format!(
-            "SELECT COUNT(*) FROM entry {ae} INNER JOIN feed {af} ON {af}.id = {ae}.id_feed ",
+        let mut builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM entry ");
+        builder.push(format_args!(
+            "{ae} INNER JOIN feed {af} ON {af}.id = {ae}.id_feed ",
             ae = a.entry,
             af = a.feed
-        );
+        ));
         if self.scope == ListType::Tag {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 "INNER JOIN entrytag et ON et.id_entry = {} ",
                 col(&a, "id")
             ));
         }
         // `T` counts articles, not article-label pairs, so it reaches labels the same way `ST` does.
         if self.scope == ListType::AnyTag {
-            sql.push_str(&format!(
+            builder.push(format_args!(
                 "WHERE EXISTS (SELECT 1 FROM entrytag et2 WHERE et2.id_entry = {}) AND ",
                 col(&a, "id")
             ));
         } else {
-            sql.push_str("WHERE ");
+            builder.push("WHERE ");
         }
-        sql.push_str(&where_.parts.join(" AND "));
-
-        Ok(Built {
-            sql,
-            params: where_.params,
-        })
+        self.where_body(&a, FOR_UNREAD_COUNT, &mut builder)?;
+        Ok(builder)
     }
 
-    /// The `WHERE` groups shared by all three statements, starting from the user fence.
-    fn where_body(&self, a: &Aliases, include: Include) -> Result<Conditions> {
-        let mut w = Conditions::default();
+    /// Appends the `WHERE` groups shared by all three statements, starting from the user fence.
+    ///
+    /// The caller writes the `WHERE` keyword itself, because the unread count prefixes one of its own.
+    fn where_body(
+        &self,
+        a: &Aliases,
+        include: Include,
+        builder: &mut QueryBuilder<Sqlite>,
+    ) -> Result<()> {
+        let mut w = Conditions {
+            builder,
+            started: false,
+        };
         // First, and non-negotiable: one shared database means every listing is scoped to one user, and
         // forgetting it would show one reader another's articles.
-        w.bind(
-            format!("{} = ?", col(a, "id_user")),
-            [SqlValue::Int(self.id_user)],
-        );
+        w.and()
+            .push(format_args!("{} = ", col(a, "id_user")))
+            .push_bind(self.id_user);
 
         self.scope_conditions(a, &mut w);
 
         if include.unread_only {
-            w.push(format!("{} = 0", col(a, "is_read")));
+            w.and().push(format_args!("{} = 0", col(a, "is_read")));
         } else if include.state {
             self.state_conditions(a, &mut w);
         }
@@ -425,40 +444,40 @@ impl EntryQuery {
         // true, so a cursor could not resume past one, and SQLite's placement of NULLs would decide the
         // page boundary.
         if self.sort.column_is_nullable() {
-            w.push(format!("{} IS NOT NULL", sort_expr(self.sort, a)));
+            w.and()
+                .push(format_args!("{} IS NOT NULL", sort_expr(self.sort, a)));
         }
 
         if let Some(min) = self.id_min {
-            w.bind(
-                format!("{} >= ?", col(a, "id")),
-                [SqlValue::Int(min.micros())],
-            );
+            w.and()
+                .push(format_args!("{} >= ", col(a, "id")))
+                .push_bind(min.micros());
         }
         if let Some(max) = self.id_max {
-            w.bind(
-                format!("{} <= ?", col(a, "id")),
-                [SqlValue::Int(max.micros())],
-            );
+            w.and()
+                .push(format_args!("{} <= ", col(a, "id")))
+                .push_bind(max.micros());
         }
 
         if include.cursor {
             if let Some(rungs) = self.cursor_ladder(a) {
-                let mut terms = Vec::new();
-                let mut params = Vec::new();
+                let builder = w.and();
+                builder.push('(');
                 // Rung `k` reads: every level before it equal, and level `k` strictly after. The last
                 // rung is the id, which is what makes the whole ladder a total order.
-                for k in 0..rungs.len() {
-                    let mut conjuncts = Vec::new();
-                    for rung in rungs.iter().take(k) {
-                        conjuncts.push(format!("{} = ?", rung.expr));
-                        params.push(rung.value.clone());
+                for (k, rung) in rungs.iter().enumerate() {
+                    if k > 0 {
+                        builder.push(" OR ");
                     }
-                    let rung = &rungs[k];
-                    conjuncts.push(format!("{} {} ?", rung.expr, rung.sign));
-                    params.push(rung.value.clone());
-                    terms.push(format!("({})", conjuncts.join(" AND ")));
+                    builder.push('(');
+                    for earlier in rungs.iter().take(k) {
+                        earlier.push("=", builder);
+                        builder.push(" AND ");
+                    }
+                    rung.push(rung.sign, builder);
+                    builder.push(')');
                 }
-                w.bind(format!("({})", terms.join(" OR ")), params);
+                builder.push(')');
             }
         }
 
@@ -467,14 +486,11 @@ impl EntryQuery {
         if let Some(expr) = self.search.as_ref().filter(|expr| !expr.is_true()) {
             let fragment = compile(expr, &self.sql_ctx())?;
             if !fragment.sql.is_empty() {
-                w.bind(
-                    format!("({})", fragment.sql),
-                    fragment.params.iter().map(SqlValue::from),
-                );
+                push_fragment(w.and(), &fragment);
             }
         }
 
-        Ok(w)
+        Ok(())
     }
 
     /// The [`SqlCtx`] the search fragment is compiled with.
@@ -490,10 +506,9 @@ impl EntryQuery {
     /// The scope's own conditions: the priority floor and whatever the scope names.
     fn scope_conditions(&self, a: &Aliases, w: &mut Conditions) {
         if let Some(floor) = self.priority_floor() {
-            w.bind(
-                format!("{}.priority >= ?", a.feed),
-                [SqlValue::Int(i64::from(floor.get()))],
-            );
+            w.and()
+                .push(format_args!("{}.priority >= ", a.feed))
+                .push_bind(i64::from(floor.get()));
         }
         match self.scope {
             // Scopes expressed entirely by the floor, or that want everything.
@@ -502,21 +517,29 @@ impl EntryQuery {
             | ListType::IncludingHidden
             | ListType::Important
             | ListType::AnyTag => {}
-            ListType::Starred => w.push(format!("{} = 1", col(a, "is_favorite"))),
-            ListType::Category => w.bind(
-                format!("{}.category = ?", a.feed),
-                [SqlValue::Int(self.scope_id)],
-            ),
-            ListType::Feed => w.bind(
-                format!("{} = ?", col(a, "id_feed")),
-                [SqlValue::Int(self.scope_id)],
-            ),
-            ListType::Tag => w.bind("et.id_tag = ?", [SqlValue::Int(self.scope_id)]),
-            ListType::StarredOrTagged => w.push(format!(
-                "({fav} = 1 OR EXISTS (SELECT 1 FROM entrytag et2 WHERE et2.id_entry = {id}))",
-                fav = col(a, "is_favorite"),
-                id = col(a, "id")
-            )),
+            ListType::Starred => {
+                w.and().push(format_args!("{} = 1", col(a, "is_favorite")));
+            }
+            ListType::Category => {
+                w.and()
+                    .push(format_args!("{}.category = ", a.feed))
+                    .push_bind(self.scope_id);
+            }
+            ListType::Feed => {
+                w.and()
+                    .push(format_args!("{} = ", col(a, "id_feed")))
+                    .push_bind(self.scope_id);
+            }
+            ListType::Tag => {
+                w.and().push("et.id_tag = ").push_bind(self.scope_id);
+            }
+            ListType::StarredOrTagged => {
+                w.and().push(format_args!(
+                    "({fav} = 1 OR EXISTS (SELECT 1 FROM entrytag et2 WHERE et2.id_entry = {id}))",
+                    fav = col(a, "is_favorite"),
+                    id = col(a, "id")
+                ));
+            }
         }
     }
 
@@ -533,18 +556,22 @@ impl EntryQuery {
 
     /// The read/starred filter, as two groups ANDed together.
     fn state_conditions(&self, a: &Aliases, w: &mut Conditions) {
+        // `Cond` is a closed set of column/flag pairs, so the value beside each column is a literal
+        // this crate chose rather than anything a caller supplied.
         for cond in &self.state.ands {
-            w.push(format!("{} = {}", col(a, cond.column()), cond.value()));
+            w.and()
+                .push(format_args!("{} = {}", col(a, cond.column()), cond.value()));
         }
         if !self.state.ors.is_empty() {
-            let alternatives = self
-                .state
-                .ors
-                .iter()
-                .map(|cond| format!("{} = {}", col(a, cond.column()), cond.value()))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            w.push(format!("({alternatives})"));
+            let builder = w.and();
+            builder.push('(');
+            for (i, cond) in self.state.ors.iter().enumerate() {
+                if i > 0 {
+                    builder.push(" OR ");
+                }
+                builder.push(format_args!("{} = {}", col(a, cond.column()), cond.value()));
+            }
+            builder.push(')');
         }
     }
 
@@ -560,14 +587,14 @@ impl EntryQuery {
             return Some(vec![Rung {
                 expr: id,
                 sign,
-                value: SqlValue::Int(cursor.id.micros()),
+                value: Either::Left(cursor.id.micros()),
             }]);
         }
 
         let mut ladder = vec![Rung {
             expr: sort_expr(self.sort, a),
             sign,
-            value: cursor.values[0].bind(self.sort.value_is_numeric()),
+            value: cursor.values[0].coerced(self.sort.value_is_numeric()),
         }];
         // Index into `cursor.values`, which carries one value per rung except the id's own.
         let mut next = 1;
@@ -579,7 +606,7 @@ impl EntryQuery {
             ladder.push(Rung {
                 expr: format!("{}.name", a.feed),
                 sign,
-                value: cursor.values[next].bind(false),
+                value: cursor.values[next].coerced(false),
             });
             next += 1;
         }
@@ -590,14 +617,14 @@ impl EntryQuery {
             ladder.push(Rung {
                 expr: secondary_expr(self.secondary_sort, a),
                 sign: self.secondary_order.sign(),
-                value: cursor.values[next].bind(self.secondary_sort.value_is_numeric()),
+                value: cursor.values[next].coerced(self.secondary_sort.value_is_numeric()),
             });
         }
 
         ladder.push(Rung {
             expr: id,
             sign,
-            value: SqlValue::Int(cursor.id.micros()),
+            value: Either::Left(cursor.id.micros()),
         });
         Some(ladder)
     }
@@ -634,17 +661,17 @@ fn secondary_expr(sort: SecondarySort, a: &Aliases) -> String {
     }
 }
 
-/// The `ORDER BY` clause, identical in shape for both statements.
-fn order_by(q: &EntryQuery, a: &Aliases) -> String {
+/// Appends the `ORDER BY` clause, identical in shape for both statements.
+fn push_order_by(q: &EntryQuery, a: &Aliases, builder: &mut QueryBuilder<Sqlite>) {
     let order = q.order.as_str();
-    let mut out = format!(" ORDER BY {} {order}", sort_expr(q.sort, a));
+    builder.push(format_args!(" ORDER BY {} {order}", sort_expr(q.sort, a)));
     if q.sort == Sort::CategoryName {
-        out.push_str(&format!(", {}.name {order}", a.feed));
+        builder.push(format_args!(", {}.name {order}", a.feed));
     }
     // A secondary sort of `id` is the tie-breaker below, so it is not emitted twice — and it must not
     // be, because the tie-breaker follows the *primary* direction, which is what makes the keyset total.
     if q.sort.takes_secondary_sort() && q.secondary_sort != SecondarySort::Id {
-        out.push_str(&format!(
+        builder.push(format_args!(
             ", {} {}",
             secondary_expr(q.secondary_sort, a),
             q.secondary_order.as_str()
@@ -655,9 +682,49 @@ fn order_by(q: &EntryQuery, a: &Aliases) -> String {
     if !matches!(q.sort, Sort::Id | Sort::Rand) {
         // Without this two articles with the same title are unordered relative to each other and a
         // cursor cannot resume between them.
-        out.push_str(&format!(", {} {order}", col(a, "id")));
+        builder.push(format_args!(", {} {order}", col(a, "id")));
     }
-    out
+}
+
+/// Splices a compiled search fragment in, binding each of its values where its own placeholder is.
+///
+/// The fragment arrives as text carrying a bare `?` per value, in the order its parameter list holds
+/// them, so it is taken apart at those placeholders and handed to the builder piece by piece. Pushing
+/// its text whole would not do: [`QueryBuilder::push_bind`] emits a placeholder of its own, which would
+/// leave the fragment's `?`s unbound — NULL for every row — and pile the values up at the end.
+/// Splitting is safe because nothing a reader typed ever reaches the fragment's text; the compiler binds
+/// every value, which is also what makes its placeholders exactly its parameters.
+///
+/// What comes out is all-anonymous, which the whole statement has to be: sqlx's SQLite driver binds an
+/// anonymous `?` by counting the anonymous placeholders before it, so numbering any one of them would
+/// take the rest of the values from the start of the list instead.
+fn push_fragment(builder: &mut QueryBuilder<Sqlite>, fragment: &Fragment) {
+    debug_assert_eq!(
+        fragment.sql.matches('?').count(),
+        fragment.params.len(),
+        "a fragment binds one value per placeholder: {}",
+        fragment.sql
+    );
+    builder.push('(');
+    let mut parts = fragment.sql.split('?');
+    builder.push(parts.next().unwrap_or(""));
+    for (part, param) in parts.zip(&fragment.params) {
+        match param {
+            Param::Text(needle) => {
+                builder.push_bind(needle.as_str());
+            }
+            Param::Int(id) => {
+                builder.push_bind(*id);
+            }
+            // An id set that resolved to nothing: NULL rather than `0` or `''`, either of which would
+            // silently match a real row.
+            Param::Null => {
+                builder.push_bind(None::<i64>);
+            }
+        }
+        builder.push(part);
+    }
+    builder.push(')');
 }
 
 /// The cursor that resumes immediately after `id`, under this query's sort.
@@ -691,32 +758,32 @@ pub async fn cursor_after(
         ));
     }
 
-    let mut statement = format!(
-        "SELECT {} FROM entry {} INNER JOIN feed {} ON {f}.id = {e}.id_feed ",
-        selects
-            .iter()
-            .map(|(expr, _)| expr.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    {
+        let mut columns = builder.separated(", ");
+        for (expr, _) in &selects {
+            columns.push(expr);
+        }
+    }
+    builder.push(format_args!(
+        " FROM entry {} INNER JOIN feed {} ON {f}.id = {e}.id_feed ",
         a.entry,
         a.feed,
         e = a.entry,
         f = a.feed
-    );
+    ));
     if q.sort.joins_category() {
-        statement.push_str(&format!(
+        builder.push(format_args!(
             "LEFT JOIN category {c} ON {c}.id = {f}.category ",
             c = a.category,
             f = a.feed
         ));
     }
-    statement.push_str(&format!("WHERE {} = ?", col(&a, "id")));
+    builder.push(format_args!("WHERE {} = ", col(&a, "id")));
+    builder.push_bind(id.micros());
 
     let numeric: Vec<bool> = selects.iter().map(|(_, n)| *n).collect();
-    let row = sqlx::query(sql(statement))
-        .bind(id.micros())
-        .fetch_one(&mut *conn)
-        .await?;
+    let row = builder.build().fetch_one(&mut *conn).await?;
 
     let mut values = Vec::with_capacity(numeric.len());
     for (i, is_numeric) in numeric.iter().enumerate() {
@@ -749,8 +816,9 @@ fn boundary(row: &SqliteRow, index: usize, numeric: bool) -> Result<CursorValue>
 
 /// Runs the listing and reads the rows.
 pub async fn list(conn: &mut SqliteConnection, q: &EntryQuery) -> Result<Vec<Entry>> {
-    let built = q.build_rows()?;
-    Ok(bind_all(sqlx::query(sql(built.sql)), built.params)
+    let mut builder = q.build_rows()?;
+    Ok(builder
+        .build()
         .try_map(entry::from_row)
         .fetch_all(&mut *conn)
         .await?)
@@ -758,8 +826,9 @@ pub async fn list(conn: &mut SqliteConnection, q: &EntryQuery) -> Result<Vec<Ent
 
 /// How many unread articles the same scope, fences and search admit.
 pub async fn count_unread(conn: &mut SqliteConnection, q: &EntryQuery) -> Result<i64> {
-    let built = q.build_unread_count()?;
-    Ok(bind_all(sqlx::query(sql(built.sql)), built.params)
+    let mut builder = q.build_unread_count()?;
+    Ok(builder
+        .build()
         // The statement selects one unnamed `COUNT(*)`, so there is no column name to read it by.
         .try_map(|row: SqliteRow| row.try_get::<i64, _>(0))
         .fetch_one(&mut *conn)
@@ -791,8 +860,48 @@ mod tests {
         q.build_rows().expect("builds")
     }
 
+    /// The error a query is expected to be rejected with.
+    ///
+    /// A `match` rather than `expect_err`: a built statement is a `QueryBuilder`, which has no `Debug`
+    /// to fail with, and the SQL it did build is the useful half of the message anyway.
     fn err(q: &EntryQuery) -> Error {
-        q.build_ids().expect_err("should have been rejected")
+        match q.build_ids() {
+            Err(e) => e,
+            Ok(built) => panic!("should have been rejected: {}", text(&built)),
+        }
+    }
+
+    /// The statement text of a built query, which is what the shape assertions below read.
+    ///
+    /// A `QueryBuilder` hands each value to the driver as it appends the placeholder beside it, so the
+    /// bound list is not readable back the way a separate parameter vector was. The assertions that used
+    /// to inspect it now read the decision that produced it — [`EntryQuery::priority_floor`],
+    /// [`EntryQuery::cursor_ladder`], [`CursorValue::coerced`] — or the position of a placeholder, which
+    /// *is* the index its value has in the bound list.
+    fn text(built: &Built) -> String {
+        built.sql().as_str().to_owned()
+    }
+
+    /// How many values a statement binds: one per placeholder, which is what `push_bind` guarantees.
+    fn binds(built: &Built) -> usize {
+        text(built).matches('?').count()
+    }
+
+    /// The index the value bound beside `needle` has in the statement's list.
+    fn bind_index(sql: &str, needle: &str) -> usize {
+        let (head, _) = sql
+            .split_once(needle)
+            .unwrap_or_else(|| panic!("{needle} is not in {sql}"));
+        head.matches('?').count()
+    }
+
+    /// The values the cursor ladder binds, in ladder order: the boundary values first, the id last.
+    fn ladder(q: &EntryQuery) -> Vec<Either<i64, String>> {
+        q.cursor_ladder(&INNER)
+            .expect("a cursor is set")
+            .iter()
+            .map(|rung| rung.value.clone())
+            .collect()
     }
 
     // --- the user fence ----------------------------------------------------
@@ -803,10 +912,14 @@ mod tests {
         // statements rather than only on the listing.
         let q = base();
         for built in [ids(&q), q.build_unread_count().unwrap()] {
-            assert!(built.sql.contains("WHERE e.id_user = ?"), "{}", built.sql);
-            assert_eq!(built.params[0], SqlValue::Int(7));
+            let sql = text(&built);
+            assert!(sql.contains("WHERE e.id_user = ?"), "{sql}");
+            // First condition, and nothing ahead of it binds anything, so the user's id is the first
+            // value the statement carries.
+            assert_eq!(bind_index(&sql, "e.id_user = ?"), 0, "{sql}");
         }
-        assert!(rows(&q).sql.contains("e0.id_user"), "{}", rows(&q).sql);
+        let outer = text(&rows(&q));
+        assert!(outer.contains("e0.id_user"), "{outer}");
     }
 
     #[test]
@@ -817,16 +930,11 @@ mod tests {
             search: Some(expr.clone()),
             ..base()
         };
-        let built = ids(&q);
+        let sql = text(&ids(&q));
+        assert!(sql.contains("INNER JOIN entrytag et ON"), "{sql}");
         assert!(
-            built.sql.contains("INNER JOIN entrytag et ON"),
-            "{}",
-            built.sql
-        );
-        assert!(
-            built.sql.contains("FROM entrytag etx"),
-            "the label subquery must not shadow the scope's join: {}",
-            built.sql
+            sql.contains("FROM entrytag etx"),
+            "the label subquery must not shadow the scope's join: {sql}"
         );
     }
 
@@ -852,24 +960,14 @@ mod tests {
                 scope_id: i64::from(scope.needs_id()),
                 ..base()
             };
-            let built = ids(&q);
+            let sql = text(&ids(&q));
+            let bound = q.priority_floor().map(|p| i64::from(p.get()));
+            assert_eq!(bound, floor, "{scope:?} floors at {floor:?}");
             match floor {
-                Some(v) => {
-                    assert!(
-                        built.sql.contains("f.priority >= ?"),
-                        "{scope:?}: {}",
-                        built.sql
-                    );
-                    assert!(
-                        built.params.contains(&SqlValue::Int(v)),
-                        "{scope:?} should floor at {v}: {:?}",
-                        built.params
-                    );
-                }
+                Some(_) => assert!(sql.contains("f.priority >= ?"), "{scope:?}: {sql}"),
                 None => assert!(
-                    !built.sql.contains("f.priority"),
-                    "{scope:?} puts no constraint on priority: {}",
-                    built.sql
+                    !sql.contains("f.priority"),
+                    "{scope:?} puts no constraint on priority: {sql}"
                 ),
             }
         }
@@ -884,14 +982,8 @@ mod tests {
             search: Some(expr.clone()),
             ..base()
         };
-        let built = ids(&q);
-        assert!(
-            built
-                .params
-                .contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
-            "{:?}",
-            built.params
-        );
+        assert_eq!(q.priority_floor(), Some(Priority::HIDDEN));
+        assert!(text(&ids(&q)).contains("f.priority >= ?"));
     }
 
     #[test]
@@ -902,13 +994,7 @@ mod tests {
             search: Some(expr.clone()),
             ..base()
         };
-        assert!(
-            !ids(&q)
-                .params
-                .contains(&SqlValue::Int(i64::from(Priority::HIDDEN.get()))),
-            "{:?}",
-            ids(&q).params
-        );
+        assert_ne!(q.priority_floor(), Some(Priority::HIDDEN));
     }
 
     #[test]
@@ -925,14 +1011,13 @@ mod tests {
                 scope_id: *id,
                 ..base()
             };
-            let built = ids(&q);
-            assert!(built.sql.contains(expected), "{scope:?}: {}", built.sql);
+            let sql = text(&ids(&q));
+            assert!(sql.contains(expected), "{scope:?}: {sql}");
             if *id != 0 {
-                assert!(
-                    built.params.contains(&SqlValue::Int(*id)),
-                    "{scope:?}: {:?}",
-                    built.params
-                );
+                // The scope's id is the value beside that placeholder, bound after the user fence and
+                // after the scope's own priority floor where it has one.
+                let ahead = 1 + usize::from(q.priority_floor().is_some());
+                assert_eq!(bind_index(&sql, expected), ahead, "{scope:?}: {sql}");
             }
         }
     }
@@ -943,69 +1028,60 @@ mod tests {
             scope: ListType::StarredOrTagged,
             ..base()
         };
-        let built = ids(&q);
+        let sql = text(&ids(&q));
         assert!(
-            built
-                .sql
-                .contains("(e.is_favorite = 1 OR EXISTS (SELECT 1 FROM entrytag et2"),
-            "{}",
-            built.sql
+            sql.contains("(e.is_favorite = 1 OR EXISTS (SELECT 1 FROM entrytag et2"),
+            "{sql}"
         );
         // An EXISTS rather than a join, so an article with three labels is not counted three times.
-        assert!(!built.sql.contains("INNER JOIN entrytag"), "{}", built.sql);
+        assert!(!sql.contains("INNER JOIN entrytag"), "{sql}");
     }
 
     #[test]
     fn the_label_scopes_join_entrytag_and_only_any_tag_deduplicates() {
-        let tag = ids(&EntryQuery {
+        let tag = text(&ids(&EntryQuery {
             scope: ListType::Tag,
             scope_id: 1,
             ..base()
-        });
-        assert!(tag.sql.contains("INNER JOIN entrytag et"), "{}", tag.sql);
+        }));
+        assert!(tag.contains("INNER JOIN entrytag et"), "{tag}");
         assert!(
-            !tag.sql.contains("DISTINCT"),
-            "one id_tag cannot yield two rows: {}",
-            tag.sql
+            !tag.contains("DISTINCT"),
+            "one id_tag cannot yield two rows: {tag}"
         );
 
-        let any = ids(&EntryQuery {
+        let any = text(&ids(&EntryQuery {
             scope: ListType::AnyTag,
             ..base()
-        });
-        assert!(any.sql.starts_with("SELECT DISTINCT e.id"), "{}", any.sql);
+        }));
+        assert!(any.starts_with("SELECT DISTINCT e.id"), "{any}");
     }
 
     #[test]
     fn distinct_carries_the_order_by_column_into_the_select_list() {
         // `SELECT DISTINCT … ORDER BY <expr>` requires <expr> to be selected.
-        let built = ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             scope: ListType::AnyTag,
             sort: Sort::Date,
             ..base()
-        });
+        }));
         assert!(
-            built.sql.starts_with("SELECT DISTINCT e.id, e.date FROM"),
-            "{}",
-            built.sql
+            sql.starts_with("SELECT DISTINCT e.id, e.date FROM"),
+            "{sql}"
         );
         // Sorting by id needs no extra column, and the random sort cannot be DISTINCT at all.
-        let by_id = ids(&EntryQuery {
+        let by_id = text(&ids(&EntryQuery {
             scope: ListType::AnyTag,
             ..base()
-        });
-        assert!(
-            by_id.sql.starts_with("SELECT DISTINCT e.id FROM"),
-            "{}",
-            by_id.sql
-        );
-        let random = ids(&EntryQuery {
+        }));
+        assert!(by_id.starts_with("SELECT DISTINCT e.id FROM"), "{by_id}");
+        let random = text(&ids(&EntryQuery {
             scope: ListType::AnyTag,
             sort: Sort::Rand,
             ..base()
-        });
-        assert!(!random.sql.contains("DISTINCT"), "{}", random.sql);
-        assert!(random.sql.contains("GROUP BY e.id"), "{}", random.sql);
+        }));
+        assert!(!random.contains("DISTINCT"), "{random}");
+        assert!(random.contains("GROUP BY e.id"), "{random}");
     }
 
     // --- state -------------------------------------------------------------
@@ -1019,7 +1095,7 @@ mod tests {
             },
             ..base()
         };
-        let sql = ids(&q).sql;
+        let sql = text(&ids(&q));
         assert!(sql.contains("e.is_read = 0"), "{sql}");
         assert!(
             sql.contains("(e.is_read = 0 OR e.is_favorite = 1)"),
@@ -1029,7 +1105,7 @@ mod tests {
 
     #[test]
     fn an_unconstrained_state_emits_nothing() {
-        let sql = ids(&base()).sql;
+        let sql = text(&ids(&base()));
         assert!(!sql.contains("is_read"), "{sql}");
         assert!(!sql.contains("is_favorite"), "{sql}");
     }
@@ -1047,33 +1123,33 @@ mod tests {
             ..base()
         };
         let built = q.build_unread_count().unwrap();
-        assert!(built.sql.contains("e.is_read = 0"), "{}", built.sql);
-        assert!(!built.sql.contains("e.is_read = 1"), "{}", built.sql);
-        assert!(!built.sql.contains("e.id <"), "no cursor: {}", built.sql);
-        assert!(built.sql.starts_with("SELECT COUNT(*)"), "{}", built.sql);
+        let sql = text(&built);
+        assert!(sql.contains("e.is_read = 0"), "{sql}");
+        assert!(!sql.contains("e.is_read = 1"), "{sql}");
+        assert!(!sql.contains("e.id <"), "no cursor: {sql}");
+        assert!(sql.starts_with("SELECT COUNT(*)"), "{sql}");
         // But it does keep the snapshot fence and the search, or the badge would disagree with the list.
         let q = EntryQuery {
             id_max: Some(EntryId::from_unix(NOW)),
             ..base()
         };
-        assert!(q.build_unread_count().unwrap().sql.contains("e.id <= ?"));
+        assert!(text(&q.build_unread_count().unwrap()).contains("e.id <= ?"));
     }
 
     #[test]
     fn the_unread_count_counts_any_tag_articles_not_article_label_pairs() {
-        let built = EntryQuery {
-            scope: ListType::AnyTag,
-            ..base()
-        }
-        .build_unread_count()
-        .unwrap();
-        assert!(!built.sql.contains("INNER JOIN entrytag"), "{}", built.sql);
+        let sql = text(
+            &EntryQuery {
+                scope: ListType::AnyTag,
+                ..base()
+            }
+            .build_unread_count()
+            .unwrap(),
+        );
+        assert!(!sql.contains("INNER JOIN entrytag"), "{sql}");
         assert!(
-            built
-                .sql
-                .contains("WHERE EXISTS (SELECT 1 FROM entrytag et2"),
-            "{}",
-            built.sql
+            sql.contains("WHERE EXISTS (SELECT 1 FROM entrytag et2"),
+            "{sql}"
         );
     }
 
@@ -1087,11 +1163,14 @@ mod tests {
             ..base()
         };
         let built = ids(&q);
-        assert!(built.sql.contains("e.id >= ?"), "{}", built.sql);
-        assert!(built.sql.contains("e.id <= ?"), "{}", built.sql);
-        // After the user fence and the main-stream priority floor.
-        assert_eq!(built.params[2], SqlValue::Int(100));
-        assert_eq!(built.params[3], SqlValue::Int(200));
+        let sql = text(&built);
+        assert!(sql.contains("e.id >= ?"), "{sql}");
+        assert!(sql.contains("e.id <= ?"), "{sql}");
+        // After the user fence and the main-stream priority floor, so `100` and `200` are the third and
+        // fourth values bound, in that order.
+        assert_eq!(bind_index(&sql, "e.id >= ?"), 2, "{sql}");
+        assert_eq!(bind_index(&sql, "e.id <= ?"), 3, "{sql}");
+        assert_eq!(binds(&built), 5, "the two fences and the limit: {sql}");
     }
 
     #[test]
@@ -1105,18 +1184,13 @@ mod tests {
                 }),
                 ..base()
             };
-            let built = ids(&q);
-            assert!(built.sql.contains(sign), "{order:?}: {}", built.sql);
+            let sql = text(&ids(&q));
+            assert!(sql.contains(sign), "{order:?}: {sql}");
             // Strict, not `<=`: an inclusive comparison would return the boundary row again.
-            assert!(
-                !built.sql.contains(&sign.replace('?', "? =")),
-                "{}",
-                built.sql
-            );
-            assert!(
-                built.params.contains(&SqlValue::Int(500)),
-                "{:?}",
-                built.params
+            assert!(!sql.contains(&sign.replace('?', "? =")), "{sql}");
+            assert_eq!(
+                q.cursor_ladder(&INNER).expect("ladder")[0].value,
+                Either::Left(500)
             );
         }
     }
@@ -1133,21 +1207,19 @@ mod tests {
             ..base()
         };
         let built = ids(&q);
+        let sql = text(&built);
         assert!(
-            built
-                .sql
-                .contains("((e.date < ?) OR (e.date = ? AND e.id < ?))"),
-            "{}",
-            built.sql
+            sql.contains("((e.date < ?) OR (e.date = ? AND e.id < ?))"),
+            "{sql}"
         );
+        // The boundary value is bound twice — once per term that compares it — and the id and the limit
+        // follow it.
+        assert_eq!(bind_index(&sql, "e.date < ?"), 2, "{sql}");
+        assert_eq!(binds(&built), 6, "{sql}");
         assert_eq!(
-            built.params[2..],
-            [
-                SqlValue::Int(NOW),
-                SqlValue::Int(NOW),
-                SqlValue::Int(500),
-                SqlValue::Int(50),
-            ]
+            ladder(&q),
+            vec![Either::Left(NOW), Either::Left(500)],
+            "a date sort compares numbers"
         );
     }
 
@@ -1168,27 +1240,26 @@ mod tests {
             ..base()
         };
         let built = ids(&q);
+        let sql = text(&built);
         assert!(
-            built.sql.contains(
+            sql.contains(
                 "((f.name > ?) OR (f.name = ? AND e.title < ?) \
                  OR (f.name = ? AND e.title = ? AND e.id > ?))"
             ),
-            "{}",
-            built.sql
+            "{sql}"
         );
         // The secondary sort follows its own direction (`<`), the id follows the primary one (`>`).
         assert_eq!(
-            built.params[2..],
-            [
-                SqlValue::Text("Example".into()),
-                SqlValue::Text("Example".into()),
-                SqlValue::Text("A title".into()),
-                SqlValue::Text("Example".into()),
-                SqlValue::Text("A title".into()),
-                SqlValue::Int(500),
-                SqlValue::Int(50),
-            ]
+            ladder(&q),
+            vec![
+                Either::Right("Example".to_owned()),
+                Either::Right("A title".to_owned()),
+                Either::Left(500)
+            ],
+            "names compare as text and the id as a number"
         );
+        // user fence + priority floor + (1 + 2 + 3) ladder values + LIMIT.
+        assert_eq!(binds(&built), 9, "{sql}");
     }
 
     #[test]
@@ -1207,23 +1278,27 @@ mod tests {
             ..base()
         };
         let built = ids(&q);
+        let sql = text(&built);
         // The feed name sits between the folder and the reader's own secondary sort.
-        assert!(built.sql.contains("c.name < ?"), "{}", built.sql);
+        assert!(sql.contains("c.name < ?"), "{sql}");
+        assert!(sql.contains("(c.name = ? AND f.name < ?)"), "{sql}");
         assert!(
-            built.sql.contains("(c.name = ? AND f.name < ?)"),
-            "{}",
-            built.sql
+            sql.contains("(c.name = ? AND f.name = ? AND e.date = ? AND e.id < ?)"),
+            "{sql}"
         );
-        assert!(
-            built
-                .sql
-                .contains("(c.name = ? AND f.name = ? AND e.date = ? AND e.id < ?)"),
-            "{}",
-            built.sql
+        assert_eq!(sql.matches("c.name = ?").count(), 3, "{sql}");
+        assert_eq!(
+            ladder(&q),
+            vec![
+                Either::Right("News".to_owned()),
+                Either::Right("Example".to_owned()),
+                Either::Left(NOW),
+                Either::Left(500)
+            ],
+            "{sql}"
         );
-        assert_eq!(built.sql.matches("c.name = ?").count(), 3, "{}", built.sql);
         // user fence + priority floor + (1 + 2 + 3 + 4) ladder values + LIMIT.
-        assert_eq!(built.params.len(), 13, "{:?}", built.params);
+        assert_eq!(binds(&built), 13, "{sql}");
     }
 
     #[test]
@@ -1240,14 +1315,12 @@ mod tests {
             }),
             ..base()
         };
-        let built = ids(&q);
+        let sql = text(&ids(&q));
         assert!(
-            built
-                .sql
-                .contains("((f.name < ?) OR (f.name = ? AND e.id < ?))"),
-            "{}",
-            built.sql
+            sql.contains("((f.name < ?) OR (f.name = ? AND e.id < ?))"),
+            "{sql}"
         );
+        assert_eq!(ladder(&q).len(), 2, "{sql}");
     }
 
     #[test]
@@ -1262,7 +1335,7 @@ mod tests {
             }),
             ..base()
         };
-        assert_eq!(ids(&q).params[2], SqlValue::Int(NOW));
+        assert_eq!(ladder(&q)[0], Either::Left(NOW));
 
         // And a cursor written by an older build, which carried strings, is coerced rather than
         // silently returning the wrong page.
@@ -1274,28 +1347,39 @@ mod tests {
             }),
             ..base()
         };
-        assert_eq!(ids(&q).params[2], SqlValue::Int(NOW));
+        assert_eq!(ladder(&q)[0], Either::Left(NOW));
+
+        // A text column keeps text, whichever shape the boundary arrived in, and a value that is not a
+        // number at all stays one rather than failing a request the reader cannot repair.
+        assert_eq!(
+            CursorValue::Int(42).coerced(false),
+            Either::Right("42".to_owned())
+        );
+        assert_eq!(
+            CursorValue::Text("News".into()).coerced(false),
+            Either::Right("News".to_owned())
+        );
+        assert_eq!(
+            CursorValue::Text("News".into()).coerced(true),
+            Either::Right("News".to_owned())
+        );
     }
 
     #[test]
     fn a_nullable_sort_excludes_the_rows_it_cannot_order() {
         for sort in [Sort::LastModified, Sort::LastUserModified] {
-            let built = ids(&EntryQuery { sort, ..base() });
+            let sql = text(&ids(&EntryQuery { sort, ..base() }));
             assert!(
-                built
-                    .sql
-                    .contains(&format!("{} IS NOT NULL", sort_column(sort))),
-                "{sort:?}: {}",
-                built.sql
+                sql.contains(&format!("{} IS NOT NULL", sort_column(sort))),
+                "{sort:?}: {sql}"
             );
         }
         // `entry.date` and `entry.id` are NOT NULL, so the guard would be noise.
-        assert!(!ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             sort: Sort::Date,
             ..base()
-        })
-        .sql
-        .contains("IS NOT NULL"));
+        }));
+        assert!(!sql.contains("IS NOT NULL"), "{sql}");
     }
 
     fn sort_column(sort: Sort) -> &'static str {
@@ -1318,7 +1402,7 @@ mod tests {
             Sort::LastModified,
             Sort::FeedName,
         ] {
-            let sql = ids(&EntryQuery { sort, ..base() }).sql;
+            let sql = text(&ids(&EntryQuery { sort, ..base() }));
             assert!(
                 sql.ends_with(&format!(
                     "ORDER BY {} DESC, e.id DESC LIMIT ?",
@@ -1328,17 +1412,16 @@ mod tests {
             );
         }
         // The category sort puts its internal feed-name secondary in between.
-        let sql = ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             sort: Sort::CategoryName,
             ..base()
-        })
-        .sql;
+        }));
         assert!(
             sql.ends_with("ORDER BY c.name DESC, f.name DESC, e.id DESC LIMIT ?"),
             "{sql}"
         );
         // Sorting by id already is the tie-breaker; adding it again would be `e.id DESC, e.id DESC`.
-        let sql = ids(&base()).sql;
+        let sql = text(&ids(&base()));
         assert!(sql.ends_with("ORDER BY e.id DESC LIMIT ?"), "{sql}");
     }
 
@@ -1357,18 +1440,15 @@ mod tests {
 
     #[test]
     fn the_category_sort_carries_an_internal_secondary_before_the_readers_own() {
-        let built = ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             sort: Sort::CategoryName,
             secondary_sort: SecondarySort::Title,
             secondary_order: Order::Asc,
             ..base()
-        });
+        }));
         assert!(
-            built
-                .sql
-                .contains("ORDER BY c.name DESC, f.name DESC, e.title ASC, e.id DESC"),
-            "{}",
-            built.sql
+            sql.contains("ORDER BY c.name DESC, f.name DESC, e.title ASC, e.id DESC"),
+            "{sql}"
         );
     }
 
@@ -1376,22 +1456,21 @@ mod tests {
     fn the_secondary_sort_only_applies_where_ties_are_common() {
         // Sorting by date already ends in a unique key, so a secondary sort would change nothing and
         // only cost the reader a control that appears to do something.
-        let built = ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             sort: Sort::Date,
             secondary_sort: SecondarySort::Title,
             ..base()
-        });
-        assert!(!built.sql.contains("e.title"), "{}", built.sql);
+        }));
+        assert!(!sql.contains("e.title"), "{sql}");
     }
 
     #[test]
     fn the_random_sort_has_no_tiebreaker() {
         // `RANDOM(), e.id` would defeat the point, and the sort cannot be resumed anyway.
-        let sql = ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             sort: Sort::Rand,
             ..base()
-        })
-        .sql;
+        }));
         assert!(sql.contains("ORDER BY RANDOM()"), "{sql}");
         assert!(!sql.contains("RANDOM() DESC, e.id"), "{sql}");
     }
@@ -1402,26 +1481,18 @@ mod tests {
     fn the_outer_query_repeats_the_order_by() {
         // The join back to `entry` discards the inner order, so without this the page arrives sorted by
         // id whatever the reader asked for.
-        let built = rows(&EntryQuery {
+        let sql = text(&rows(&EntryQuery {
             sort: Sort::Title,
             ..base()
-        });
-        assert_eq!(built.sql.matches("ORDER BY").count(), 2, "{}", built.sql);
-        assert!(
-            built.sql.contains("INNER JOIN (SELECT e.id"),
-            "{}",
-            built.sql
-        );
-        assert!(
-            built.sql.ends_with("ORDER BY e0.title DESC, e0.id DESC"),
-            "{}",
-            built.sql
-        );
+        }));
+        assert_eq!(sql.matches("ORDER BY").count(), 2, "{sql}");
+        assert!(sql.contains("INNER JOIN (SELECT e.id"), "{sql}");
+        assert!(sql.ends_with("ORDER BY e0.title DESC, e0.id DESC"), "{sql}");
     }
 
     #[test]
     fn the_outer_query_selects_the_wide_columns_once() {
-        let built = rows(&base());
+        let sql = text(&rows(&base()));
         for column in [
             "title",
             "author",
@@ -1431,45 +1502,34 @@ mod tests {
             "tags",
             "attributes",
         ] {
-            assert!(
-                built.sql.contains(&format!("e0.{column}")),
-                "{column}: {}",
-                built.sql
-            );
+            assert!(sql.contains(&format!("e0.{column}")), "{column}: {sql}");
         }
         // And the inner query does not, which is the whole point of the shape.
-        let inner = ids(&base());
-        assert!(!inner.sql.contains("content"), "{}", inner.sql);
+        let inner = text(&ids(&base()));
+        assert!(!inner.contains("content"), "{inner}");
     }
 
     #[test]
     fn the_name_sorts_join_their_tables_on_the_outside_too() {
-        let category = rows(&EntryQuery {
+        let category = text(&rows(&EntryQuery {
             sort: Sort::CategoryName,
             ..base()
-        });
+        }));
+        assert!(category.contains("INNER JOIN feed f0"), "{category}");
         assert!(
-            category.sql.contains("INNER JOIN feed f0"),
-            "{}",
-            category.sql
-        );
-        assert!(
-            category
-                .sql
-                .contains("INNER JOIN category c0 ON c0.id = f0.category"),
-            "{}",
-            category.sql
+            category.contains("INNER JOIN category c0 ON c0.id = f0.category"),
+            "{category}"
         );
 
-        let feed = rows(&EntryQuery {
+        let feed = text(&rows(&EntryQuery {
             sort: Sort::FeedName,
             ..base()
-        });
-        assert!(feed.sql.contains("INNER JOIN feed f0"), "{}", feed.sql);
-        assert!(!feed.sql.contains("category c0"), "{}", feed.sql);
+        }));
+        assert!(feed.contains("INNER JOIN feed f0"), "{feed}");
+        assert!(!feed.contains("category c0"), "{feed}");
 
-        let plain = rows(&base());
-        assert!(!plain.sql.contains("f0"), "{}", plain.sql);
+        let plain = text(&rows(&base()));
+        assert!(!plain.contains("f0"), "{plain}");
     }
 
     #[test]
@@ -1485,7 +1545,11 @@ mod tests {
             }),
             ..base()
         };
-        assert_eq!(rows(&query).params, ids(&query).params);
+        let inner = text(&ids(&query));
+        let outer = text(&rows(&query));
+        // The inner select is spliced in verbatim, so its placeholders sit where its values were pushed.
+        assert!(outer.contains(&inner), "{outer}");
+        assert_eq!(binds(&rows(&query)), binds(&ids(&query)), "{outer}");
     }
 
     // --- the search fragment ----------------------------------------------
@@ -1498,18 +1562,20 @@ mod tests {
             id_max: Some(EntryId::from_micros(9)),
             ..base()
         };
-        let built = ids(&q);
+        let sql = text(&ids(&q));
         assert!(
-            built
-                .sql
-                .contains("AND ((instr(e.title_folded, ?) > 0) AND (e.id_feed IN (?)))"),
-            "{}",
-            built.sql
+            sql.contains("AND ((instr(e.title_folded, ?) > 0) AND (e.id_feed IN (?)))"),
+            "{sql}"
         );
-        // The fence comes first, so the search's own parameters follow it.
-        assert_eq!(built.params[2], SqlValue::Int(9));
-        assert_eq!(built.params[3], SqlValue::Text("rust".into()));
-        assert_eq!(built.params[4], SqlValue::Int(3));
+        // The fence comes first, so the search's own values follow it — one per placeholder, in the
+        // order the fragment lists them, which is the order its placeholders appear in.
+        assert_eq!(bind_index(&sql, "e.id <= ?"), 2, "{sql}");
+        assert_eq!(bind_index(&sql, "instr(e.title_folded, ?)"), 3, "{sql}");
+        assert_eq!(bind_index(&sql, "e.id_feed IN (?)"), 4, "{sql}");
+        assert_eq!(
+            compile(&expr, &q.sql_ctx()).expect("compiles").params,
+            vec![Param::Text("rust".into()), Param::Int(3)]
+        );
     }
 
     #[test]
@@ -1520,8 +1586,8 @@ mod tests {
             search: Some(expr.clone()),
             ..base()
         });
-        assert_eq!(bare.sql, with_empty.sql);
-        assert_eq!(bare.params, with_empty.params);
+        assert_eq!(text(&bare), text(&with_empty));
+        assert_eq!(binds(&bare), binds(&with_empty));
     }
 
     #[test]
@@ -1532,12 +1598,10 @@ mod tests {
             target: freshrss_search::ast::QueryRef::Ids(freshrss_search::ast::IdSet::Any),
             negated: false,
         });
-        let e = EntryQuery {
+        let e = err(&EntryQuery {
             search: Some(expr.clone()),
             ..base()
-        }
-        .build_ids()
-        .expect_err("must not compile");
+        });
         assert!(matches!(e, Error::Search(_)), "{e}");
     }
 
@@ -1608,21 +1672,24 @@ mod tests {
             );
         }
         // The id sort carries no values at all, so an empty list is right.
-        assert!(ids(&EntryQuery {
+        let sql = text(&ids(&EntryQuery {
             cursor: Some(Cursor {
                 id: EntryId::from_micros(1),
-                values: Vec::new()
+                values: Vec::new(),
             }),
             ..base()
-        })
-        .sql
-        .contains("e.id < ?"));
+        }));
+        assert!(sql.contains("e.id < ?"), "{sql}");
     }
 
     // --- placeholders ------------------------------------------------------
 
     #[test]
-    fn placeholders_and_parameters_line_up_for_every_shape() {
+    fn every_placeholder_is_anonymous_so_the_values_line_up() {
+        // sqlx's SQLite driver binds an anonymous `?` by counting the anonymous placeholders before it,
+        // so a statement that numbered even one of them would bind the rest from the start of the value
+        // list and quietly compare against the wrong rows. Every shape the builder can produce is
+        // checked for that mixture.
         let expr = parse("intitle:rust labels:todo f:3,4", NOW).unwrap();
         let queries = vec![
             base(),
@@ -1669,15 +1736,26 @@ mod tests {
         ];
         for query in &queries {
             for built in [ids(query), rows(query), query.build_unread_count().unwrap()] {
-                assert_eq!(
-                    built.sql.matches('?').count(),
-                    built.params.len(),
-                    "{}\n{:?}",
-                    built.sql,
-                    built.params
-                );
+                let sql = text(&built);
+                let numbered = sql
+                    .match_indices('?')
+                    .any(|(at, _)| sql[at + 1..].starts_with(|c: char| c.is_ascii_digit()));
+                assert!(!numbered, "{sql}");
             }
         }
+
+        // A search fragment is spliced in verbatim, placeholders and all, so its values are the ones
+        // pushed beside it and nothing after it shifts.
+        let searched = EntryQuery {
+            search: Some(expr.clone()),
+            ..base()
+        };
+        let sql = text(&ids(&searched));
+        let fragment = compile(&expr, &searched.sql_ctx()).expect("compiles");
+        assert!(
+            sql.contains(&format!("({})", fragment.sql)),
+            "the fragment was rewritten on the way in: {sql}"
+        );
     }
 
     #[test]
@@ -1685,24 +1763,31 @@ mod tests {
         // The search string is untrusted; the only thing standing between it and an injection is that
         // every value here is a `?`.
         let expr = parse(r#"intitle:"'; DROP TABLE entry; --""#, NOW).unwrap();
-        let built = ids(&EntryQuery {
+        let q = EntryQuery {
             search: Some(expr.clone()),
             ..base()
-        });
+        };
+        let sql = text(&ids(&q));
         assert!(
-            !built.sql.contains("DROP"),
-            "the needle reached the SQL text: {}",
-            built.sql
+            !sql.contains("DROP"),
+            "the needle reached the SQL text: {sql}"
         );
         // Folded, because that is what a containment needle is — which is itself worth knowing: the
         // statement text still never sees it.
+        let fragment = compile(&expr, &q.sql_ctx()).expect("compiles");
         assert!(
-            built
+            fragment
                 .params
                 .iter()
-                .any(|p| matches!(p, SqlValue::Text(t) if t.contains("drop table entry"))),
+                .any(|p| matches!(p, Param::Text(t) if t.contains("drop table entry"))),
             "{:?}",
-            built.params
+            fragment.params
+        );
+        assert_eq!(
+            fragment.sql.matches('?').count(),
+            fragment.params.len(),
+            "one value per placeholder: {}",
+            fragment.sql
         );
     }
 
@@ -1714,8 +1799,9 @@ mod tests {
             search: Some(expr.clone()),
             ..base()
         };
-        assert_eq!(ids(&q), ids(&q));
-        assert_eq!(rows(&q), rows(&q));
+        assert_eq!(text(&ids(&q)), text(&ids(&q)));
+        assert_eq!(binds(&ids(&q)), binds(&ids(&q)));
+        assert_eq!(text(&rows(&q)), text(&rows(&q)));
     }
 
     #[test]
