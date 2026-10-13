@@ -233,7 +233,13 @@
                 {/if}
                 <span class="rd-item-feed">
                   {#if entry.thumbnail}
-                    <img class="rd-item-media" src={entry.thumbnail} alt="" loading="lazy" />
+                    <img
+                      class="rd-item-media"
+                      src={entry.thumbnail}
+                      alt=""
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                    />
                   {:else if entry.has_media}
                     <i class="ri-play-circle-line rd-item-media" aria-hidden="true"></i>
                   {/if}

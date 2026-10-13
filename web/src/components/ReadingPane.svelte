@@ -56,6 +56,18 @@
       node.preload = 'none';
       node.removeAttribute('autoplay');
     }
+    if (node instanceof HTMLImageElement) {
+      // Lazy-loading placeholders: a scraped page's `<img src="1x1.gif" data-src="real.jpg">` never
+      // runs the script that swaps them, so without this the article is a column of blank boxes.
+      // The sanitizer keeps `data-*`, which is what makes the real address recoverable here.
+      const lazy =
+        node.dataset.src ?? node.dataset.original ?? node.dataset.lazySrc ?? node.dataset.actualsrc;
+      if (lazy) node.setAttribute('src', lazy);
+      if (node.dataset.srcset) node.setAttribute('srcset', node.dataset.srcset);
+      // Hotlink protection is the commonest reason an article's images 403: the CDN refuses
+      // requests whose Referer is not the site itself, so send none.
+      if (/^https?:/i.test(node.src)) node.referrerPolicy = 'no-referrer';
+    }
   });
 
   const clean = (html: string): string =>

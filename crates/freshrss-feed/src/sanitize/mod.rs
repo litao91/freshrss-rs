@@ -341,10 +341,23 @@ mod tests {
 
     #[test]
     fn simplepie_own_data_attributes_are_stripped() {
-        let out = clean(r#"<p data-leave-validation="1" data-original="x" data-keep="2">y</p>"#);
+        let out = clean(r#"<p data-leave-validation="1" data-keep="2">y</p>"#);
         assert!(!out.contains("data-leave-validation"), "{out}");
-        assert!(!out.contains("data-original"), "{out}");
         assert!(out.contains(r#"data-keep="2""#), "{out}");
+    }
+
+    #[test]
+    fn a_lazy_image_keeps_the_address_its_placeholder_hides() {
+        // ithome and half the web lazy-load with `data-original` behind a 1x1 `src`; the reader
+        // promotes it at render time, which is only possible if it survives this pass.
+        let out = clean(
+            r#"<img src="https://i.example/t.png" data-original="https://i.example/real.jpg" width="10">"#,
+        );
+        assert!(
+            out.contains(r#"data-original="https://i.example/real.jpg""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"src="https://i.example/t.png""#), "{out}");
     }
 
     #[test]

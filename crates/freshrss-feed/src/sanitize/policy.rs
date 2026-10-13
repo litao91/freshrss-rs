@@ -183,12 +183,14 @@ pub const GENERIC_ATTRIBUTE_PREFIXES: &[&str] = &["aria-", "data-"];
 /// `data-*` attributes that are stripped even though the prefix is allowed.
 ///
 /// These are SimplePie's own bookkeeping keys. Left in place they would let one feed's content
-/// influence how another pass re-sanitizes it.
+/// influence how another pass re-sanitizes it. Lazy-loading keys such as `data-original` are
+/// deliberately *not* here: they carry the real image address behind a placeholder `src`, and the
+/// reader promotes them at render time — stripping them would leave every lazy page a column of
+/// blank boxes.
 pub const STRIPPED_DATA_ATTRIBUTES: &[&str] = &[
     "data-auto-leave-validation",
     "data-leave-validation",
     "data-no-leave-validation",
-    "data-original",
 ];
 
 /// Elements whose *content* is removed along with the tag.
