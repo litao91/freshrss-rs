@@ -63,7 +63,8 @@ impl AppState {
 /// An allowlist entry that parses as neither a host, an address nor a network is dropped rather than
 /// being fatal, so this is where the operator is told about it — once, at startup, rather than as a
 /// mysterious refusal on every refresh of the feed it was meant to permit.
-fn guard_from(http: &HttpConfig) -> Guard {
+/// The network policy for outbound feed fetches, from the configured HTTP section.
+pub fn guard_from(http: &HttpConfig) -> Guard {
     for entry in Guard::rejected(&http.internal_host_allowlist) {
         tracing::warn!(
             entry = %entry,

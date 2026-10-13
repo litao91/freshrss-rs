@@ -37,6 +37,10 @@ enum Command {
     Migrate,
     /// Fetch or read a feed and print what the parser, GUID policy and sanitizer made of it.
     Parse(freshrss_server::cli::ParseArgs),
+    /// Create an account, bypassing the registration policy.
+    CreateUser(freshrss_server::cli::CreateUserArgs),
+    /// Refresh due feeds now and print the run's report.
+    Refresh(freshrss_server::cli::RefreshArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -62,6 +66,8 @@ async fn main() -> Result<()> {
             println!("schema at version {}", db.schema_version().await?);
         }
         Command::Serve => serve(config).await?,
+        Command::CreateUser(args) => freshrss_server::cli::create_user(&config, args).await?,
+        Command::Refresh(args) => freshrss_server::cli::refresh(&config, args).await?,
         Command::Parse(_) => unreachable!("handled above, before configuration is loaded"),
     }
     Ok(())

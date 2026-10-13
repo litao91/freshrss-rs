@@ -23,6 +23,143 @@ use freshrss_feed::sanitize::{sanitize_html, SanitizeOptions};
 use freshrss_feed::{parse_feed, FeedKind, RawFeed};
 use serde::Serialize;
 
+use crate::config::AppConfig;
+use crate::db::Db;
+
+/// Arguments for `freshrss-rs create-user`.
+#[derive(Debug, Args)]
+pub struct CreateUserArgs {
+    pub username: String,
+
+    /// The password. Read from stdin when omitted, so it need not land in a shell history.
+    #[arg(long, value_name = "PASSWORD", hide_env_values = true)]
+    pub password: Option<String>,
+
+    #[arg(long)]
+    pub email: Option<String>,
+
+    /// Grant the account administrator rights.
+    #[arg(long)]
+    pub admin: bool,
+}
+
+/// Arguments for `freshrss-rs refresh`.
+#[derive(Debug, Args)]
+pub struct RefreshArgs {
+    /// Refresh only this user's due feeds, by username.
+    #[arg(long, value_name = "USERNAME")]
+    pub user: Option<String>,
+
+    /// Refresh one feed, by id or by URL, whether or not it is due.
+    #[arg(long, value_name = "ID|URL")]
+    pub feed: Option<String>,
+}
+
+/// Creates an account from the shell, bypassing the registration policy.
+///
+/// The server has no other back door: with `registration.mode = "closed"` this subcommand is the
+/// only way an account comes into existence, which is the configuration an operator who does not
+/// want strangers registering should be running.
+pub async fn create_user(config: &AppConfig, args: CreateUserArgs) -> Result<()> {
+    let password = match args.password {
+        Some(password) => password,
+        None => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading the password from stdin")?;
+            line.trim_end().to_owned()
+        }
+    };
+    if password.is_empty() {
+        bail!("an empty password was given");
+    }
+
+    let db = Db::open(&config.database).await?;
+    let user = crate::service::auth::create_user(
+        &db,
+        &args.username,
+        args.email.as_deref(),
+        &password,
+        args.admin,
+    )
+    .await?;
+    println!(
+        "created user {} (id {}){}",
+        user.username,
+        user.id,
+        if user.is_admin { ", administrator" } else { "" }
+    );
+    Ok(())
+}
+
+/// Refreshes now, from the shell, and prints the run's report.
+///
+/// The scheduler does this on its own; the subcommand exists for the moments it cannot cover —
+/// after an import, after fixing a feed, or in a cron entry of the operator's own choosing.
+pub async fn refresh(config: &AppConfig, args: RefreshArgs) -> Result<()> {
+    let db = Db::open(&config.database).await?;
+    let fetcher: std::sync::Arc<dyn freshrss_feed::Fetcher> = std::sync::Arc::new(
+        ReqwestFetcher::with_guard(crate::router::guard_from(&config.http))
+            .context("building the HTTP client")?,
+    );
+    let settings = crate::service::refresh::Settings::from_config(config);
+
+    let scope = match (&args.feed, &args.user) {
+        (Some(which), _) => {
+            let which = which.clone();
+            let needle = which.clone();
+            let id_guess = which.parse::<i64>().unwrap_or(-1);
+            let feed = db
+                .with(move |mut conn| async move {
+                    // An operations tool names a feed without knowing its owner, which the
+                    // per-user DAO lookups cannot express.
+                    let found: Option<(i64, i64)> = sqlx::query_as(
+                        "SELECT id, id_user FROM feed WHERE id = ?1 OR url = ?2 ORDER BY id LIMIT 1",
+                    )
+                    .bind(id_guess)
+                    .bind(&needle)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                    let Some((id, id_user)) = found else {
+                        return Ok(None);
+                    };
+                    crate::db::dao::feed::find_by_id(&mut conn, id, id_user).await
+                })
+                .await?;
+            match feed {
+                Some(feed) => crate::service::refresh::run::Scope::Feed(Box::new(feed)),
+                None => bail!("no feed matches {which:?}"),
+            }
+        }
+        (None, Some(name)) => {
+            let name = name.clone();
+            let needle = name.clone();
+            let user = db
+                .with(move |mut conn| async move {
+                    crate::db::dao::user::find_by_username(&mut conn, &needle).await
+                })
+                .await?;
+            match user {
+                Some(user) => crate::service::refresh::run::Scope::User(user.id),
+                None => bail!("no user named {name:?}"),
+            }
+        }
+        (None, None) => crate::service::refresh::run::Scope::Due,
+    };
+
+    let report = crate::service::refresh::run::run(
+        &db,
+        &fetcher,
+        &settings,
+        scope,
+        crate::domain::ids::now_unix(),
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 /// Arguments for `freshrss-rs parse <url|file>`.
 #[derive(Debug, Args)]
 pub struct ParseArgs {

@@ -138,6 +138,63 @@ fn validation_error(reason: &'static str) -> Error {
     Error::Validation(reason.to_string())
 }
 
+/// Creates an account without consulting the registration policy.
+///
+/// This is what the `create-user` subcommand calls: an operator at a shell has already
+/// authenticated, in the strongest sense available, and a server configured
+/// `registration.mode = "closed"` still needs a way to gain its second user.
+///
+/// # Errors
+///
+/// The same validation and conflict errors as [`register`].
+pub async fn create_user(
+    db: &Db,
+    username: &str,
+    email: Option<&str>,
+    password: &str,
+    is_admin: bool,
+) -> Result<User> {
+    let username = username.trim().to_string();
+    User::validate_username(&username).map_err(validation_error)?;
+    User::validate_password(password).map_err(validation_error)?;
+    let email = email
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    User::validate_email(email.as_deref()).map_err(validation_error)?;
+
+    db.with(move |mut conn| async move {
+        if user_dao::find_by_username(&mut conn, &username)
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict("that username is already taken".into()));
+        }
+        if let Some(addr) = email.as_deref() {
+            if user_dao::find_by_email(&mut conn, addr).await?.is_some() {
+                return Err(Error::Conflict(
+                    "that email address is already registered".into(),
+                ));
+            }
+        }
+        let password_hash = hash_password(password)?;
+        let id = user_dao::insert(
+            &mut conn,
+            &user_dao::NewUser {
+                username: &username,
+                email: email.as_deref(),
+                password_hash: &password_hash,
+                is_admin,
+            },
+        )
+        .await?;
+        user_dao::find_by_id(&mut conn, id)
+            .await?
+            .ok_or_else(|| Error::Internal("user vanished immediately after insert".into()))
+    })
+    .await
+}
+
 /// Everything the login form posts.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LoginRequest {
