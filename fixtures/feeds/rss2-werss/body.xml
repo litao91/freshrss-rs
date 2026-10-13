@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Shaped like the output of we-mp-rss (WeRSS), the WeChat Official Account bridge: RSS 2.0 with
+     a non-standard per-item <id>, guid equal to the link, HTML escaped rather than CDATA-wrapped
+     in content:encoded, cover images as zero-length enclosures, and +0800 on naive timestamps. -->
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>某公众号</title>
+    <link>https://mp.weixin.qq.com/mp/profile_ext?action=home&amp;__biz=MzExample==</link>
+    <description>WeChat official account via WeRSS</description>
+    <lastBuildDate>Tue, 13 Oct 2026 10:30:00 +0800</lastBuildDate>
+    <item>
+      <id>1000001</id>
+      <title>First article from the account</title>
+      <link>https://mp.weixin.qq.com/s/abc123</link>
+      <guid>https://mp.weixin.qq.com/s/abc123</guid>
+      <pubDate>Tue, 13 Oct 2026 10:00:00 +0800</pubDate>
+      <description>A short teaser.</description>
+      <content:encoded>&lt;p&gt;Hello &lt;strong&gt;WeChat&lt;/strong&gt; body with an &lt;img src="https://mmbiz.qpic.cn/one.png" /&gt; inside.&lt;/p&gt;</content:encoded>
+      <enclosure url="https://mmbiz.qpic.cn/cover1.jpg" type="image/jpeg" length="0"/>
+    </item>
+    <item>
+      <id>1000002</id>
+      <title>Second article, edited upstream</title>
+      <link>https://mp.weixin.qq.com/s/def456</link>
+      <guid>https://mp.weixin.qq.com/s/def456</guid>
+      <pubDate>Mon, 12 Oct 2026 08:15:00 +0800</pubDate>
+      <description>Teaser two.</description>
+      <content:encoded>&lt;p&gt;Second body.&lt;/p&gt;</content:encoded>
+      <enclosure url="https://mmbiz.qpic.cn/cover2.jpg" type="image/jpeg" length="0"/>
+    </item>
+    <item>
+      <id>1000003</id>
+      <title>Third article without a cover</title>
+      <link>https://mp.weixin.qq.com/s/ghi789</link>
+      <guid>https://mp.weixin.qq.com/s/ghi789</guid>
+      <pubDate>Sun, 11 Oct 2026 23:45:00 +0800</pubDate>
+      <description>Teaser three.</description>
+      <content:encoded>&lt;p&gt;Third body.&lt;/p&gt;</content:encoded>
+    </item>
+  </channel>
+</rss>

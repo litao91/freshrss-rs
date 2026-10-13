@@ -168,4 +168,21 @@ mod tests {
         assert_eq!(request.max_bytes, 1234);
         assert_eq!(request.url, "https://e.example/feed.xml");
     }
+
+    #[tokio::test]
+    async fn a_wechat_address_is_answered_without_being_fetched() {
+        // No fixture is registered for the address: a fetch would fail loudly, so a clean answer
+        // proves the bridge guidance short-circuits before any request.
+        let fetcher = FixtureFetcher::new();
+        let found = discover(
+            &fetcher,
+            &Settings::default(),
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzExample==",
+        )
+        .await
+        .expect("answered without fetching");
+        assert!(found.found().is_none());
+        let rejected = found.candidates[0].rejected.as_deref().expect("a reason");
+        assert!(rejected.contains("we-mp-rss"), "{rejected}");
+    }
 }

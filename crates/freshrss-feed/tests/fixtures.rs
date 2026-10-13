@@ -96,6 +96,7 @@ fn every_fixture_keeps_every_item_it_declares() {
         ("rss2-content-encoded", 4),
         ("rss2-media", 4),
         ("rss2-no-guid", 5),
+        ("rss2-werss", 3),
     ];
     for (slug, want) in expected {
         let dir = fixtures_dir().join(slug);
@@ -497,4 +498,39 @@ fn the_corpus_actually_contains_items() {
         .map(|(slug, body, kind)| parse(slug, body, *kind).items.len())
         .sum();
     assert!(total >= 50, "corpus only produced {total} items");
+}
+
+/// The WeChat bridge (we-mp-rss) shape: everything about it is slightly off-spec, and every one of
+/// these quirks is something a stricter parser would trip over — a non-standard per-item `<id>`,
+/// `guid` equal to the link, `content:encoded` escaped rather than CDATA-wrapped, covers as
+/// zero-length enclosures and `+0800` on every date.
+#[test]
+fn a_wechat_bridge_feed_ingests_cleanly() {
+    let dir = fixtures_dir().join("rss2-werss");
+    let body = std::fs::read(dir.join("body.xml")).unwrap();
+    let feed = parse("rss2-werss", &body, FeedKind::Rss);
+    assert_eq!(feed.items.len(), 3);
+
+    let first = &feed.items[0];
+    // The stray `<id>` must not shadow the real identity: the guid is the link, as the bridge emits.
+    assert_eq!(
+        first.guid.as_deref(),
+        Some("https://mp.weixin.qq.com/s/abc123")
+    );
+    // Escaped HTML in content:encoded comes back as markup, not as visible entities.
+    let content = first.effective_content().expect("a body");
+    assert!(content.contains("<strong>WeChat</strong>"), "{content}");
+    assert!(!content.contains("&lt;p&gt;"), "{content}");
+    // The zero-length enclosure is still a usable cover image.
+    assert_eq!(
+        first.thumbnail.as_ref().map(|t| t.url.as_str()),
+        Some("https://mmbiz.qpic.cn/cover1.jpg")
+    );
+    // 10:00 +0800 is 02:00Z; a parser that assumed UTC would be eight hours off.
+    assert_eq!(first.date, Some(1_791_856_800));
+
+    assert!(
+        feed.items[2].thumbnail.is_none(),
+        "an item without an enclosure must not invent a cover"
+    );
 }

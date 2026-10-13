@@ -163,6 +163,22 @@ pub async fn discover(
     url: &str,
     template: &FetchRequest,
 ) -> Result<Discovered, FeedError> {
+    // WeChat official accounts serve no feed to an anonymous fetcher: the profile and article pages
+    // sit behind a session and an anti-bot wall, so fetching them only buys a verification page and
+    // a confusing rejection. Say what actually works instead — a bridge that holds the WeChat
+    // session and publishes RSS, whose output is an ordinary feed this reader subscribes to.
+    if is_wechat_address(url) {
+        return Ok(Discovered {
+            url: url.to_owned(),
+            candidates: vec![Candidate {
+                url: url.to_owned(),
+                source: Source::Given,
+                probe: None,
+                rejected: Some(WECHAT_REJECTION.to_owned()),
+            }],
+        });
+    }
+
     let body = fetch(fetcher, template, url).await?;
     let document_url = if body.effective_url.is_empty() {
         url.to_owned()
@@ -239,6 +255,23 @@ fn not_a_feed(body: &[u8]) -> String {
         return "the response is not a feed".to_owned();
     }
     format!("the response is not a feed: {message}")
+}
+
+/// What we say about a WeChat official-account address, instead of fetching it.
+const WECHAT_REJECTION: &str = "WeChat official accounts publish no feed an outside reader can \
+    fetch: the pages sit behind a logged-in session and an anti-bot check. Run a bridge that holds \
+    that session (for example we-mp-rss, which serves /feed/<account>.rss) and subscribe the \
+    bridge's feed address here";
+
+/// True for `mp.weixin.qq.com` profile and article addresses.
+fn is_wechat_address(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_owned()))
+        .is_some_and(|host| {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            host == "mp.weixin.qq.com" || host == "weixin.qq.com" || host == "www.weixin.qq.com"
+        })
 }
 
 async fn fetch(

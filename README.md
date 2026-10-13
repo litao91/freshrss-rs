@@ -66,6 +66,31 @@ its second account. Unless `registration.first_user_is_admin = false`, the first
 database becomes its administrator. A server that starts with no accounts and a closed policy logs
 a line saying so, rather than leaving the operator to wonder why the login page has no sign-up.
 
+## WeChat Official Accounts
+
+WeChat publishes no feed an outside reader can fetch: official-account pages sit behind a logged-in
+session and an anti-bot check. The working setup is two pieces — a bridge that holds the WeChat
+session and crawls the accounts, and this reader subscribing to the bridge's output.
+[we-mp-rss](https://github.com/rachelos/we-mp-rss) (WeRSS, MIT) is the reference bridge: it logs in
+to the official-account platform, crawls each account on a schedule, and serves plain RSS 2.0 at
+
+```
+http://<we-mp-rss host>:8001/feed/<account-id>.rss     # one account
+http://<we-mp-rss host>:8001/feed/all.rss              # everything it crawls
+```
+
+Those addresses need no key or user agent, so they subscribe here like any other feed. Pasting a
+`mp.weixin.qq.com` address into the add dialog is answered with this guidance rather than a fetch
+that could only end at the verification wall.
+
+The bridge's output is deliberately tolerated in all its off-spec corners — a stray per-item `<id>`,
+`guid` equal to the link, `content:encoded` escaped instead of CDATA-wrapped, cover images as
+zero-length `<enclosure>`s, and `+0800` on every date; `fixtures/feeds/rss2-werss` pins each of
+them. It sends no ETag or Last-Modified, so refreshes are plain GETs and change detection falls
+back to the body fingerprint, which is exactly what makes a second refresh of an unchanged account
+free. Poll no faster than the bridge crawls: regenerating its RSS per request is its own work, not
+yours.
+
 ## Layout
 
 ```
