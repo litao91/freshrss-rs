@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", get(current_user))
+        .route("/policy", get(policy))
         .route("/password", put(change_password))
 }
 
@@ -96,6 +97,20 @@ fn client_info(headers: &HeaderMap) -> auth::ClientInfo<'_> {
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok()),
     }
+}
+
+/// The registration policy, for the login page to decide whether to offer a sign-up form at all.
+///
+/// Unauthenticated on purpose: the page that needs it is the one shown before anyone has a session.
+/// It reveals only what a refused `POST /auth/register` would reveal anyway.
+async fn policy(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let policy = auth::registration_policy(&state.db, &state.config)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(json!({
+        "mode": policy.mode,
+        "can_register": policy.can_register,
+    })))
 }
 
 async fn register(

@@ -195,6 +195,12 @@ export interface SessionInfo {
   current: boolean;
 }
 
+/** What the server's registration policy allows, fetched before anyone has a session. */
+export interface AuthPolicy {
+  mode: 'open' | 'first-user-only' | 'closed';
+  can_register: boolean;
+}
+
 // --- feed discovery ----------------------------------------------------------
 
 /**
@@ -465,6 +471,8 @@ export const api = {
 
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
 
+  authPolicy: () => request<AuthPolicy>('/auth/policy'),
+
   changePassword: (current: string, next: string) =>
     request<{ revoked_sessions: number }>('/auth/password', {
       method: 'PUT',
@@ -476,6 +484,8 @@ export const api = {
   revokeSession: (id: string) => request<void>(`/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   tree: () => request<Tree>('/tree'),
+
+  counts: () => request<Counts>('/counts'),
 
   categories: () => request<CategoryNode[]>('/categories'),
 

@@ -11,15 +11,24 @@
   /** Field-level message, shown inline rather than as a toast because it belongs to the form. */
   let formError = $state<string | null>(null);
 
-  const title = $derived(mode === 'login' ? 'Log in' : 'Create your account');
+  /**
+   * A server configured `registration.mode = "closed"` (or a `first-user-only` server that already
+   * has its account) refuses every sign-up, so offering the form would only set the visitor up for
+   * a refusal. Unknown policy — the probe failed — keeps the form: the endpoint stays the authority.
+   */
+  const canRegister = $derived(session.policy?.can_register !== false);
+  const active = $derived(canRegister ? mode : 'login');
+
+  const title = $derived(active === 'login' ? 'Log in' : 'Create your account');
   const lead = $derived(
-    mode === 'login'
+    active === 'login'
       ? 'Sign in to your reader.'
       : 'Pick a username and password. The first account on this server becomes its administrator.',
   );
-  const submitLabel = $derived(mode === 'login' ? 'Log in' : 'Sign up');
+  const submitLabel = $derived(active === 'login' ? 'Log in' : 'Sign up');
 
   function switchMode(next: 'login' | 'register'): void {
+    if (next === 'register' && !canRegister) return;
     mode = next;
     formError = null;
   }
@@ -31,7 +40,7 @@
     busy = true;
     formError = null;
     try {
-      if (mode === 'login') {
+      if (active === 'login') {
         await signIn(username, password);
       } else {
         await signUp(username, password, email.trim() || undefined);
@@ -77,7 +86,7 @@
     <form class="rd-auth-form" method="post" onsubmit={submit} novalidate>
       <div>
         <label class="rd-label" for="auth-username">
-          {mode === 'login' ? 'Username or email' : 'Username'}
+          {active === 'login' ? 'Username or email' : 'Username'}
         </label>
         <input
           id="auth-username"
@@ -91,7 +100,7 @@
         />
       </div>
 
-      {#if mode === 'register'}
+      {#if active === 'register'}
         <div>
           <label class="rd-label" for="auth-email">Email <span class="rd-hint">(optional)</span></label>
           <input id="auth-email" class="rd-input" type="email" autocomplete="email" bind:value={email} />
@@ -104,7 +113,7 @@
           id="auth-password"
           class="rd-input"
           type="password"
-          autocomplete={mode === 'login' ? 'current-password' : 'new-password'}
+          autocomplete={active === 'login' ? 'current-password' : 'new-password'}
           minlength={8}
           required
           bind:value={password}
@@ -121,7 +130,9 @@
     </form>
 
     <p class="rd-auth-switch">
-      {#if mode === 'login'}
+      {#if !canRegister}
+        Registration is closed on this server. Ask whoever runs it for an account.
+      {:else if active === 'login'}
         Don't have an account?
         <button type="button" onclick={() => switchMode('register')}>Sign up</button>
       {:else}

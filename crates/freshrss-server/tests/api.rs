@@ -16,7 +16,7 @@ use tower::ServiceExt;
 
 use freshrss_feed::http::{FixtureFetcher, FixtureResponse};
 use freshrss_feed::Fetcher;
-use freshrss_server::config::AppConfig;
+use freshrss_server::config::{AppConfig, RegistrationConfig, RegistrationMode};
 use freshrss_server::db::Db;
 use freshrss_server::router::{router, AppState};
 
@@ -615,4 +615,152 @@ async fn a_page_with_no_recognisable_article_is_a_readable_refusal() {
         "{:?}",
         reply.body
     );
+}
+
+/// A server on an in-memory database with a fixture fetcher and a caller-chosen config.
+async fn app_with(config: AppConfig) -> (Router, Db) {
+    let db = Db::in_memory().await.expect("db");
+    let fetcher: Arc<dyn Fetcher> = Arc::new(FixtureFetcher::new().with(FEED_URL, rss(FEED_BODY)));
+    let app = router(AppState::with_fetcher(db.clone(), config, fetcher));
+    (app, db)
+}
+
+fn registration(mode: RegistrationMode) -> AppConfig {
+    AppConfig {
+        registration: RegistrationConfig {
+            mode,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn register_body(username: &str) -> Value {
+    json!({"username": username, "password": "correct-horse-battery"})
+}
+
+#[tokio::test]
+async fn the_policy_endpoint_reports_an_open_server_without_a_session() {
+    let (app, _db) = app_with(AppConfig::default()).await;
+    let reply = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body["mode"], "open");
+    assert_eq!(reply.body["can_register"], true);
+}
+
+#[tokio::test]
+async fn a_closed_server_refuses_registration_and_says_so_before_the_form_is_filled() {
+    let (app, db) = app_with(registration(RegistrationMode::Closed)).await;
+
+    let reply = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
+    assert_eq!(reply.body["mode"], "closed");
+    assert_eq!(reply.body["can_register"], false);
+
+    let refused = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(register_body("mallory")),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "registration_closed");
+
+    // The operator's back door is unaffected: `create-user` ignores the policy by design, and the
+    // account it makes can sign in even while the web form stays shut.
+    freshrss_server::service::auth::create_user(
+        &db,
+        "operator",
+        None,
+        "correct-horse-battery",
+        true,
+    )
+    .await
+    .expect("the CLI path creates an account on a closed server");
+    let login = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        None,
+        Some(json!({"username": "operator", "password": "correct-horse-battery"})),
+    )
+    .await;
+    assert_eq!(login.status, StatusCode::OK);
+    assert!(login.set_cookie.is_some());
+}
+
+#[tokio::test]
+async fn first_user_only_closes_once_an_account_exists() {
+    let (app, _db) = app_with(registration(RegistrationMode::FirstUserOnly)).await;
+
+    let before = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
+    assert_eq!(before.body["can_register"], true);
+
+    let first = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(register_body("alice")),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::CREATED);
+
+    let after = call(&app, Method::GET, "/api/v1/auth/policy", None, None, None).await;
+    assert_eq!(after.body["can_register"], false);
+
+    let second = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(register_body("bob")),
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn marking_articles_read_keeps_the_cached_sidebar_counters_in_step() {
+    let (app, cookie) = signed_in().await;
+    post(&app, "/api/v1/feeds", &cookie, json!({"url": FEED_URL})).await;
+
+    let entries = get(&app, "/api/v1/entries?scope=all", &cookie).await;
+    let items = entries.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    let first = items[0]["id"].as_str().expect("id").to_owned();
+
+    let before = get(&app, "/api/v1/counts", &cookie).await;
+    assert_eq!(before.body["main_stream"]["unread"], 2);
+
+    let marked = post(
+        &app,
+        "/api/v1/entries/read",
+        &cookie,
+        json!({"ids": [first]}),
+    )
+    .await;
+    assert_eq!(marked.body["marked"], 1);
+
+    // The sidebar reads cached per-feed counters, so a mark-read that forgets to recompute them
+    // leaves the tree claiming an unread article the list no longer shows.
+    let after = get(&app, "/api/v1/counts", &cookie).await;
+    assert_eq!(after.body["all"]["unread"], 1, "{:?}", after.body);
+    assert_eq!(after.body["main_stream"]["unread"], 1, "{:?}", after.body);
+
+    post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({"scope": "all"}),
+    )
+    .await;
+    let done = get(&app, "/api/v1/counts", &cookie).await;
+    assert_eq!(done.body["all"]["unread"], 0, "{:?}", done.body);
+    assert_eq!(done.body["main_stream"]["unread"], 0, "{:?}", done.body);
 }

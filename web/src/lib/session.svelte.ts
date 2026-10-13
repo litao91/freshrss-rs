@@ -6,12 +6,27 @@
  * that expired in another tab does not leave the reader showing stale data.
  */
 
-import { api, ApiError, type Bootstrap, type Counts, type Tree, type User, type UserConfig } from './api';
+import {
+  api,
+  ApiError,
+  type AuthPolicy,
+  type Bootstrap,
+  type Counts,
+  type Tree,
+  type User,
+  type UserConfig,
+} from './api';
 
 interface SessionState {
   user: User | null;
   config: UserConfig | null;
   version: { freshrss_rs: string; schema: number } | null;
+  /**
+   * The server's registration policy, or null while it is unknown. The login page offers a sign-up
+   * form only when `can_register` is true; a failed probe leaves it null and the form stays, since
+   * the endpoint remains the authority and refuses what it must.
+   */
+  policy: AuthPolicy | null;
   /** True until the first `/me` resolves, so the UI can show a splash instead of a login form. */
   loading: boolean;
   /**
@@ -25,6 +40,7 @@ export const session = $state<SessionState>({
   user: null,
   config: null,
   version: null,
+  policy: null,
   loading: true,
   error: null,
 });
@@ -52,9 +68,15 @@ function clear(): void {
 /** Restores a session, or leaves us signed out. Never throws: startup must not depend on it. */
 export async function bootstrap(): Promise<void> {
   session.loading = true;
+  // The policy is fetched alongside, not after: the login page renders as soon as `/me` settles and
+  // must not flash a sign-up form a closed server will refuse.
+  const policy = api.authPolicy().catch(() => null);
   try {
-    apply(await api.bootstrap());
+    const [boot, settled] = await Promise.all([api.bootstrap(), policy]);
+    session.policy = settled;
+    apply(boot);
   } catch (err) {
+    session.policy = await policy;
     if (err instanceof ApiError && err.isUnauthorized) {
       clear();
       return;
@@ -96,9 +118,24 @@ export async function refreshTree(): Promise<void> {
   tree.data = await api.tree();
 }
 
-/** Replaces the counts in place, used by the cheap `GET /counts` poll. */
+/** Replaces the counts in place, used after a mutation changed unread numbers. */
 export function applyCounts(counts: Counts): void {
   if (tree.data) tree.data = { ...tree.data, counts };
+}
+
+/**
+ * Re-reads just the counts, for the sidebar badges after a read or star mutation.
+ *
+ * Cheaper than `refreshTree` and enough: the mutation already reloaded what it touched, and a badge
+ * that keeps claiming three unread after the last one was marked read is the kind of lie a reader
+ * notices. A failed sync is cosmetic, so it is swallowed rather than toasted.
+ */
+export async function syncCounts(): Promise<void> {
+  try {
+    applyCounts(await api.counts());
+  } catch {
+    // The next mutation or refresh will pick the counts up.
+  }
 }
 
 /** Call from any handler that sees a 401. */

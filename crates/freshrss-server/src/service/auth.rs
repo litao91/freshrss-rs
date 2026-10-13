@@ -138,6 +138,33 @@ fn validation_error(reason: &'static str) -> Error {
     Error::Validation(reason.to_string())
 }
 
+/// What the registration policy allows right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistrationPolicy {
+    pub mode: RegistrationMode,
+    /// Whether a `POST /auth/register` would get past the policy check this instant.
+    pub can_register: bool,
+}
+
+/// Answers whether a visitor may register, before they fill in a form.
+///
+/// The login page asks this so a server configured `registration.mode = "closed"` never offers a
+/// sign-up form whose submit is guaranteed to be refused; the endpoint stays the authority, and
+/// this only spares the visitor the round trip. The decision is the same one [`register`] makes,
+/// including `first-user-only` closing once an account exists.
+pub async fn registration_policy(db: &Db, config: &AppConfig) -> Result<RegistrationPolicy> {
+    let mode = config.registration.mode;
+    let existing = db
+        .with(move |mut conn| async move { user_dao::count(&mut conn).await })
+        .await?;
+    let can_register = match mode {
+        RegistrationMode::Open => true,
+        RegistrationMode::FirstUserOnly => existing == 0,
+        RegistrationMode::Closed => false,
+    };
+    Ok(RegistrationPolicy { mode, can_register })
+}
+
 /// Creates an account without consulting the registration policy.
 ///
 /// This is what the `create-user` subcommand calls: an operator at a shell has already

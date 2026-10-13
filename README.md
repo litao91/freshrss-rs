@@ -27,7 +27,9 @@ In debug builds the server reads `static/` from disk on every request, so a `npm
 shows up without recompiling. In release builds `static/` is embedded into the binary by
 `rust-embed`, so build the SPA **before** `cargo build --release` to get a single-file deploy.
 
-Other subcommands: `freshrss-rs migrate` (apply schema migrations and exit).
+Other subcommands: `freshrss-rs migrate` (apply schema migrations and exit),
+`freshrss-rs create-user` (add an account from the shell), `freshrss-rs refresh` (refresh due feeds
+now), `freshrss-rs parse <url|file>` (run one feed through the parser and print what came out).
 
 ## Configuration
 
@@ -37,6 +39,27 @@ also be set through an environment variable named `FRESHRSS_<SECTION>_<KEY>`, fo
 
 The session secret defaults to a placeholder. The server refuses to start with it unless
 `session.allow_insecure_secret = true`, which is set in the shipped defaults for development only.
+
+## Accounts
+
+```sh
+freshrss-rs create-user alice --admin            # password read from stdin
+freshrss-rs create-user bob --password '…'       # or passed, at the cost of a shell history entry
+```
+
+Whether the web UI offers a sign-up form at all is `[registration] mode`:
+
+| mode            | behaviour                                                            |
+| --------------- | -------------------------------------------------------------------- |
+| `open`          | anyone may register (the default)                                     |
+| `first-user-only` | registration closes once the first account exists                   |
+| `closed`        | no web registration; accounts are created by `create-user` only       |
+
+With `closed` the login page hides the sign-up form and says registration is closed, and
+`POST /api/v1/auth/register` answers `403 registration_closed` regardless — the page only spares a
+visitor the round trip. `create-user` ignores the policy by design: it is how a closed server gains
+its second account. Unless `registration.first_user_is_admin = false`, the first account on a fresh
+database becomes its administrator.
 
 ## Layout
 

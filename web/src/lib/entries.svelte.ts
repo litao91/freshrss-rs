@@ -23,6 +23,7 @@ import {
   type EntryPage,
 } from './api';
 import { notifyError } from './toast.svelte';
+import { syncCounts } from './session.svelte';
 import { scopeId, scopeParam, view } from './view.svelte';
 
 /** Rows per page. The server caps this at 500; 40 is about two screens at the default density. */
@@ -147,6 +148,7 @@ export async function setRead(ids: string[], read: boolean): Promise<void> {
   try {
     await (read ? api.markRead(ids) : api.markUnread(ids));
     if (read) entries.unreadInScope = Math.max(0, entries.unreadInScope - changed);
+    void syncCounts();
   } catch (err) {
     patch(ids, (e) => (e.is_read = !read));
     notifyError(message(err));
@@ -157,6 +159,7 @@ export async function setStarred(ids: string[], starred: boolean): Promise<void>
   patch(ids, (e) => (e.is_favorite = starred));
   try {
     await (starred ? api.star(ids) : api.unstar(ids));
+    void syncCounts();
   } catch (err) {
     patch(ids, (e) => (e.is_favorite = !starred));
     notifyError(message(err));
@@ -181,7 +184,8 @@ export async function markAllRead(): Promise<number> {
     });
     for (const entry of entries.items) entry.is_read = true;
     entries.unreadInScope = 0;
-    // The counts in the sidebar are a separate aggregate; they would otherwise keep the old badge.
+    void syncCounts();
+    // An unread-filtered list must also drop the rows that just became read.
     if (view.readFilter === 'unread') await reload();
     return marked;
   } catch (err) {
