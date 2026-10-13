@@ -1229,10 +1229,6 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   overflow: hidden;
 }
 
-.rd-item.is-read .rd-item-summary {
-  display: none;
-}
-
 .rd-list-end {
   display: flex;
   align-items: center;
