@@ -396,17 +396,27 @@ async fn mark(
         .map_err(ApiError)?;
 
     let id_user = user.id;
+    let refresh = matches!(kind, Mark::Read | Mark::Unread);
     let marked = state
         .db
         // The writer lock, because this updates `entry`: without it a bulk mark-read and a refresh
         // commit contend for SQLite's single write lock and one of them gets SQLITE_BUSY.
         .with_writer(move |mut conn| async move {
+            // The sidebar's per-feed counters are cached columns, so the feeds whose read state
+            // changed have to be recomputed in the same transaction or they stay stale until the
+            // next refresh of that feed.
+            let feeds = if refresh {
+                entry_dao::feed_ids_for(&mut conn, id_user, &ids).await?
+            } else {
+                Vec::new()
+            };
             let n = match kind {
                 Mark::Read => entry_dao::mark_read(&mut conn, id_user, &ids, true).await?,
                 Mark::Unread => entry_dao::mark_read(&mut conn, id_user, &ids, false).await?,
                 Mark::Star => entry_dao::mark_favorite(&mut conn, id_user, &ids, true).await?,
                 Mark::Unstar => entry_dao::mark_favorite(&mut conn, id_user, &ids, false).await?,
             };
+            crate::service::tree::refresh_counters(&mut conn, &feeds).await?;
             Ok(n)
         })
         .await
@@ -534,10 +544,14 @@ pub async fn mark_all_read(
                 return Ok(0);
             }
             let ids: Vec<EntryId> = rows.iter().map(|e| e.id).collect();
+            let mut feeds: Vec<i64> = rows.iter().map(|e| e.id_feed).collect();
+            feeds.sort_unstable();
+            feeds.dedup();
             let marked = entry_dao::mark_read(&mut conn, id_user, &ids, true).await?;
             if star {
                 entry_dao::mark_favorite(&mut conn, id_user, &ids, true).await?;
             }
+            crate::service::tree::refresh_counters(&mut conn, &feeds).await?;
             Ok(marked)
         })
         .await

@@ -553,6 +553,33 @@ pub async fn mark_favorite(
     Ok(total)
 }
 
+/// The distinct feeds a set of entries belongs to.
+///
+/// A bulk read/unread changes the cached unread counters of exactly these feeds, and only these:
+/// recomputing the caller's whole subscription list would turn a two-article mark-read into work
+/// proportional to the sidebar.
+pub async fn feed_ids_for(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+    ids: &[EntryId],
+) -> Result<Vec<i64>> {
+    let mut out = Vec::new();
+    for chunk in chunks(ids, 8) {
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT DISTINCT id_feed FROM entry WHERE id_user = ");
+        builder.push_bind(id_user).push(" AND id ");
+        push_in_list(&mut builder, chunk.iter().map(|id| id.micros()));
+        let rows = builder
+            .build_query_scalar::<i64>()
+            .fetch_all(&mut *conn)
+            .await?;
+        out.extend(rows);
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
 /// Marks every article in one feed read, up to `id_max`.
 ///
 /// The `id <= ?` bound is what makes "mark all as read" mean "everything I had loaded", not
