@@ -1241,6 +1241,16 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   color: var(--fd-muted);
 }
 
+/* The thumbnail shares its class with the media icon, but unlike the icon it arrives at whatever
+   size the feed's image happens to be; without an explicit box one article photo dwarfs the row. */
+img.rd-item-media {
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: cover;
+  border-radius: 0.25rem;
+  vertical-align: -0.2em;
+}
+
 .rd-item-title {
   color: var(--fd-ink);
   font-size: 0.925rem;
@@ -1572,6 +1582,8 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
 
 .rd-prose img,
 .rd-prose video {
+  /* Feeds carry width attributes sized for their own page; the column is narrower. */
+  max-width: 100%;
   height: auto;
   border-radius: var(--rd-radius-sm);
 }

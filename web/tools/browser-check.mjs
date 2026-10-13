@@ -133,6 +133,21 @@ try {
       ),
     ),
   );
+  // Feeds carry width attributes sized for their own page; the column must win.
+  check(
+    'no image overflows the reading column',
+    await page.evaluate(() => {
+      const prose = document.querySelector('.rd-prose');
+      if (!prose) return true;
+      return [...prose.querySelectorAll('img, video')].every((el) => el.clientWidth <= prose.clientWidth);
+    }),
+  );
+  check(
+    'list thumbnails stay icon-sized',
+    await page.evaluate(() =>
+      [...document.querySelectorAll('img.rd-item-media')].every((el) => el.clientWidth <= 24),
+    ),
+  );
 
   await shot(page, '01-reading');
 
