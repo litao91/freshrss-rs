@@ -29,6 +29,13 @@ pub mod keys {
     /// cached body, and this port has no cache files.
     pub const ETAG: &str = "etag";
     pub const LAST_MODIFIED: &str = "lastModified";
+    /// Feed: why the last refresh failed, in words.
+    ///
+    /// Ours rather than FreshRSS's, which stores only the timestamp in `feed.error` and so can tell
+    /// the user *that* a feed is broken but not *why*. The problems dialog needs the reason: "410
+    /// Gone" and "certificate expired" call for opposite responses, and both look identical as a
+    /// number. Cleared by any successful refresh.
+    pub const LAST_ERROR: &str = "lastError";
     /// Feed/category/user: retention settings.
     pub const ARCHIVING: &str = "archiving";
     /// Feed/category/tag/user: `[{search, actions}]`.

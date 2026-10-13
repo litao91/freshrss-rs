@@ -1,12 +1,16 @@
 //! `freshrss-rs` binary: serve the reader, or run one of the admin subcommands.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use freshrss_server::config::{AppConfig, LogFormat};
 use freshrss_server::db::Db;
 use freshrss_server::router::{router, AppState};
+use freshrss_server::service::refresh::Settings;
+use freshrss_server::service::scheduler::Scheduler;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
@@ -72,7 +76,15 @@ async fn serve(config: AppConfig) -> Result<()> {
         "database ready"
     );
 
-    let app = router(AppState::new(db.clone(), config));
+    let state = AppState::new(db.clone(), config);
+    let scheduler = Scheduler::spawn(
+        db.clone(),
+        Arc::clone(&state.fetcher),
+        Settings::from_config(&state.config),
+        Duration::from_secs(state.config.limits.scheduler_tick_secs),
+    );
+
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("could not bind to {bind}"))?;
@@ -83,6 +95,9 @@ async fn serve(config: AppConfig) -> Result<()> {
         .await
         .context("server error")?;
 
+    // After the listener, so no new refresh can start once requests have stopped being accepted, and
+    // before `PRAGMA optimize`, so nothing is writing while the database is being told to settle.
+    scheduler.shutdown().await;
     db.optimize().await?;
     tracing::info!("shut down cleanly");
     Ok(())

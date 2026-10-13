@@ -6,6 +6,7 @@
 
 pub mod bodyhash;
 pub mod condget;
+pub mod guard;
 pub mod reqwest;
 
 use std::time::Duration;
@@ -14,6 +15,7 @@ use crate::error::FeedError;
 
 pub use bodyhash::body_hash;
 pub use condget::{ConditionalHeaders, NotModified};
+pub use guard::{is_remote, Guard};
 pub use reqwest::{FixtureFetcher, FixtureResponse, ReqwestFetcher};
 
 /// The default `User-Agent`.

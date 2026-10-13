@@ -10,12 +10,16 @@
 //! * **DTOs carry plaintext.** Nothing here HTML-escapes. Text is stored clean and Svelte escapes
 //!   at render; escaping on the way out is how FreshRSS ends up with double-encoded titles.
 
-use serde::Serialize;
+use freshrss_feed::{Candidate, Discovered, FeedFormat, Source};
+use serde::{Deserialize, Serialize};
 
 use crate::domain::category::{Category, CategoryKind};
 use crate::domain::feed::{Feed, LetterAvatar};
 use crate::domain::ids::EntryId;
 use crate::domain::user::{SortOrder, User, UserConfig};
+use crate::service::jobs::{Job, JobState};
+use crate::service::refresh::run::FeedFailure;
+use crate::service::refresh::{Outcome, Status};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UserDto {
@@ -149,6 +153,17 @@ impl FeedDto {
     }
 }
 
+/// The answer to `POST /feeds`: the subscription, and what its first fetch pulled in.
+///
+/// `new_entries` is what lets the add dialog say "12 new articles" rather than just "added" — and
+/// what makes a feed that published nothing visible as such, which is otherwise indistinguishable
+/// from one that failed.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedFeedDto {
+    pub feed: FeedDto,
+    pub new_entries: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryDto {
     #[serde(serialize_with = "serialize_id")]
@@ -245,17 +260,66 @@ pub struct VersionDto {
     pub schema: i64,
 }
 
-/// A feed the discovery step found at a website URL.
+/// One URL the add-feed dialog considered.
+///
+/// Rejected candidates are kept rather than dropped: "we tried nine links on that page and none was
+/// a feed" is a far more useful answer than "not found", and it is the only way the user can spot
+/// that the feed they wanted was the one that answered 403.
 #[derive(Debug, Clone, Serialize)]
-pub struct DiscoveredFeedDto {
+pub struct CandidateDto {
     pub url: String,
-    pub title: String,
-    pub kind: i16,
-    pub website: String,
-    pub description: String,
-    pub item_count: usize,
-    /// True when the candidate was actually fetched and parsed, not just linked from the page.
+    /// Which pass found it, so the dialog can rank a `<link rel=alternate>` above a URL that merely
+    /// happened to contain the word "rss".
+    pub source: Source,
+    /// True when the address was fetched and parsed as a feed.
     pub verified: bool,
+    pub title: Option<String>,
+    pub website: Option<String>,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    pub item_count: Option<usize>,
+    pub format: Option<FeedFormat>,
+    /// Why it was not accepted, when it was not.
+    pub rejected: Option<String>,
+}
+
+impl From<&Candidate> for CandidateDto {
+    fn from(candidate: &Candidate) -> Self {
+        let probe = candidate.probe.as_ref();
+        Self {
+            url: candidate.url.clone(),
+            source: candidate.source,
+            verified: probe.is_some(),
+            title: probe.and_then(|p| p.title.clone()),
+            website: probe.and_then(|p| p.website.clone()),
+            description: probe.and_then(|p| p.description.clone()),
+            icon: probe.and_then(|p| p.icon.clone()),
+            item_count: probe.map(|p| p.item_count),
+            format: probe.map(|p| p.format),
+            rejected: candidate.rejected.clone(),
+        }
+    }
+}
+
+/// The whole answer to "is there a feed behind this address".
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveredDto {
+    /// True when the address given is itself a feed, so the dialog can skip the candidate list and
+    /// subscribe straight away.
+    pub is_feed: bool,
+    /// The address that was fetched, after redirects.
+    pub url: String,
+    pub candidates: Vec<CandidateDto>,
+}
+
+impl From<&Discovered> for DiscoveredDto {
+    fn from(found: &Discovered) -> Self {
+        Self {
+            is_feed: found.is_feed(),
+            url: found.url.clone(),
+            candidates: found.candidates.iter().map(CandidateDto::from).collect(),
+        }
+    }
 }
 
 /// One row of `#rd-problems-dialog`.
@@ -265,16 +329,156 @@ pub struct ProblemFeedDto {
     pub id: i64,
     pub name: String,
     pub url: String,
-    pub category: Option<String>,
+    /// Unix seconds of the last failed check; 0 when the feed is merely muted.
     pub error: i64,
-    pub last_update: i64,
     pub muted: bool,
-    pub ttl: i32,
-    pub kind: i16,
-    /// A short human explanation, because the dialog's whole job is to tell the user what to do.
-    pub reason: String,
-    /// A machine-readable tag such as `http:404`, shown in the dialog's `<code>`.
-    pub code: Option<String>,
+    /// Unix seconds of the last successful refresh; 0 when there never was one.
+    pub last_update: i64,
+    pub unread: i64,
+    pub total: i64,
+    /// Why the last check failed, in words. The dialog's whole job is to tell the user what to do,
+    /// and "410 Gone" and "certificate expired" call for opposite responses.
+    pub message: Option<String>,
+}
+
+impl From<&Feed> for ProblemFeedDto {
+    fn from(feed: &Feed) -> Self {
+        Self {
+            id: feed.id,
+            name: feed.display_name().to_string(),
+            url: feed.url_without_credentials(),
+            error: feed.error,
+            muted: feed.is_muted(),
+            last_update: feed.last_update,
+            unread: feed.cache_nb_unreads,
+            total: feed.cache_nb_entries,
+            message: feed.last_error_message().map(str::to_owned),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProblemsDto {
+    pub count: i64,
+    pub feeds: Vec<ProblemFeedDto>,
+}
+
+/// The outcome of refreshing one feed, for the dialog's inline "retry" result.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedRefreshDto {
+    pub new_entries: usize,
+    pub updated_entries: usize,
+    pub unchanged: usize,
+    pub status: &'static str,
+    /// Present only on a failure, so the dialog can say why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl From<&Outcome> for FeedRefreshDto {
+    fn from(outcome: &Outcome) -> Self {
+        Self {
+            new_entries: outcome.new_entries,
+            updated_entries: outcome.updated_entries,
+            unchanged: outcome.unchanged,
+            status: status_name(&outcome.status),
+            message: match &outcome.status {
+                Status::Failed { message, .. } => Some(message.clone()),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The wire name of a refresh outcome: what the frontend switches on.
+fn status_name(status: &Status) -> &'static str {
+    match status {
+        Status::Fetched => "fetched",
+        Status::Unchanged => "unchanged",
+        Status::NotModified => "not_modified",
+        Status::Muted => "muted",
+        Status::Failed { .. } => "failed",
+    }
+}
+
+/// One feed's failure inside a job report.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobErrorDto {
+    #[serde(serialize_with = "serialize_id")]
+    pub feed_id: i64,
+    pub name: String,
+    pub message: String,
+    pub http_status: Option<u16>,
+}
+
+impl From<&FeedFailure> for JobErrorDto {
+    fn from(failure: &FeedFailure) -> Self {
+        Self {
+            feed_id: failure.feed_id,
+            name: failure.name.clone(),
+            message: failure.message.clone(),
+            http_status: failure.http_status,
+        }
+    }
+}
+
+/// A job the client is polling.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshJobDto {
+    pub state: JobState,
+    pub feeds_done: usize,
+    pub new_entries: usize,
+    pub updated_entries: usize,
+    pub errors: Vec<JobErrorDto>,
+    /// Unix seconds, or `null` while the job is still running.
+    pub finished_at: Option<i64>,
+}
+
+impl From<&Job> for RefreshJobDto {
+    fn from(job: &Job) -> Self {
+        Self {
+            state: job.state,
+            feeds_done: job.report.feeds_done,
+            new_entries: job.report.new_entries,
+            updated_entries: job.report.updated_entries,
+            errors: job.report.errors.iter().map(JobErrorDto::from).collect(),
+            finished_at: job.finished_at,
+        }
+    }
+}
+
+/// What the top-bar spinner needs on load: is a job already running server-side.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshStatusDto {
+    pub running: bool,
+    /// The job to resume polling, or `null` when idle.
+    pub job_id: Option<String>,
+    /// Counts from the current or most recent job, so a reload mid-run still has something to show.
+    pub feeds_done: usize,
+    pub new_entries: usize,
+}
+
+impl From<&Job> for RefreshStatusDto {
+    fn from(job: &Job) -> Self {
+        Self {
+            running: job.state == JobState::Running,
+            job_id: Some(job.id.clone()),
+            feeds_done: job.report.feeds_done,
+            new_entries: job.report.new_entries,
+        }
+    }
+}
+
+impl RefreshStatusDto {
+    /// The idle answer, for a user who has never asked for a refresh.
+    pub fn idle() -> Self {
+        Self {
+            running: false,
+            job_id: None,
+            feeds_done: 0,
+            new_entries: 0,
+        }
+    }
 }
 
 /// One entry in the list pane.
@@ -375,6 +579,42 @@ fn serialize_id_opt<S: serde::Serializer>(
     match id {
         Some(v) => serializer.serialize_some(&v.to_string()),
         None => serializer.serialize_none(),
+    }
+}
+
+/// An id as a client may send it: a JSON string, or a number.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IdRepr {
+    Number(i64),
+    Text(String),
+}
+
+/// Reads an optional id that may arrive as a string or as a number.
+///
+/// Ids go *out* as strings (see [`serialize_id`]), so a client that round-trips one — reads a folder
+/// id from `/tree`, sends it back on `POST /feeds` — sends a string. Accepting only a number would
+/// make that request fail with a message about types, which reads like a client bug and is not one.
+/// Accepting only a string would break a hand-written `curl`. An empty string is `None`, because
+/// that is what a cleared `<select>` posts.
+pub fn deserialize_id<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    match Option::<IdRepr>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(IdRepr::Number(id)) => Ok(Some(id)),
+        Some(IdRepr::Text(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            trimmed
+                .parse::<i64>()
+                .map(Some)
+                .map_err(|err| D::Error::custom(format!("{trimmed:?} is not an id: {err}")))
+        }
     }
 }
 
@@ -560,6 +800,172 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&probe).unwrap(),
             r#"{"id":"1728656123456789"}"#
+        );
+    }
+
+    /// A request body carrying an id, the way a client that read it from a response sends it back.
+    #[derive(Debug, Deserialize)]
+    struct IdRequest {
+        #[serde(default, deserialize_with = "deserialize_id")]
+        category_id: Option<i64>,
+    }
+
+    fn id_of(json: &str) -> Option<i64> {
+        serde_json::from_str::<IdRequest>(json)
+            .unwrap_or_else(|err| panic!("{json} should deserialize: {err}"))
+            .category_id
+    }
+
+    #[test]
+    fn an_id_may_arrive_as_a_string_or_a_number() {
+        assert_eq!(id_of(r#"{"category_id":"3"}"#), Some(3));
+        assert_eq!(id_of(r#"{"category_id":3}"#), Some(3));
+        assert_eq!(id_of(r#"{"category_id":null}"#), None);
+        assert_eq!(id_of(r#"{"category_id":""}"#), None, "a cleared select");
+        assert_eq!(id_of("{}"), None);
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_number_is_rejected_with_a_readable_message() {
+        let err = serde_json::from_str::<IdRequest>(r#"{"category_id":"abc"}"#).unwrap_err();
+        assert!(err.to_string().contains("not an id"), "{err}");
+    }
+
+    #[test]
+    fn a_problems_row_carries_the_reason_the_feed_recorded() {
+        let mut f = feed();
+        assert_eq!(ProblemFeedDto::from(&f).message, None);
+
+        f.error = 1_700_000_999;
+        f.set_last_error_message(Some("http 503: unavailable"));
+        let dto = ProblemFeedDto::from(&f);
+        assert_eq!(dto.message.as_deref(), Some("http 503: unavailable"));
+        assert_eq!(dto.error, 1_700_000_999);
+        assert_eq!(dto.name, "Example");
+        assert_eq!(dto.unread, 5);
+        assert_eq!(dto.total, 210);
+
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(json.contains(r#""id":"7""#), "{json}");
+    }
+
+    #[test]
+    fn a_rejected_candidate_says_why_and_a_verified_one_says_what() {
+        let rejected = Candidate {
+            url: "https://example.com/rss".into(),
+            source: Source::LocalBody,
+            probe: None,
+            rejected: Some("the response is not a feed".into()),
+        };
+        let dto = CandidateDto::from(&rejected);
+        assert!(!dto.verified);
+        assert_eq!(dto.title, None);
+        assert_eq!(dto.item_count, None);
+        assert_eq!(dto.rejected.as_deref(), Some("the response is not a feed"));
+        assert_eq!(
+            serde_json::to_string(&dto).unwrap(),
+            r#"{"url":"https://example.com/rss","source":"local_body","verified":false,"title":null,"website":null,"description":null,"icon":null,"item_count":null,"format":null,"rejected":"the response is not a feed"}"#,
+            "the dialog reads every one of these, so the shape is the contract"
+        );
+
+        let found = Discovered {
+            url: "https://example.com/".into(),
+            candidates: vec![Candidate {
+                url: "https://example.com/feed.xml".into(),
+                source: Source::Link,
+                probe: Some(freshrss_feed::discovery::Probe {
+                    title: Some("Example".into()),
+                    website: Some("https://example.com/".into()),
+                    description: None,
+                    icon: None,
+                    item_count: 12,
+                    format: FeedFormat::Rss2,
+                }),
+                rejected: None,
+            }],
+        };
+        let dto = DiscoveredDto::from(&found);
+        assert!(!dto.is_feed, "the address given was a page, not a feed");
+        assert_eq!(dto.candidates.len(), 1);
+        assert!(dto.candidates[0].verified);
+        assert_eq!(dto.candidates[0].item_count, Some(12));
+    }
+
+    #[test]
+    fn a_refresh_outcome_names_itself_on_the_wire() {
+        let fetched = Outcome {
+            status: Status::Fetched,
+            new_entries: 3,
+            updated_entries: 1,
+            unchanged: 8,
+        };
+        let dto = FeedRefreshDto::from(&fetched);
+        assert_eq!(dto.status, "fetched");
+        assert_eq!(dto.message, None);
+        assert!(
+            !serde_json::to_string(&dto).unwrap().contains("message"),
+            "an absent message is omitted, not sent as null"
+        );
+
+        let failed = Outcome {
+            status: Status::Failed {
+                message: "http 503: unavailable".into(),
+                http_status: Some(503),
+            },
+            new_entries: 0,
+            updated_entries: 0,
+            unchanged: 0,
+        };
+        let dto = FeedRefreshDto::from(&failed);
+        assert_eq!(dto.status, "failed");
+        assert_eq!(dto.message.as_deref(), Some("http 503: unavailable"));
+
+        for (status, want) in [
+            (Status::Unchanged, "unchanged"),
+            (Status::NotModified, "not_modified"),
+            (Status::Muted, "muted"),
+        ] {
+            assert_eq!(status_name(&status), want);
+        }
+    }
+
+    #[test]
+    fn a_job_reports_its_state_and_counts() {
+        let job = Job {
+            id: "abc".into(),
+            id_user: 1,
+            state: JobState::Done,
+            started_at: 1_700_000_000,
+            finished_at: Some(1_700_000_010),
+            report: crate::service::refresh::run::Report {
+                feeds_done: 4,
+                new_entries: 20,
+                updated_entries: 2,
+                muted: 0,
+                errors: vec![FeedFailure {
+                    feed_id: 9,
+                    name: "Broken".into(),
+                    message: "http 404".into(),
+                    http_status: Some(404),
+                }],
+            },
+        };
+        let dto = RefreshJobDto::from(&job);
+        assert_eq!(dto.feeds_done, 4);
+        assert_eq!(dto.new_entries, 20);
+        assert_eq!(dto.finished_at, Some(1_700_000_010));
+        assert_eq!(dto.errors.len(), 1);
+        assert_eq!(
+            serde_json::to_string(&dto.errors[0]).unwrap(),
+            r#"{"feed_id":"9","name":"Broken","message":"http 404","http_status":404}"#
+        );
+
+        let status = RefreshStatusDto::from(&job);
+        assert!(!status.running);
+        assert_eq!(status.job_id.as_deref(), Some("abc"));
+        assert_eq!(
+            serde_json::to_string(&RefreshStatusDto::idle()).unwrap(),
+            r#"{"running":false,"job_id":null,"feeds_done":0,"new_entries":0}"#
         );
     }
 }

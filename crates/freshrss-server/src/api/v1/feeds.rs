@@ -1,7 +1,7 @@
 //! Subscription endpoints, backing `#rd-add-dialog` and the sidebar's feed rows.
 //!
-//! Creating a feed here only records it; the fetch that discovers the real feed URL behind a
-//! website address and pulls the first articles is the refresh pipeline's job.
+//! Handlers only translate: the rules about what may be subscribed to, and what happens when the
+//! address turns out not to be a feed, live in [`crate::service::subscription`].
 
 use axum::{
     extract::{Path as PathParam, State},
@@ -11,74 +11,59 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use url::Url;
 
-use crate::api::dto::FeedDto;
+use crate::api::dto::{deserialize_id, CreatedFeedDto, DiscoveredDto, FeedDto, FeedRefreshDto};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extract::CurrentUser;
 use crate::db::dao::{category as cat_dao, feed as feed_dao};
 use crate::domain::feed::Feed;
+use crate::domain::ids::now_unix;
 use crate::domain::kind::FeedKind;
 use crate::domain::priority::Priority;
 use crate::domain::ttl::Ttl;
 use crate::error::Error;
 use crate::router::AppState;
+use crate::service::refresh::{refresh_feed, Settings};
+use crate::service::subscription::{self, NewSubscription};
 use sqlx::SqliteConnection;
+
+pub use crate::service::subscription::normalize_url;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
+        // Registered before `/{id}` in the source, but axum's matcher prefers the static segment
+        // regardless of order — which is the only reason `POST /feeds/discover` is not swallowed by
+        // `/feeds/{id}` and answered with a 405 for a method that path does not have.
+        .route("/discover", post(discover))
         .route("/{id}", get(show).put(update).delete(remove))
         .route("/{id}/move", post(move_to_category))
+        .route("/{id}/refresh", post(refresh_one))
         .route("/{id}/entries", delete(truncate_entries))
 }
 
-/// Normalizes and validates a feed URL.
+#[derive(Deserialize)]
+pub struct DiscoverRequest {
+    /// A feed address, or a website address to discover one from.
+    pub url: String,
+}
+
+/// Looks for a feed at an address, or behind the page it serves.
 ///
-/// Ports `FreshRSS_http_Util::checkUrl`: a bare `example.com` is what people actually paste into
-/// the add dialog, so a missing scheme is filled in rather than rejected.
-///
-/// Only `http` and `https` are accepted. Rejecting the rest here rather than at fetch time keeps
-/// `file:`, `gopher:` and friends out of the database entirely, so a later code path that forgets
-/// to check cannot be talked into reading a local file.
-pub fn normalize_url(raw: &str) -> Result<String, Error> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(Error::BadUrl {
-            url: raw.to_string(),
-            reason: "the address is empty".into(),
-        });
-    }
-
-    // Fill in the scheme the way a browser's address bar would.
-    let candidate = if trimmed.contains("://") {
-        trimmed.to_string()
-    } else {
-        format!("https://{trimmed}")
-    };
-
-    let parsed = Url::parse(&candidate).map_err(|err| Error::BadUrl {
-        url: raw.to_string(),
-        reason: err.to_string(),
-    })?;
-
-    match parsed.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(Error::BadUrl {
-                url: raw.to_string(),
-                reason: format!("only http and https addresses are supported, got {other:?}"),
-            });
-        }
-    }
-    if parsed.host_str().is_none() || parsed.host_str().is_some_and(str::is_empty) {
-        return Err(Error::BadUrl {
-            url: raw.to_string(),
-            reason: "the address has no host".into(),
-        });
-    }
-
-    Ok(parsed.to_string())
+/// Fetches from the network — up to eleven requests, one for the address given and one per candidate
+/// — so it is the slowest endpoint here and the one a user is most likely to press repeatedly while
+/// staring at a dialog that has not answered yet.
+pub async fn discover(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Json(req): Json<DiscoverRequest>,
+) -> ApiResult<Json<DiscoveredDto>> {
+    let url = normalize_url(&req.url)?;
+    let settings = Settings::from_config(&state.config);
+    let found = crate::service::discovery::discover(&*state.fetcher, &settings, &url)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(DiscoveredDto::from(&found)))
 }
 
 #[derive(Deserialize)]
@@ -87,8 +72,8 @@ pub struct CreateFeedRequest {
     pub url: String,
     #[serde(default)]
     pub name: Option<String>,
-    /// Folder to file it under. Omitted means the user's `Uncategorized`.
-    #[serde(default)]
+    /// Folder to file it under. Omitted or `null` means the user's `Uncategorized`.
+    #[serde(default, deserialize_with = "deserialize_id")]
     pub category_id: Option<i64>,
     #[serde(default)]
     pub priority: Option<i8>,
@@ -104,6 +89,7 @@ pub struct CreateFeedRequest {
 pub struct UpdateFeedRequest {
     pub name: Option<String>,
     pub url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_id")]
     pub category_id: Option<i64>,
     /// Explicit `null` clears the folder, making the feed an orphan.
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -137,6 +123,7 @@ where
 
 #[derive(Deserialize)]
 pub struct MoveRequest {
+    #[serde(default, deserialize_with = "deserialize_id")]
     pub category_id: Option<i64>,
 }
 
@@ -159,72 +146,77 @@ pub async fn list(
     Ok(Json(dtos))
 }
 
+/// Subscribes and pulls the first articles in the same request.
+///
+/// Fetching inline rather than deferring to the next tick is what makes the add dialog able to say
+/// "12 new articles" instead of "added", and what makes an address that is not a feed fail here
+/// rather than becoming a broken row in the sidebar.
 pub async fn create(
     State(state): State<AppState>,
     user: CurrentUser,
     Json(req): Json<CreateFeedRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let id_user = user.id;
-    let url = normalize_url(&req.url)?;
-    let name = req
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        // Fall back to the host so the sidebar is never blank before the first fetch fills in the
-        // feed's real title — the same fallback `FreshRSS_Feed::name()` uses.
-        .map(str::to_string)
-        .unwrap_or_else(|| host_of(&url));
-
     let kind = match req.kind {
         Some(k) => FeedKind::from_i16(k).map_err(|e| crate::error::validation(e.to_string()))?,
         None => FeedKind::default(),
     };
-    let priority = req.priority.map(Priority::new).unwrap_or_default();
-    let ttl = Ttl::new(req.ttl.unwrap_or(0), req.muted.unwrap_or(false));
-    let requested_category = req.category_id;
+    let default_ttl = user.config.ttl_default;
+    let spec = NewSubscription {
+        id_user: user.id,
+        url: normalize_url(&req.url)?,
+        name: req.name,
+        category: req.category_id,
+        kind,
+        priority: req.priority.map(Priority::new).unwrap_or_default(),
+        ttl: requested_ttl(req.ttl.unwrap_or(0), req.muted.unwrap_or(false), default_ttl),
+    };
 
-    let dto = state
+    let added = subscription::add(
+        &state.db,
+        &*state.fetcher,
+        &Settings::from_config(&state.config),
+        &spec,
+        now_unix(),
+    )
+    .await
+    .map_err(ApiError)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedFeedDto {
+            feed: FeedDto::new(&added.feed),
+            new_entries: added.outcome.new_entries,
+        }),
+    ))
+}
+
+/// Refreshes one feed now, whether or not it is due.
+///
+/// This is the dialog's per-row "retry", so a muted feed is refreshed too: unmuting and retrying is
+/// one action from the user's point of view, and refusing because the ttl is negative would leave
+/// them with no way to test whether the feed came back.
+pub async fn refresh_one(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    PathParam(id): PathParam<i64>,
+) -> ApiResult<Json<FeedRefreshDto>> {
+    let id_user = user.id;
+    let feed = state
         .db
-        .with(move |mut conn| async move {
-            if feed_dao::find_by_url(&mut conn, id_user, &url)
-                .await?
-                .is_some()
-            {
-                return Err(Error::Conflict(
-                    "you are already subscribed to that address".into(),
-                ));
-            }
-
-            // Resolve the folder: an explicit id must belong to this user, otherwise the request
-            // would file the feed under someone else's folder (or fail the foreign key).
-            let category = match requested_category {
-                Some(id) => {
-                    let _ = cat_dao::find_by_id(&mut conn, id, id_user)
-                        .await?
-                        .ok_or_else(|| Error::NotFound(format!("folder {id}")))?;
-                    Some(id)
-                }
-                None => crate::db::dao::user::default_category_id(&mut conn, id_user).await?,
-            };
-
-            let feed = Feed {
-                category,
-                kind,
-                priority,
-                ttl,
-                ..Feed::new(id_user, url.clone(), name)
-            };
-            let id = feed_dao::insert(&mut conn, &feed).await?;
-            let stored = feed_dao::find_by_id(&mut conn, id, id_user)
-                .await?
-                .ok_or_else(|| Error::Internal("feed vanished after insert".into()))?;
-            Ok(FeedDto::new(&stored))
-        })
+        .with(move |mut conn| async move { require_feed(&mut conn, id, id_user).await })
         .await
         .map_err(ApiError)?;
 
-    Ok((StatusCode::CREATED, Json(dto)))
+    let outcome = refresh_feed(
+        &state.db,
+        &*state.fetcher,
+        &feed,
+        &Settings::from_config(&state.config),
+        now_unix(),
+    )
+    .await
+    .map_err(ApiError)?;
+    Ok(Json(FeedRefreshDto::from(&outcome)))
 }
 
 pub async fn show(
@@ -250,6 +242,7 @@ pub async fn update(
     Json(req): Json<UpdateFeedRequest>,
 ) -> ApiResult<Json<FeedDto>> {
     let id_user = user.id;
+    let default_ttl = user.config.ttl_default;
     let dto = state
         .db
         .with(move |mut conn| async move {
@@ -293,7 +286,8 @@ pub async fn update(
             if req.ttl.is_some() || req.muted.is_some() {
                 let seconds = req.ttl.unwrap_or_else(|| feed.ttl.seconds());
                 let muted = req.muted.unwrap_or_else(|| feed.ttl.is_muted());
-                feed_dao::update_ttl(&mut conn, id, id_user, Ttl::new(seconds, muted)).await?;
+                let ttl = requested_ttl(seconds, muted, default_ttl);
+                feed_dao::update_ttl(&mut conn, id, id_user, ttl).await?;
             }
             if req.path_entries.is_some() || req.path_entries_filter.is_some() {
                 let path_entries = req
@@ -397,9 +391,16 @@ async fn require_feed(
         .ok_or_else(|| Error::NotFound(format!("feed {id}")))
 }
 
-fn host_of(url: &str) -> String {
-    Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_else(|| url.to_string())
+/// An interval and a mute flag from a request body, as the one stored integer.
+///
+/// Muting goes through [`Ttl::mute`] rather than `Ttl::new(seconds, true)`, because a feed left on
+/// its owner's default has an interval of 0 and `-0` is `0` — which reads back as *not muted*, so the
+/// request would succeed and do nothing. Every feed added through the dialog starts that way.
+fn requested_ttl(seconds: i32, muted: bool, default_seconds: i64) -> Ttl {
+    let ttl = Ttl::new(seconds, false);
+    if muted {
+        ttl.mute(i32::try_from(default_seconds).unwrap_or(i32::MAX))
+    } else {
+        ttl
+    }
 }

@@ -22,7 +22,7 @@ axum = { version = "0.8.9", default-features = false, features = [
     "form", "http1", "http2", "json", "macros", "original-uri", "query", "tokio", "tracing",
 ] }
 tokio = { version = "1.53.2", features = [
-    "fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time",
+    "fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time",
 ] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = [

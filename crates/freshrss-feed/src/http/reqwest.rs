@@ -11,12 +11,14 @@
 //! 3. The size cap has to apply to the body we actually keep, and a redirect chain is the easiest
 //!    place to lose track of which response that is.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::StreamExt as _;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use reqwest::{Client, Method, StatusCode};
 
+use super::guard::Guard;
 use super::{body_hash, FetchOutcome, FetchRequest, FetchedBody};
 use crate::error::FeedError;
 
@@ -36,20 +38,43 @@ pub struct ReqwestFetcher {
     /// Built lazily and kept separate, because `danger_accept_invalid_certs` is per-client and one
     /// feed's self-signed certificate must not weaken every other feed's TLS.
     unverified: once_cell::sync::OnceCell<Client>,
+    /// The network policy both clients obey.
+    guard: Guard,
 }
 
 impl ReqwestFetcher {
-    /// Builds a fetcher with a shared connection pool.
+    /// Builds a fetcher with a shared connection pool and **no** network guard.
+    ///
+    /// That is the right default for a tool run by an operator on their own machine — the CLI's
+    /// `parse` command, where `http://localhost:8080/feed.xml` is a perfectly reasonable thing to
+    /// want to look at — and the wrong default for a server that fetches URLs its users supply. A
+    /// server should build its fetcher with [`ReqwestFetcher::with_guard`].
     ///
     /// # Errors
     ///
     /// Only if `reqwest` cannot build a client at all, which in practice means a TLS backend
     /// problem — fatal at startup, not something to retry per feed.
     pub fn new() -> Result<Self, FeedError> {
+        Self::with_guard(Guard::default())
+    }
+
+    /// Builds a fetcher that refuses to contact the addresses `guard` excludes.
+    ///
+    /// # Errors
+    ///
+    /// As [`ReqwestFetcher::new`].
+    pub fn with_guard(guard: Guard) -> Result<Self, FeedError> {
         Ok(Self {
-            verified: base_client(true)?,
+            verified: base_client(true, &guard)?,
             unverified: once_cell::sync::OnceCell::new(),
+            guard,
         })
+    }
+
+    /// The policy this fetcher applies. Callers that validate a URL before handing it over — the
+    /// discovery dialog does, so it can say *why* a candidate was not tried — need it.
+    pub fn guard(&self) -> &Guard {
+        &self.guard
     }
 }
 
@@ -59,15 +84,63 @@ impl Default for ReqwestFetcher {
     }
 }
 
-fn base_client(ssl_verify: bool) -> Result<Client, FeedError> {
-    Client::builder()
+fn base_client(ssl_verify: bool, guard: &Guard) -> Result<Client, FeedError> {
+    let mut builder = Client::builder()
         // Redirects are handled in `fetch`, so the client must not follow them itself.
         .redirect(reqwest::redirect::Policy::none())
         .danger_accept_invalid_certs(!ssl_verify)
         .tcp_nodelay(true)
-        .pool_max_idle_per_host(4)
+        .pool_max_idle_per_host(4);
+    if guard.block_private {
+        // Installed on the client rather than checked per request, so that every connection the
+        // client makes goes through it — including the ones a redirect chain starts, which the
+        // caller cannot enumerate in advance.
+        builder = builder.dns_resolver(GuardedResolver {
+            guard: guard.clone(),
+        });
+    }
+    builder
         .build()
         .map_err(|e| FeedError::BadConfig(e.to_string()))
+}
+
+/// Resolves names and drops the addresses the [`Guard`] excludes.
+///
+/// Only installed when the guard blocks anything at all; with it off, `reqwest`'s own resolver is
+/// used unchanged.
+struct GuardedResolver {
+    guard: Guard,
+}
+
+impl reqwest::dns::Resolve for GuardedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let guard = self.guard.clone();
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let resolved: Vec<SocketAddr> = tokio::net::lookup_host((&*host, 0))
+                .await
+                .map_err(boxed)?
+                .collect();
+            let permitted = guard.permitted(&host, resolved.iter().map(SocketAddr::ip));
+            if permitted.is_empty() {
+                return Err(boxed(FeedError::NonRemote(format!(
+                    "{host} resolves only to addresses this server is configured not to contact"
+                ))));
+            }
+            // Port 0 stands for "the conventional port for the scheme", which `reqwest` fills in
+            // from the URL — the resolver is not told which scheme is being used.
+            let addrs = permitted.into_iter().map(|ip| SocketAddr::new(ip, 0));
+            let addrs: reqwest::dns::Addrs = Box::new(addrs);
+            Ok(addrs)
+        })
+    }
+}
+
+/// Boxes an error the way `reqwest`'s resolver trait wants it.
+fn boxed(
+    err: impl std::error::Error + Send + Sync + 'static,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(err)
 }
 
 #[async_trait::async_trait]
@@ -77,9 +150,17 @@ impl super::Fetcher for ReqwestFetcher {
         let mut permanently_moved = false;
 
         for _ in 0..=MAX_REDIRECTS {
-            validate_url(&url)?;
+            validate_url(&url, &self.guard)?;
             let response = send(self, request, &url).await?;
             let status = response.status();
+
+            // 304 is a 3xx, so `is_redirection()` is true for it — but it carries no `Location` and
+            // must not be followed. It is the *answer* to the conditional GET we sent, and treating
+            // it as a malformed redirect would turn every quiet feed into a permanently failing one
+            // on its second refresh, which is the first refresh that replays a validator.
+            if status == StatusCode::NOT_MODIFIED {
+                return Ok(FetchOutcome::NotModified);
+            }
 
             if status.is_redirection() {
                 let location = header(response.headers(), "location")
@@ -163,7 +244,10 @@ fn client_for(fetcher: &ReqwestFetcher, ssl_verify: bool) -> Result<&Client, Fee
     if ssl_verify {
         return Ok(&fetcher.verified);
     }
-    fetcher.unverified.get_or_try_init(|| base_client(false))
+    let guard = fetcher.guard.clone();
+    fetcher
+        .unverified
+        .get_or_try_init(move || base_client(false, &guard))
 }
 
 /// Turns a `reqwest` error into the distinction the refresh pipeline acts on.
@@ -182,10 +266,24 @@ fn map_transport_error(err: reqwest::Error, timeout: Duration) -> FeedError {
             message: err.to_string(),
         };
     }
+    // A refusal from the network guard arrives wrapped several layers deep, because it is reported
+    // by the resolver and `reqwest` turns any resolver failure into a connect error. Recovering it
+    // matters: "this server will not contact that address" and "the connection failed" send the user
+    // to completely different fixes, and only the first one is not worth retrying.
+    let mut cause = std::error::Error::source(&err);
+    while let Some(inner) = cause {
+        if let Some(FeedError::NonRemote(reason)) = inner.downcast_ref::<FeedError>() {
+            return FeedError::NonRemote(reason.clone());
+        }
+        cause = inner.source();
+    }
     FeedError::Transport(err)
 }
 
-/// Consumes a non-redirect response into a [`FetchOutcome`].
+/// Consumes a response that is neither a redirect nor a 304 into a [`FetchOutcome`].
+///
+/// Both of those are handled by the loop in [`Fetcher::fetch`]: a redirect has to be followed rather
+/// than read, and a 304 has to be recognised as a 3xx that is *not* a redirect.
 async fn finish(
     request: &FetchRequest,
     response: reqwest::Response,
@@ -197,10 +295,6 @@ async fn finish(
     let last_modified = header(&headers, "last-modified");
     let content_type = header(&headers, "content-type");
     let effective_url = response.url().to_string();
-
-    if status == StatusCode::NOT_MODIFIED {
-        return Ok(FetchOutcome::NotModified);
-    }
 
     // 410 Gone is the one status with a specific downstream meaning: the feed is dead and should be
     // muted rather than retried forever.
@@ -282,12 +376,16 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Refuses a URL that is not an absolute `http`/`https` one.
+/// Refuses a URL that is not an absolute `http`/`https` one, or whose host is an address the guard
+/// excludes.
 ///
 /// Checked on every hop, not just the first. A feed author who can make us follow a redirect can
 /// otherwise point us at `file:///etc/passwd` or at the cloud metadata endpoint, and the response
 /// body would be parsed and stored as an article — readable by anyone who can open that feed.
-fn validate_url(url: &str) -> Result<(), FeedError> {
+///
+/// Only a host written *as an address* is checked here; a hostname is checked when it is resolved,
+/// by [`GuardedResolver`], because that is the only point at which its address is known.
+fn validate_url(url: &str, guard: &Guard) -> Result<(), FeedError> {
     let parsed = url::Url::parse(url).map_err(|e| FeedError::BadUrl {
         url: url.to_owned(),
         reason: e.to_string(),
@@ -302,13 +400,30 @@ fn validate_url(url: &str) -> Result<(), FeedError> {
     }
     // `url` already rejects an empty authority for a special scheme (`http://` → "empty host"), so
     // this only has to catch the case it normalizes away rather than refuses.
-    if !matches!(parsed.host_str(), Some(host) if !host.is_empty()) {
-        return Err(FeedError::BadUrl {
-            url: url.to_owned(),
-            reason: "no host".to_owned(),
-        });
+    let host = match parsed.host() {
+        Some(host @ (url::Host::Ipv4(_) | url::Host::Ipv6(_))) => host,
+        Some(url::Host::Domain(domain)) if !domain.is_empty() => return Ok(()),
+        _ => {
+            return Err(FeedError::BadUrl {
+                url: url.to_owned(),
+                reason: "no host".to_owned(),
+            })
+        }
+    };
+    // An address literal never reaches the resolver, so this is the only chance to refuse it. It
+    // also covers the forms that do not look like one: `url` parses `http://2130706433/` and
+    // `http://0x7f.1/` into `127.0.0.1` before we ever see them.
+    let ip = match host {
+        url::Host::Ipv4(v4) => std::net::IpAddr::V4(v4),
+        url::Host::Ipv6(v6) => std::net::IpAddr::V6(v6),
+        url::Host::Domain(_) => unreachable!("domains returned above"),
+    };
+    if guard.allows_host(&ip.to_string()) || guard.allows_addr(&ip) {
+        return Ok(());
     }
-    Ok(())
+    Err(FeedError::NonRemote(format!(
+        "{url} ({ip} is not an address this server is configured to contact)"
+    )))
 }
 
 /// A [`Fetcher`] backed by canned responses, for tests and for the CLI's `--offline` mode.
@@ -463,6 +578,8 @@ impl super::Fetcher for FixtureFetcher {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::oneshot;
+
     use super::super::condget::ConditionalHeaders;
     use super::super::Fetcher as _;
     use super::*;
@@ -591,6 +708,16 @@ mod tests {
 
     // --- URL validation ----------------------------------------------------
 
+    /// Validation with no network policy, which is what the scheme and host rules amount to.
+    fn unguarded(url: &str) -> Result<(), FeedError> {
+        validate_url(url, &Guard::default())
+    }
+
+    /// Validation with the policy a server builds from its config.
+    fn guarded(url: &str) -> Result<(), FeedError> {
+        validate_url(url, &Guard::new(true, &[]))
+    }
+
     #[test]
     fn only_absolute_http_and_https_are_accepted() {
         for ok in [
@@ -598,7 +725,7 @@ mod tests {
             "https://example.com/f",
             "https://example.com:8443/f?x=1",
         ] {
-            assert!(validate_url(ok).is_ok(), "{ok}");
+            assert!(unguarded(ok).is_ok(), "{ok}");
         }
         for bad in [
             "file:///etc/passwd",
@@ -610,17 +737,63 @@ mod tests {
             "",
             "http://",
         ] {
-            assert!(validate_url(bad).is_err(), "{bad:?} must be refused");
+            assert!(unguarded(bad).is_err(), "{bad:?} must be refused");
         }
     }
 
     #[test]
     fn a_url_with_no_host_is_refused() {
-        assert!(validate_url("http://").is_err());
-        assert!(validate_url("http:///").is_err());
+        assert!(unguarded("http://").is_err());
+        assert!(unguarded("http:///").is_err());
         // `http:///path` is *not* hostless: the URL parser reads `path` as the host, which is a
         // valid (if odd) target and none of this function's business.
-        assert!(validate_url("http:///path").is_ok());
+        assert!(unguarded("http:///path").is_ok());
+    }
+
+    /// The address forms a guard has to catch. Each of these is `127.0.0.1` or `169.254.169.254`
+    /// once the URL parser is done with it, which is exactly why the check is on the parsed host and
+    /// not on the string.
+    #[test]
+    fn an_address_literal_is_checked_against_the_guard() {
+        for bad in [
+            "http://127.0.0.1/feed.xml",
+            "http://127.1/feed.xml",
+            "http://2130706433/feed.xml",
+            "http://0x7f000001/feed.xml",
+            "http://[::1]/feed.xml",
+            "http://[::ffff:127.0.0.1]/feed.xml",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.5/feed.xml",
+            "http://192.168.1.1/admin",
+        ] {
+            assert!(
+                matches!(guarded(bad), Err(FeedError::NonRemote(_))),
+                "{bad} must be refused as non-remote, not merely as a bad url: {:?}",
+                guarded(bad)
+            );
+            assert!(unguarded(bad).is_ok(), "{bad} is fine with the guard off");
+        }
+        for ok in [
+            "http://8.8.8.8/feed.xml",
+            "http://93.184.216.34/feed.xml",
+            "http://[2606:2800:220:1:248:1893:25c8:1946]/feed.xml",
+        ] {
+            assert!(guarded(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn an_allowlisted_address_may_be_fetched() {
+        let guard = Guard::new(true, &["nas.lan".to_owned(), "192.168.1.50".to_owned()]);
+        assert!(
+            validate_url("http://192.168.1.50/feed.xml", &guard).is_ok(),
+            "the operator said this one is fine"
+        );
+        assert!(validate_url("http://192.168.1.51/feed.xml", &guard).is_err());
+        // A hostname is not resolved here, so it is neither refused nor cleared: the resolver is
+        // what decides, and it has the same allowlist.
+        assert!(validate_url("http://nas.lan/feed.xml", &guard).is_ok());
+        assert!(validate_url("http://other.lan/feed.xml", &guard).is_ok());
     }
 
     // --- header reading ----------------------------------------------------
@@ -659,5 +832,126 @@ mod tests {
         let verified = client_for(&fetcher, true).unwrap() as *const Client;
         let unverified = client_for(&fetcher, false).unwrap() as *const Client;
         assert_ne!(verified, unverified);
+    }
+
+    // --- a real socket ------------------------------------------------------
+    //
+    // `FixtureFetcher` answers a conditional GET itself, so it never exercises the status handling
+    // in `fetch`. That is exactly how a 304 came to be read as a malformed redirect: the fixture
+    // returned `NotModified` and the code that would have mishandled a real one was never reached.
+    // These tests talk to a listener on loopback instead, which is still no network.
+
+    /// Serves `replies` in order, one per connection, and hands back the base URL plus the request
+    /// head each one received.
+    ///
+    /// Every reply is sent with `Connection: close`, so the client cannot reuse a socket the task
+    /// has already stopped reading from.
+    async fn serve(replies: Vec<String>) -> (String, oneshot::Receiver<Vec<String>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("an address");
+        let (tx, rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.expect("a connection");
+                let mut buf = vec![0u8; 4096];
+                let read = socket.read(&mut buf).await.unwrap_or(0);
+                seen.push(String::from_utf8_lossy(&buf[..read]).into_owned());
+                socket
+                    .write_all(reply.as_bytes())
+                    .await
+                    .expect("the reply was written");
+                socket.shutdown().await.ok();
+            }
+            tx.send(seen).ok();
+        });
+
+        (format!("http://{addr}/feed.xml"), rx)
+    }
+
+    /// A raw HTTP/1.1 response, with `Connection: close` added.
+    fn raw(status_line: &str, headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\n{headers}\r\nConnection: close\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_real_304_is_not_read_as_a_redirect() {
+        let (url, requests) = serve(vec![raw(
+            "304 Not Modified",
+            "ETag: \"v1\"\r\nLast-Modified: Thu, 01 Oct 2026 08:00:00 GMT",
+            "",
+        )])
+        .await;
+
+        let fetcher = ReqwestFetcher::new().expect("a client");
+        let mut request = FetchRequest::new(url.clone());
+        request.conditional.etag = Some("\"v1\"".to_owned());
+        request.conditional.last_modified = Some("Thu, 01 Oct 2026 08:00:00 GMT".to_owned());
+
+        let outcome = fetcher.fetch(&request).await.expect("fetched");
+        assert_eq!(
+            outcome,
+            FetchOutcome::NotModified,
+            "304 is a 3xx that is not a redirect; it has no Location and must not be followed"
+        );
+
+        let sent = requests.await.expect("the server reported");
+        assert!(
+            sent[0].contains("if-none-match: \"v1\""),
+            "and the validator really was replayed: {}",
+            sent[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_301_is_followed_and_reported_as_permanent() {
+        let body =
+            "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>M</title></channel></rss>";
+        let (url, requests) = serve(vec![
+            raw("301 Moved Permanently", "Location: /moved.xml", ""),
+            raw("200 OK", "Content-Type: application/rss+xml", body),
+        ])
+        .await;
+
+        let fetcher = ReqwestFetcher::new().expect("a client");
+        let found = match fetcher.fetch(&FetchRequest::new(url.clone())).await {
+            Ok(FetchOutcome::Found(found)) => found,
+            other => panic!("expected the redirect to be followed, got {other:?}"),
+        };
+        assert!(found.permanently_moved, "a 301 has to stay distinguishable");
+        assert!(
+            found.effective_url.ends_with("/moved.xml"),
+            "{}",
+            found.effective_url
+        );
+        assert_eq!(found.body, body.as_bytes());
+
+        let sent = requests.await.expect("the server reported");
+        assert_eq!(sent.len(), 2, "one request per hop");
+        assert!(sent[1].starts_with("GET /moved.xml"), "{}", sent[1]);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_with_no_location_is_a_transport_failure_not_a_panic() {
+        let (url, _requests) = serve(vec![raw("302 Found", "", "")]).await;
+        let fetcher = ReqwestFetcher::new().expect("a client");
+        let err = fetcher
+            .fetch(&FetchRequest::new(url))
+            .await
+            .expect_err("there is nowhere to go");
+        assert!(
+            matches!(&err, FeedError::Http { status: 0, message } if message.contains("Location")),
+            "{err:?}"
+        );
+        assert!(err.is_transient(), "so the next tick tries again");
     }
 }

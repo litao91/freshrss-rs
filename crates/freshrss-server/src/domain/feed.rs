@@ -129,11 +129,24 @@ impl Feed {
             .set_str(keys::LAST_MODIFIED, last_modified.map(str::to_string));
     }
 
+    /// Why the last refresh failed, in words. `None` when the feed is healthy.
+    ///
+    /// The companion to `error`, which says only *when*: the problems dialog shows this next to the
+    /// timestamp, because "410 Gone" and "certificate expired" call for opposite responses and look
+    /// identical as a number.
+    pub fn last_error_message(&self) -> Option<&str> {
+        self.attributes.get_str(keys::LAST_ERROR)
+    }
+
+    pub fn set_last_error_message(&mut self, message: Option<&str>) {
+        self.attributes
+            .set_str(keys::LAST_ERROR, message.map(str::to_string));
+    }
+
     /// The GUID policy override, when the user set one.
     pub fn unicity_criteria(&self) -> Option<&str> {
         self.attributes.get_str(keys::UNICITY_CRITERIA)
     }
-
     /// True when the user chose the GUID policy explicitly, so refresh must not silently
     /// auto-degrade it after seeing bad GUIDs.
     pub fn unicity_criteria_forced(&self) -> bool {

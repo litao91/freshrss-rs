@@ -10,23 +10,63 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::config::AppConfig;
+use freshrss_feed::http::{Guard, ReqwestFetcher};
+use freshrss_feed::Fetcher;
+
+use crate::config::{AppConfig, HttpConfig};
 use crate::db::Db;
+use crate::service::jobs::Jobs;
 
 /// Everything a handler may need. Cheap to clone.
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
     pub config: Arc<AppConfig>,
+    /// How feed bodies are fetched. Shared by every request and by the scheduler, so the connection
+    /// pool and the network policy are the same everywhere.
+    pub fetcher: Arc<dyn Fetcher>,
+    /// The refresh jobs `POST /refresh` starts and `GET /refresh/{id}` reports on.
+    pub jobs: Arc<Jobs>,
 }
 
 impl AppState {
+    /// Builds the real thing: a `reqwest` fetcher obeying the configured network guard.
+    ///
+    /// # Panics
+    ///
+    /// If `reqwest` cannot build a client at all, which means a TLS backend problem and is fatal at
+    /// startup rather than something to recover from per request.
     pub fn new(db: Db, config: AppConfig) -> Self {
+        let fetcher = ReqwestFetcher::with_guard(guard_from(&config.http))
+            .expect("building the HTTP client does not perform IO");
+        Self::with_fetcher(db, config, Arc::new(fetcher))
+    }
+
+    /// As [`AppState::new`] with a caller-supplied fetcher, so tests and the CLI can drive the whole
+    /// API against fixtures instead of the network.
+    pub fn with_fetcher(db: Db, config: AppConfig, fetcher: Arc<dyn Fetcher>) -> Self {
         Self {
             db,
             config: Arc::new(config),
+            fetcher,
+            jobs: Arc::new(Jobs::default()),
         }
     }
+}
+
+/// The network policy for outbound feed fetches.
+///
+/// An allowlist entry that parses as neither a host, an address nor a network is dropped rather than
+/// being fatal, so this is where the operator is told about it — once, at startup, rather than as a
+/// mysterious refusal on every refresh of the feed it was meant to permit.
+fn guard_from(http: &HttpConfig) -> Guard {
+    for entry in Guard::rejected(&http.internal_host_allowlist) {
+        tracing::warn!(
+            entry = %entry,
+            "ignoring an internal_host_allowlist entry that is not a host, an address or a network"
+        );
+    }
+    Guard::new(http.block_private_networks, &http.internal_host_allowlist)
 }
 
 pub fn router(state: AppState) -> Router {

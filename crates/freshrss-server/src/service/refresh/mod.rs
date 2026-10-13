@@ -16,6 +16,7 @@
 //!   its whole backlog age out on the retention schedule.
 
 pub mod reconcile;
+pub mod run;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -30,7 +31,6 @@ use crate::db::Db;
 use crate::domain::attributes::keys;
 use crate::domain::feed::Feed;
 use crate::domain::kind::FeedKind;
-use crate::domain::ttl::Ttl;
 use crate::error::Result;
 use crate::service::ingest::{self, Sanitize};
 use reconcile::reconcile;
@@ -50,6 +50,12 @@ pub struct Settings {
     pub max_content_length: Option<usize>,
     /// Used when a feed's own `ttl` is 0, and as the magnitude when muting one that has none.
     pub ttl_default: i64,
+    /// How many feeds one run may have in flight at once. The limit is the operator's, not the
+    /// feed's: a user with a thousand subscriptions must not open a thousand sockets.
+    pub concurrency: usize,
+    /// How many feeds one run takes on. The rest wait for the next tick rather than making one
+    /// refresh run for as long as the backlog does.
+    pub max_feeds: usize,
 }
 
 impl Settings {
@@ -61,6 +67,8 @@ impl Settings {
             force_https_domains: Vec::new(),
             max_content_length: None,
             ttl_default: config.limits.ttl_default,
+            concurrency: config.limits.refresh_concurrency,
+            max_feeds: config.limits.max_feeds_per_refresh,
         }
     }
 }
@@ -74,6 +82,8 @@ impl Default for Settings {
             force_https_domains: Vec::new(),
             max_content_length: None,
             ttl_default: 3600,
+            concurrency: 4,
+            max_feeds: 10,
         }
     }
 }
@@ -89,8 +99,23 @@ pub enum Status {
     Fetched,
     /// The feed answered 410 Gone and was muted, so it will not be retried.
     Muted,
-    /// The refresh failed. The message is what the problems dialog shows.
-    Failed(String),
+    /// The refresh failed. The message is what the problems dialog shows, and the status is what
+    /// lets a caller tell "that address is not a feed" (404) from "that host is having a bad day"
+    /// (503) without parsing the message back apart.
+    Failed {
+        message: String,
+        http_status: Option<u16>,
+    },
+}
+
+impl Status {
+    /// True when the feed was read successfully, whether or not anything in it had changed.
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self,
+            Status::NotModified | Status::Unchanged | Status::Fetched
+        )
+    }
 }
 
 /// What one feed's refresh did.
@@ -192,14 +217,14 @@ async fn touch(
         stored.set_simplepie_hash(Some(hash));
         stored.set_conditional_headers(etag, last_modified);
     }
+    // A feed that answers at all is not broken, so whatever the last failure said is stale.
+    stored.set_last_error_message(None);
     let attributes = stored.attributes.clone();
 
     db.with_writer(move |mut conn| async move {
         entry_dao::update_last_seen_unchanged(&mut conn, id, now).await?;
         feed_dao::update_last_update(&mut conn, id, now).await?;
-        if validators.is_some() {
-            feed_dao::update_attributes(&mut conn, id, id_user, &attributes).await?;
-        }
+        feed_dao::update_attributes(&mut conn, id, id_user, &attributes).await?;
         feed_dao::update_cached_values(&mut conn, &[id]).await?;
         Ok(())
     })
@@ -254,12 +279,17 @@ async fn fetched(
     let mut stored = feed.clone();
     stored.set_simplepie_hash(Some(&body.hash));
     stored.set_conditional_headers(body.etag.as_deref(), body.last_modified.as_deref());
+    stored.set_last_error_message(None);
     if degraded {
         stored
             .attributes
             .set_str(keys::UNICITY_CRITERIA, Some(criteria.as_str()));
     }
-    let attributes = stored.attributes.clone();
+    adopt_identity(&mut stored, &raw);
+    // What actually has to be written, so a refresh that changed nothing about the feed's identity
+    // does not spend two updates saying so.
+    let renamed = stored.name != feed.name;
+    let redescribed = stored.website != feed.website || stored.description != feed.description;
     // A 301 means the subscription should move, or every future fetch pays for a redirect that will
     // eventually stop being served.
     let moved_to = body
@@ -288,7 +318,20 @@ async fn fetched(
 
             entry_dao::update_last_seen(&mut conn, id, &guids, now).await?;
             feed_dao::update_last_update(&mut conn, id, now).await?;
-            feed_dao::update_attributes(&mut conn, id, id_user, &attributes).await?;
+            feed_dao::update_attributes(&mut conn, id, id_user, &stored.attributes).await?;
+            if renamed {
+                feed_dao::update_name(&mut conn, id, id_user, &stored.name).await?;
+            }
+            if redescribed {
+                feed_dao::update_website_description(
+                    &mut conn,
+                    id,
+                    id_user,
+                    &stored.website,
+                    &stored.description,
+                )
+                .await?;
+            }
             if let Some(url) = &moved_to {
                 feed_dao::update_url(&mut conn, id, id_user, url).await?;
             }
@@ -303,6 +346,35 @@ async fn fetched(
         updated_entries,
         unchanged,
     })
+}
+
+/// Fills in the feed's own name, website and description from what it published.
+///
+/// Only where they are blank, which is PHP's rule — `refreshFeed` checks `name(true) === ''`, the
+/// *stored* name rather than the displayed one, so the host fallback never counts as an answer. A
+/// name the user typed in the add dialog is theirs, and a feed renaming itself three years later
+/// must not quietly rewrite it. The website is also replaced when it merely equals the feed URL,
+/// because that is the placeholder a new subscription starts with and it carries no information.
+fn adopt_identity(stored: &mut Feed, raw: &RawFeed) {
+    if stored.name.trim().is_empty() {
+        if let Some(title) = nonblank(raw.title.as_deref()) {
+            stored.name = title.to_owned();
+        }
+    }
+    if stored.website.trim().is_empty() || stored.website == stored.url {
+        if let Some(website) = nonblank(raw.website.as_deref()) {
+            stored.website = website.to_owned();
+        }
+    }
+    if stored.description.trim().is_empty() {
+        if let Some(description) = nonblank(raw.description.as_deref()) {
+            stored.description = description.to_owned();
+        }
+    }
+}
+
+fn nonblank(text: Option<&str>) -> Option<&str> {
+    text.map(str::trim).filter(|t| !t.is_empty())
 }
 
 /// Records a failure, and mutes the feed when the server said it is gone for good.
@@ -323,21 +395,21 @@ async fn fail(
 
     let id = feed.id;
     let id_user = feed.id_user;
-    // Muting is a negative ttl, and a feed on the default ttl has a magnitude of 0 — storing -0
-    // would leave it unmuted and retrying forever. So a real magnitude is required, and the owner's
-    // default is the sensible one.
-    let muted_ttl = Ttl::new(
-        i32::try_from(settings.ttl_default.max(1)).unwrap_or(i32::MAX),
-        true,
-    );
-    let ttl = if feed.ttl.seconds() > 0 {
-        Ttl::new(feed.ttl.seconds(), true)
-    } else {
-        muted_ttl
-    };
+    // The timestamp in `feed.error` says when it broke; this says why, and the problems dialog needs
+    // both. Stored rather than kept in memory, because the dialog is usually opened long after the
+    // refresh that failed.
+    let mut stored = feed.clone();
+    stored.set_last_error_message(Some(&message));
+    let attributes = stored.attributes.clone();
+    // The owner's default supplies the magnitude when the feed has none, because muting is the sign
+    // of one stored integer and a feed on the default has a magnitude of 0. See [`Ttl::mute`].
+    let ttl = feed
+        .ttl
+        .mute(i32::try_from(settings.ttl_default).unwrap_or(i32::MAX));
 
     db.with_writer(move |mut conn| async move {
         feed_dao::update_last_error(&mut conn, id, now).await?;
+        feed_dao::update_attributes(&mut conn, id, id_user, &attributes).await?;
         if gone {
             feed_dao::update_ttl(&mut conn, id, id_user, ttl).await?;
         }
@@ -348,7 +420,10 @@ async fn fail(
     Ok(Outcome::empty(if gone {
         Status::Muted
     } else {
-        Status::Failed(message)
+        Status::Failed {
+            message,
+            http_status: err.http_status(),
+        }
     }))
 }
 
@@ -461,7 +536,14 @@ mod tests {
 
     /// One user, one feed in their default folder.
     async fn setup(db: &Db) -> Feed {
-        db.with(|mut conn| async move {
+        setup_named(db, "Example").await
+    }
+
+    /// The same, with the stored name chosen by the caller. An empty name is what the add dialog
+    /// produces when the user typed nothing, and it is what lets a refresh fill the real title in.
+    async fn setup_named(db: &Db, name: &str) -> Feed {
+        let name = name.to_owned();
+        db.with(move |mut conn| async move {
             let id_user = user_dao::insert(
                 &mut conn,
                 &user_dao::NewUser {
@@ -472,7 +554,7 @@ mod tests {
                 },
             )
             .await?;
-            let mut feed = Feed::new(id_user, URL, "Example");
+            let mut feed = Feed::new(id_user, URL, name);
             feed.category = user_dao::default_category_id(&mut conn, id_user).await?;
             feed.id = feed_dao::insert(&mut conn, &feed).await?;
             Ok(feed)
@@ -555,6 +637,73 @@ mod tests {
         );
         assert_eq!(after.cache_nb_entries, 2);
         assert_eq!(after.cache_nb_unreads, 2);
+    }
+
+    /// A channel that says what it is called, where it lives and what it is about.
+    const IDENTIFIED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>The Example Blog</title><link>https://e.example/blog</link>
+<description>Everything about examples.</description>
+<item><title>One</title><link>https://e.example/1</link><guid>g1</guid></item>
+</channel></rss>"#;
+
+    #[tokio::test]
+    async fn a_first_refresh_fills_in_the_identity_the_feed_publishes() {
+        let db = db().await;
+        // An empty stored name is what the add dialog produces when the user typed nothing, so the
+        // sidebar shows the host until the feed says otherwise.
+        let feed = setup_named(&db, "").await;
+        assert_eq!(feed.display_name(), "e.example");
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(IDENTIFIED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        let after = stored_feed(&db, &feed).await;
+        assert_eq!(after.name, "The Example Blog");
+        assert_eq!(after.display_name(), "The Example Blog");
+        assert_eq!(after.website, "https://e.example/blog");
+        assert_eq!(after.description, "Everything about examples.");
+    }
+
+    #[tokio::test]
+    async fn an_identity_the_user_chose_survives_the_feed_renaming_itself() {
+        let db = db().await;
+        let feed = setup_named(&db, "  Mine  ").await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(IDENTIFIED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+        // And again, because a name overwritten on the *second* refresh is the same bug with a
+        // longer fuse.
+        let again = stored_feed(&db, &feed).await;
+        refresh_feed(&db, &fetcher, &again, &Settings::default(), NOW + 60)
+            .await
+            .expect("second");
+
+        let after = stored_feed(&db, &feed).await;
+        assert_eq!(after.name, "  Mine  ", "a name the user typed is theirs");
+        assert_eq!(
+            after.website, "https://e.example/blog",
+            "but a blank website is still filled in"
+        );
+        assert_eq!(after.description, "Everything about examples.");
+    }
+
+    #[tokio::test]
+    async fn a_feed_that_publishes_no_description_does_not_have_one_invented() {
+        let db = db().await;
+        let feed = setup_named(&db, "Example").await;
+        // V1 has no channel description, so there is nothing to adopt and the stored row must be
+        // left exactly as it was rather than being blanked.
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        let after = stored_feed(&db, &feed).await;
+        assert_eq!(after.name, "Example");
+        assert_eq!(after.description, "", "nothing published, nothing stored");
     }
 
     #[tokio::test]
@@ -726,7 +875,8 @@ mod tests {
             .await
             .expect("refreshed");
         assert!(
-            matches!(&outcome.status, Status::Failed(message) if message.contains("503")),
+            matches!(&outcome.status, Status::Failed { message, http_status }
+                if message.contains("503") && *http_status == Some(503)),
             "{:?}",
             outcome.status
         );
@@ -738,6 +888,22 @@ mod tests {
             after.last_update, 0,
             "a failure is not a successful refresh"
         );
+        assert!(
+            after
+                .last_error_message()
+                .is_some_and(|m| m.contains("503")),
+            "the dialog needs to say why, not just when: {:?}",
+            after.last_error_message()
+        );
+
+        // And a recovery clears it, or the dialog would keep blaming a feed that is fine now.
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &after, &Settings::default(), NOW + 60)
+            .await
+            .expect("recovered");
+        let recovered = stored_feed(&db, &feed).await;
+        assert_eq!(recovered.error, 0);
+        assert_eq!(recovered.last_error_message(), None);
     }
 
     #[tokio::test]
@@ -748,7 +914,16 @@ mod tests {
         let outcome = refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
             .await
             .expect("refreshed");
-        assert!(matches!(outcome.status, Status::Failed(_)), "{outcome:?}");
+        assert!(
+            matches!(
+                outcome.status,
+                Status::Failed {
+                    http_status: None,
+                    ..
+                }
+            ),
+            "a body that is not a feed has no HTTP status behind it: {outcome:?}"
+        );
         assert!(all_entries(&db, feed.id_user).await.is_empty());
     }
 

@@ -183,7 +183,8 @@ pub struct HttpConfig {
     pub user_agent: String,
     /// Refuse to fetch URLs resolving to loopback / RFC1918 / link-local addresses.
     pub block_private_networks: bool,
-    /// `host`, `host:port` or CIDR entries exempt from [`Self::block_private_networks`].
+    /// Hostnames, single addresses or CIDR networks exempt from
+    /// [`Self::block_private_networks`], for a feed that genuinely lives on the LAN.
     pub internal_host_allowlist: Vec<String>,
 }
 

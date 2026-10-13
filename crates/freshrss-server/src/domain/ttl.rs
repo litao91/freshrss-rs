@@ -61,8 +61,23 @@ impl Ttl {
         self.0 == 0
     }
 
-    pub const fn mute(self) -> Self {
-        Self(-self.seconds())
+    /// This ttl, muted.
+    ///
+    /// `default_seconds` stands in when the magnitude is 0. It has to, because muting is the *sign*
+    /// of one stored integer and there is no negative zero: a feed left on its owner's default has a
+    /// magnitude of 0, and `-0` is `0`, which reads back as **not muted**. Without a substitute the
+    /// mute would silently do nothing — the feed keeps being refreshed, and the user who asked for it
+    /// to stop has no way to tell. Every caller therefore has to say what interval the feed would
+    /// otherwise have been refreshed on, which is the owner's `ttl_default`.
+    pub fn mute(self, default_seconds: i32) -> Self {
+        let seconds = self.seconds();
+        let magnitude = if seconds == 0 {
+            clamped_magnitude(default_seconds)
+        } else {
+            seconds
+        };
+        // `.max(1)` because a zero default would reintroduce exactly the hole this exists to close.
+        Self(-magnitude.max(1))
     }
 
     pub const fn unmute(self) -> Self {
@@ -117,10 +132,10 @@ mod tests {
     fn muting_and_unmuting_round_trip() {
         let t = Ttl::new(900, false);
         assert!(!t.is_muted());
-        assert_eq!(t.mute().raw(), -900);
-        assert_eq!(t.mute().unmute(), t);
+        assert_eq!(t.mute(3600).raw(), -900, "the feed's own interval is kept");
+        assert_eq!(t.mute(3600).unmute(), t);
         // Muting an already-muted feed must not flip it back.
-        assert_eq!(t.mute().mute().raw(), -900);
+        assert_eq!(t.mute(3600).mute(3600).raw(), -900);
     }
 
     #[test]
@@ -139,13 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn a_muted_zero_ttl_stays_zero_rather_than_becoming_negative() {
-        // Muting a feed whose ttl was 0 stores -0 == 0, so `ttl >= 0` would no longer exclude it.
-        // `is_muted` is therefore not sufficient on its own for a feed that was never given a
-        // ttl; the caller must persist a real magnitude when muting.
-        let t = Ttl::DEFAULT.mute();
-        assert_eq!(t.raw(), 0);
-        assert!(!t.is_muted());
+    fn muting_a_feed_on_the_default_ttl_takes_its_magnitude_from_the_default() {
+        // The hole this closes: muting is the sign of one stored integer, so `-0` is `0` and reads
+        // back as *not* muted. A feed that was never given a ttl has exactly that magnitude, and it
+        // is the common case — every feed added through the dialog starts at 0.
+        let muted = Ttl::DEFAULT.mute(3600);
+        assert_eq!(muted.raw(), -3600);
+        assert!(muted.is_muted(), "so `ttl >= 0` excludes it from a refresh");
+        assert_eq!(muted.seconds(), 3600);
+        assert_eq!(muted.unmute(), Ttl::new(3600, false));
+
+        // And a zero default still mutes, because a mute that silently does nothing is worse than a
+        // mute on a one-second interval.
+        assert!(Ttl::DEFAULT.mute(0).is_muted());
     }
 
     #[test]

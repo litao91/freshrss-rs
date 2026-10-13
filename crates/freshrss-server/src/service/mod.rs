@@ -4,8 +4,12 @@
 //! with which side effects) live in one place and are testable without an HTTP request.
 
 pub mod auth;
+pub mod discovery;
 pub mod entries;
 pub mod ingest;
+pub mod jobs;
 pub mod refresh;
+pub mod scheduler;
 pub mod search;
+pub mod subscription;
 pub mod tree;

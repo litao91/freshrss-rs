@@ -12,6 +12,7 @@ pub mod categories;
 pub mod entries;
 pub mod feeds;
 pub mod me;
+pub mod refresh;
 pub mod search;
 pub mod tree;
 
@@ -27,8 +28,10 @@ pub fn router() -> Router<AppState> {
         .route("/me/sessions/{id}", delete(auth::revoke_session))
         .route("/tree", get(tree::tree))
         .route("/counts", get(tree::counts))
+        .route("/problems", get(refresh::problems))
         .nest("/categories", categories::router())
         .nest("/feeds", feeds::router())
         .nest("/entries", entries::router())
+        .nest("/refresh", refresh::router())
         .nest("/search", search::router())
 }
