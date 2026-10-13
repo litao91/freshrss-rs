@@ -183,10 +183,22 @@ pub async fn discover(
     }
 
     let mut candidates = Vec::new();
-    for (url, source) in plan(&body.body, &document_url)
-        .into_iter()
-        .take(MAX_CHECKED)
-    {
+    let plan = plan(&body.body, &document_url);
+    if plan.is_empty() {
+        // Nothing on the page even looked like a feed, so the only thing worth reporting is why the
+        // address given was not one. A bridge that answers 200 with its own error text would
+        // otherwise be indistinguishable from a homepage with no feed on it.
+        return Ok(Discovered {
+            url: document_url.clone(),
+            candidates: vec![Candidate {
+                url: document_url,
+                source: Source::Given,
+                probe: None,
+                rejected: Some(not_a_feed(&body.body)),
+            }],
+        });
+    }
+    for (url, source) in plan.into_iter().take(MAX_CHECKED) {
         let mut candidate = Candidate {
             url,
             source,
@@ -211,6 +223,22 @@ pub async fn discover(
         url: document_url,
         candidates,
     })
+}
+
+/// Why the address given was not a feed, in words the add dialog can show.
+///
+/// A body that is short enough to be a message rather than a page has that message quoted: a
+/// bridge answering 200 with "could not fetch content" is a broken upstream, which is a different
+/// problem from a homepage that merely has no feed on it, and the reader deserves to know which.
+fn not_a_feed(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let stripped = crate::text::strip_tags(&text);
+    let message = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    const QUOTE_LIMIT: usize = 160;
+    if message.is_empty() || message.len() > QUOTE_LIMIT {
+        return "the response is not a feed".to_owned();
+    }
+    format!("the response is not a feed: {message}")
 }
 
 async fn fetch(
@@ -483,6 +511,19 @@ mod tests {
             .expect("the page itself is always served")
     }
 
+    /// Nothing was worth fetching, so the only candidate is the address given, rejected with a
+    /// reason the dialog can quote.
+    fn only_the_given_address_rejected(found: &Discovered) {
+        assert!(found.found().is_none());
+        assert_eq!(found.candidates.len(), 1, "{found:?}");
+        assert_eq!(found.candidates[0].url, PAGE_URL);
+        assert!(
+            found.candidates[0].rejected.is_some(),
+            "{:?}",
+            found.candidates
+        );
+    }
+
     fn urls(found: &Discovered) -> Vec<&str> {
         found.candidates.iter().map(|c| c.url.as_str()).collect()
     }
@@ -584,8 +625,7 @@ mod tests {
         );
         let found = run(&serving(&document), PAGE_URL).await;
         // `/s.css` and `/` are `<link>`s, so they are not picked up by the `<a>` passes either.
-        assert!(found.candidates.is_empty(), "{found:?}");
-        assert!(found.found().is_none());
+        only_the_given_address_rejected(&found);
     }
 
     #[tokio::test]
@@ -738,15 +778,14 @@ mod tests {
             r##"<a href="mailto:feed@e.example">mail</a><a href="#frag">frag</a><a href="file:///etc/passwd">f</a>"##,
         );
         let found = run(&serving(&document), PAGE_URL).await;
-        assert!(found.candidates.is_empty(), "{found:?}");
+        only_the_given_address_rejected(&found);
     }
 
     #[tokio::test]
     async fn a_page_with_no_links_at_all_yields_nothing() {
         let found = run(&serving(&page("", "<p>Hello</p>")), PAGE_URL).await;
         assert_eq!(found.url, PAGE_URL);
-        assert!(found.candidates.is_empty());
-        assert!(found.found().is_none());
+        only_the_given_address_rejected(&found);
     }
 
     #[tokio::test]

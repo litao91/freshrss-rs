@@ -113,7 +113,47 @@ mod tests {
             .await
             .expect("discovered");
         assert!(found.found().is_none());
-        assert!(found.candidates.is_empty(), "nothing was worth fetching");
+        // The address given is reported as a tried-and-rejected candidate, so the dialog can say
+        // why instead of only "nothing found".
+        assert_eq!(found.candidates.len(), 1);
+        assert!(
+            found.candidates[0]
+                .rejected
+                .as_deref()
+                .is_some_and(|r| r.starts_with("the response is not a feed")),
+            "{:?}",
+            found.candidates[0].rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bridge_that_answers_with_its_own_error_says_so_in_the_rejection() {
+        // 200 OK, an XML content type, and a body that is a message rather than a feed: exactly what
+        // a broken feed bridge returns, and exactly what must not be reported as a bare "no feed".
+        let fetcher = FixtureFetcher::new().with("https://e.example/?type=x", xml("无法获取内容"));
+        let found = discover(&fetcher, &Settings::default(), "https://e.example/?type=x")
+            .await
+            .expect("discovered");
+        let rejected = found.candidates[0].rejected.as_deref().expect("a reason");
+        assert!(rejected.contains("无法获取内容"), "{rejected}");
+    }
+
+    #[tokio::test]
+    async fn a_long_page_is_not_quoted_back_at_the_reader() {
+        let fetcher = FixtureFetcher::new().with(
+            "https://e.example/",
+            html(&format!(
+                "<html><body><p>{}</p></body></html>",
+                "word ".repeat(200)
+            )),
+        );
+        let found = discover(&fetcher, &Settings::default(), "https://e.example/")
+            .await
+            .expect("discovered");
+        assert_eq!(
+            found.candidates[0].rejected.as_deref(),
+            Some("the response is not a feed")
+        );
     }
 
     #[tokio::test]
