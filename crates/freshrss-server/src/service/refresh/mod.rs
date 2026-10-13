@@ -16,6 +16,7 @@
 //!   its whole backlog age out on the retention schedule.
 
 pub mod filters;
+pub mod fulltext;
 pub mod reconcile;
 pub mod retention;
 pub mod run;
@@ -199,7 +200,7 @@ pub async fn refresh_with_cleanup(
                 )
                 .await
             } else {
-                fetched(db, feed, settings, now, body).await
+                fetched(db, fetcher, feed, settings, now, body).await
             }
         }
         Err(err) => fail(db, feed, settings, now, &err).await,
@@ -274,6 +275,7 @@ async fn touch(
 /// Handles a body that differs from the last fetch.
 async fn fetched(
     db: &Db,
+    fetcher: &(dyn Fetcher + '_),
     feed: &Feed,
     settings: &Settings,
     now: i64,
@@ -313,12 +315,77 @@ async fn fetched(
     let criteria = ingested.criteria;
     let degraded = ingested.degraded;
 
-    // The automation this refresh applies. Loaded before the write so the process-wide writer lock
-    // is held only for the writes themselves, not for parsing queries.
-    let automation = filters::Automation::load(db, feed, now).await?;
-
+    // Classify before any per-article work: an article the feed republished unchanged is ignored,
+    // and scraping or filtering it would be effort spent on a row that will not be written.
     let id = feed.id;
     let id_user = feed.id_user;
+    let known = db
+        .with(|mut conn| {
+            // Borrowed rather than moved: the same list is needed again by the write below.
+            let guids = &guids;
+            async move { entry_dao::list_hashes_for_guids(&mut conn, id, guids).await }
+        })
+        .await?;
+    let plan = reconcile(entries, &known, now);
+    let (mut insert, mut update, unchanged) = (plan.insert, plan.update, plan.unchanged);
+
+    // Full-text scraping is one request per article, so it runs here rather than under the writer
+    // lock, which is process-wide. New articles are scraped *before* the filters see them, so an
+    // `intext:` rule reads the whole body; updated articles the other way round, which is PHP's
+    // order and keeps a filter from depending on a fetch that may fail.
+    fulltext::complete_all(fetcher, feed, &mut insert, settings, &sanitize).await;
+
+    // The automation this refresh applies. Loaded before the write so the writer lock is held only
+    // for the writes themselves, not for parsing queries.
+    let automation = filters::Automation::load(db, feed, now).await?;
+    let mut seen = db
+        .with(|mut conn| {
+            let policies = &automation.policies;
+            async move { filters::Seen::load(&mut conn, feed, policies).await }
+        })
+        .await?;
+    let mut labels_by_guid: Vec<(String, Vec<String>)> = Vec::new();
+
+    // In feed order: what counts as "already read" for one article includes the articles earlier in
+    // this same batch, which is why the sets live across the loop.
+    for entry in insert.iter_mut() {
+        let target = EntryView::borrowed(entry, feed.category);
+        let applied = automation.rules.apply(&target, false);
+        entry.is_read = filters::read_flag(
+            &automation.policies,
+            &applied,
+            &seen,
+            false,
+            &entry.title,
+            &entry.guid,
+        );
+        entry.is_favorite = applied.star;
+        if !applied.labels.is_empty() {
+            labels_by_guid.push((entry.guid.clone(), applied.labels));
+        }
+        seen.record(&automation.policies, &entry.title, &entry.guid);
+    }
+
+    fulltext::complete_all(fetcher, feed, &mut update, settings, &sanitize).await;
+
+    // Updated articles: an upstream edit clears the read flag only when the policy says so, and a
+    // `read` filter action overrides that clearing, which is PHP's order. `star` and `label` are
+    // skipped for them inside `Rules::apply`.
+    let mut unread_guids: Vec<String> = Vec::new();
+    for entry in update.iter_mut() {
+        let target = EntryView::borrowed(entry, feed.category);
+        let applied = automation.rules.apply(&target, true);
+        if automation.policies.mark_updated_unread && !applied.read {
+            unread_guids.push(entry.guid.clone());
+        }
+        entry.is_read = applied.read;
+        entry.is_favorite = applied.star;
+        if !applied.labels.is_empty() {
+            labels_by_guid.push((entry.guid.clone(), applied.labels));
+        }
+        seen.record(&automation.policies, &entry.title, &entry.guid);
+    }
+
     let mut stored = feed.clone();
     stored.set_simplepie_hash(Some(&body.hash));
     stored.set_conditional_headers(body.etag.as_deref(), body.last_modified.as_deref());
@@ -339,53 +406,8 @@ async fn fetched(
         .permanently_moved
         .then(|| body.effective_url.clone())
         .filter(|url| !url.is_empty() && url != &feed.url);
-    let (new_entries, updated_entries, unchanged, labelled) = db
+    let (new_entries, updated_entries, labelled) = db
         .with_writer(move |mut conn| async move {
-            let known = entry_dao::list_hashes_for_guids(&mut conn, id, &guids).await?;
-            let plan = reconcile(entries, &known, now);
-            let (mut insert, mut update, unchanged) = (plan.insert, plan.update, plan.unchanged);
-
-            // The automation, in feed order: what counts as "already read" for one article includes
-            // the articles earlier in this same batch, which is why the sets live across the loop.
-            let mut seen = filters::Seen::load(&mut conn, feed, &automation.policies).await?;
-            let mut labels_by_guid: Vec<(String, Vec<String>)> = Vec::new();
-
-            for entry in insert.iter_mut() {
-                let target = EntryView::borrowed(entry, feed.category);
-                let applied = automation.rules.apply(&target, false);
-                entry.is_read = filters::read_flag(
-                    &automation.policies,
-                    &applied,
-                    &seen,
-                    false,
-                    &entry.title,
-                    &entry.guid,
-                );
-                entry.is_favorite = applied.star;
-                if !applied.labels.is_empty() {
-                    labels_by_guid.push((entry.guid.clone(), applied.labels));
-                }
-                seen.record(&automation.policies, &entry.title, &entry.guid);
-            }
-
-            // Updated articles: an upstream edit clears the read flag only when the policy says so,
-            // and a `read` filter action overrides that clearing, which is PHP's order. `star` and
-            // `label` are skipped for them inside `Rules::apply`.
-            let mut unread_guids: Vec<String> = Vec::new();
-            for entry in update.iter_mut() {
-                let target = EntryView::borrowed(entry, feed.category);
-                let applied = automation.rules.apply(&target, true);
-                if automation.policies.mark_updated_unread && !applied.read {
-                    unread_guids.push(entry.guid.clone());
-                }
-                entry.is_read = applied.read;
-                entry.is_favorite = applied.star;
-                if !applied.labels.is_empty() {
-                    labels_by_guid.push((entry.guid.clone(), applied.labels));
-                }
-                seen.record(&automation.policies, &entry.title, &entry.guid);
-            }
-
             let mut new_entries = 0;
             if !insert.is_empty() {
                 for entry in &insert {
@@ -446,7 +468,7 @@ async fn fetched(
                     }
                 }
             }
-            Ok((new_entries, updated_entries, unchanged, labelled))
+            Ok((new_entries, updated_entries, labelled))
         })
         .await?;
 
@@ -1717,6 +1739,115 @@ mod tests {
             all_entries(&db, id_user).await.len(),
             3,
             "an outage deletes nothing"
+        );
+    }
+    // --- full-text scraping --------------------------------------------------
+
+    /// One teaser and a link, the shape of feed `pathEntries` exists for.
+    const SCRAPE_FEED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title><link>https://e.example/</link>
+<item><title>Long read</title><link>https://e.example/1</link><guid>s1</guid><description>Teaser only.</description></item>
+</channel></rss>"#;
+
+    const ARTICLE_PAGE: &str = r#"<html><head><title>Page</title></head>
+<body><nav>Menus and ads</nav><article><p>The whole article, in full.</p></article></body></html>"#;
+
+    fn html(body: &str) -> FixtureResponse {
+        FixtureResponse::Body {
+            status: 200,
+            body: body.as_bytes().to_vec(),
+            etag: None,
+            last_modified: None,
+            content_type: Some("text/html".to_owned()),
+        }
+    }
+
+    async fn set_path_entries(db: &Db, feed: &Feed, selector: &str) {
+        let (id, id_user) = (feed.id, feed.id_user);
+        let selector = selector.to_owned();
+        db.with(move |mut conn| async move {
+            feed_dao::update_scraping(&mut conn, id, id_user, Some(&selector), None).await
+        })
+        .await
+        .expect("scraping configured");
+    }
+
+    #[tokio::test]
+    async fn a_feed_with_path_entries_scrapes_the_article_page() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_path_entries(&db, &feed, "article").await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new()
+            .with(URL, rss(SCRAPE_FEED))
+            .with("https://e.example/1", html(ARTICLE_PAGE));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        let entry = entry(&db, feed.id, "s1").await.expect("s1");
+        assert!(
+            entry.content.contains("The whole article, in full."),
+            "{}",
+            entry.content
+        );
+        assert!(!entry.content.contains("Menus and ads"));
+        assert_eq!(
+            entry.attributes.get_str(keys::ORIGINAL_CONTENT),
+            Some("Teaser only."),
+            "the teaser stays recoverable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_feed_without_path_entries_fetches_no_article_pages() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        let fetcher = FixtureFetcher::new()
+            .with(URL, rss(SCRAPE_FEED))
+            .with("https://e.example/1", html(ARTICLE_PAGE));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        let entry = entry(&db, feed.id, "s1").await.expect("s1");
+        assert_eq!(entry.content, "Teaser only.");
+        assert_eq!(
+            fetcher.requests().len(),
+            1,
+            "only the feed itself was fetched: {:?}",
+            fetcher
+                .requests()
+                .iter()
+                .map(|r| &r.url)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_article_page_that_fails_to_load_keeps_the_teaser() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_path_entries(&db, &feed, "article").await;
+        let feed = stored_feed(&db, &feed).await;
+
+        // The article page 503s; the refresh must still succeed with the feed's own content.
+        let fetcher = FixtureFetcher::new().with(URL, rss(SCRAPE_FEED)).with(
+            "https://e.example/1",
+            FixtureResponse::Error(FixtureError::Http(503)),
+        );
+        let outcome = refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+        assert_eq!(
+            outcome.status,
+            Status::Fetched,
+            "a failed scrape is not a failed refresh"
+        );
+        assert_eq!(
+            entry(&db, feed.id, "s1").await.expect("s1").content,
+            "Teaser only."
         );
     }
 }
