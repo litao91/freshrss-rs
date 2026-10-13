@@ -43,12 +43,14 @@ fn bucket(method: &Method, path: &str) -> Bucket {
     // A layer on the API router sees the path with the `/api/v1` prefix stripped by `nest`, but the
     // same function is trivially reusable on the whole router, so accept both spellings.
     let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    // The exact `/refresh` must be tested before the `/…/refresh` suffix, or the whole-tree job
+    // would be metered as a single-feed fetch.
     if method == Method::POST && (path == "/auth/login" || path == "/auth/register") {
         Bucket::Auth
-    } else if method == Method::POST && (path == "/feeds/discover" || path.ends_with("/refresh")) {
-        Bucket::Fetch
     } else if method == Method::POST && path == "/refresh" {
         Bucket::Refresh
+    } else if method == Method::POST && (path == "/feeds/discover" || path.ends_with("/refresh")) {
+        Bucket::Fetch
     } else {
         Bucket::Unmetered
     }
@@ -98,7 +100,7 @@ impl Limiter {
 
 /// The guard itself: refuses cross-origin mutations and metered requests that are over their limit.
 pub async fn guard(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
-    if let Some(response) = check_origin(&req) {
+    if let Some(response) = check_origin(&req, &state.config.server.allowed_origins) {
         return response;
     }
 
@@ -138,7 +140,7 @@ pub async fn guard(State(state): State<AppState>, req: Request<Body>, next: Next
 /// Absent `Origin` passes: `curl`, the CLI and same-origin `fetch` in older browsers omit it, and
 /// refusing them would break every non-browser client for a defence that only browsers can provide.
 /// Present-but-different is the cross-site case, and that is refused.
-fn check_origin(req: &Request<Body>) -> Option<Response> {
+fn check_origin(req: &Request<Body>, allowed: &[String]) -> Option<Response> {
     let method = req.method();
     if matches!(
         *method,
@@ -162,6 +164,18 @@ fn check_origin(req: &Request<Body>) -> Option<Response> {
         .and_then(|h| h.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())?;
     if origin_host.eq_ignore_ascii_case(&host) {
+        return None;
+    }
+    // A development proxy forwards its own origin; see `ServerConfig::allowed_origins`.
+    let origin_port = url::Url::parse(origin).ok()?.port_or_known_default()?;
+    if allowed.iter().any(|entry| {
+        url::Url::parse(entry).is_ok_and(|parsed| {
+            parsed
+                .host_str()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&origin_host))
+                && parsed.port_or_known_default() == Some(origin_port)
+        })
+    }) {
         None
     } else {
         Some(refused())
@@ -229,6 +243,48 @@ mod tests {
             bucket(&Method::DELETE, "/api/v1/feeds/7"),
             Bucket::Unmetered
         );
+    }
+
+    fn request_with(origin: &str, host: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/entries/read")
+            .header(header::ORIGIN, origin)
+            .header(header::HOST, host)
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    #[test]
+    fn a_listed_origin_is_trusted_and_an_unlisted_one_is_not() {
+        let allowed = ["http://localhost:5173".to_owned()];
+        assert!(check_origin(
+            &request_with("http://localhost:5173", "127.0.0.1:8080"),
+            &allowed
+        )
+        .is_none());
+        // The port is part of an origin: the dev proxy on 5174 is a different site.
+        assert!(check_origin(
+            &request_with("http://localhost:5174", "127.0.0.1:8080"),
+            &allowed
+        )
+        .is_some());
+        assert!(check_origin(
+            &request_with("https://evil.example", "127.0.0.1:8080"),
+            &allowed
+        )
+        .is_some());
+        // And with nothing listed, only the request's own host passes.
+        assert!(check_origin(
+            &request_with("http://localhost:5173", "127.0.0.1:8080"),
+            &[]
+        )
+        .is_some());
+        assert!(check_origin(
+            &request_with("http://127.0.0.1:8080", "127.0.0.1:8080"),
+            &[]
+        )
+        .is_none());
     }
 
     #[test]

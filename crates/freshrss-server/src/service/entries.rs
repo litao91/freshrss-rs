@@ -113,6 +113,10 @@ pub async fn full(
             summary,
             content_html: entry.content.clone(),
             content_text: strip_tags(&entry.content),
+            full_content: entry
+                .attributes
+                .get_str(crate::domain::attributes::keys::FULL_CONTENT)
+                .map(str::to_owned),
             guid: entry.guid.clone(),
             enclosures: entry.enclosures(),
         },

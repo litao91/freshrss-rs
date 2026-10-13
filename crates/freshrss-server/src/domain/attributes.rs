@@ -58,6 +58,11 @@ pub mod keys {
     pub const OPML_URL: &str = "opml_url";
     /// Entry: pre-scrape content, kept so `hash` stays stable across full-text extraction.
     pub const ORIGINAL_CONTENT: &str = "original_content";
+    /// Entry: the article body scraped from the article's own page on demand, from the reading
+    /// pane's "full article" button. Kept beside `content` rather than in it so an upstream edit
+    /// detected at the next refresh cannot silently discard what the reader asked for, and so the
+    /// reader can switch back to the feed's own text.
+    pub const FULL_CONTENT: &str = "full_content";
     /// Entry: `[{url, type, medium, length, title, description, height, width}]`.
     pub const ENCLOSURES: &str = "enclosures";
     /// Entry: `{url, height, width, time}`.

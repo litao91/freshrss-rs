@@ -122,6 +122,11 @@ pub struct FeedDto {
     pub ttl: i32,
     pub muted: bool,
     pub category: Option<i64>,
+    /// The full-text selector, so a settings screen can show and edit what is configured.
+    pub path_entries: Option<String>,
+    pub path_entries_filter: Option<String>,
+    /// Whether HTTP Basic credentials are stored. Never the credentials themselves.
+    pub has_http_auth: bool,
     /// 0 when healthy, otherwise the unix time of the last failed refresh.
     pub error: i64,
     pub last_update: i64,
@@ -144,6 +149,9 @@ impl FeedDto {
             ttl: feed.ttl.seconds(),
             muted: feed.is_muted(),
             category: feed.category,
+            path_entries: feed.path_entries.clone(),
+            path_entries_filter: feed.path_entries_filter.clone(),
+            has_http_auth: feed.http_auth.is_some(),
             error: feed.error,
             last_update: feed.last_update,
             unread: feed.cache_nb_unreads,
@@ -538,6 +546,10 @@ pub struct EntryFullDto {
     /// Sanitized HTML. This is the one value the frontend renders with `{@html}`.
     pub content_html: String,
     pub content_text: String,
+    /// The body scraped from the article's own page, when the reader has asked for it. Separate
+    /// from `content_html` so the pane can show either and switch between them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_content: Option<String>,
     pub guid: String,
     pub enclosures: Vec<crate::domain::entry::Enclosure>,
 }

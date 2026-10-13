@@ -172,6 +172,11 @@ impl Feed {
         self.attributes.get_str(keys::FEED_ICON_URL)
     }
 
+    pub fn set_feed_icon_url(&mut self, url: Option<&str>) {
+        self.attributes
+            .set_str(keys::FEED_ICON_URL, url.map(str::to_string));
+    }
+
     pub fn filter_actions(&self) -> Vec<FilterAction> {
         self.attributes
             .get_typed::<Vec<FilterAction>>(keys::FILTERS)

@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 
 use freshrss_feed::fulltext;
 use freshrss_feed::http::{FetchOutcome, FetchRequest, Fetcher};
-use freshrss_feed::SanitizeOptions;
+use freshrss_feed::{FeedError, SanitizeOptions};
 
 use crate::domain::attributes::keys;
 use crate::domain::entry::Entry;
@@ -129,8 +129,12 @@ async fn complete_one(
         return;
     };
 
-    let Some(page) = fetch_page(fetcher, &entry.link, settings).await else {
-        return;
+    let page = match fetch_page(fetcher, &entry.link, settings).await {
+        Ok(page) => page,
+        Err(err) => {
+            tracing::debug!(url = %entry.link, error = %err, "could not fetch the article page");
+            return;
+        }
     };
     let options = SanitizeOptions {
         base_url: fulltext::document_base(&page.text, &page.url),
@@ -176,7 +180,11 @@ struct Page {
 ///
 /// `None` on any failure: the teaser the feed published is a perfectly good fallback, and an
 /// article that cannot be scraped must not fail the refresh it arrived in.
-async fn fetch_page(fetcher: &(dyn Fetcher + '_), link: &str, settings: &Settings) -> Option<Page> {
+async fn fetch_page(
+    fetcher: &(dyn Fetcher + '_),
+    link: &str,
+    settings: &Settings,
+) -> std::result::Result<Page, FeedError> {
     let mut url = link.to_owned();
     for _ in 0..MAX_HOPS {
         let mut request = FetchRequest::new(url.clone());
@@ -187,14 +195,19 @@ async fn fetch_page(fetcher: &(dyn Fetcher + '_), link: &str, settings: &Setting
 
         let body = match fetcher.fetch(&request).await {
             Ok(FetchOutcome::Found(body)) => body,
-            Ok(FetchOutcome::NotModified) => return None,
-            Err(err) => {
-                tracing::debug!(url = %url, error = %err, "could not fetch the article page");
-                return None;
+            Ok(FetchOutcome::NotModified) => {
+                return Err(FeedError::Http {
+                    status: 304,
+                    message: "the article page answered 304 to an unconditional request".to_owned(),
+                })
             }
+            Err(err) => return Err(err),
         };
         if !(200..300).contains(&body.status) {
-            return None;
+            return Err(FeedError::Http {
+                status: body.status,
+                message: format!("the article page answered {}", body.status),
+            });
         }
         let effective = if body.effective_url.is_empty() {
             url.clone()
@@ -206,15 +219,106 @@ async fn fetch_page(fetcher: &(dyn Fetcher + '_), link: &str, settings: &Setting
         match fulltext::meta_refresh(&text, &effective) {
             Some(next) if next != effective => url = next,
             _ => {
-                return Some(Page {
+                return Ok(Page {
                     text,
                     url: effective,
                 })
             }
         }
     }
-    tracing::debug!(url = %link, "too many meta-refresh hops; keeping the feed's content");
-    None
+    Err(FeedError::Http {
+        status: 0,
+        message: format!("more than {MAX_HOPS} meta-refresh hops at {link}"),
+    })
+}
+
+/// The selectors tried, in order, when a feed configures no `pathEntries` of its own.
+///
+/// A reader asking for the full article of a feed that was never configured for scraping still
+/// deserves an answer, and these are the elements publishers conventionally put the body in. The
+/// first that matches wins; a page with none of them is reported as "nothing matched" rather than
+/// guessed at any further.
+pub const DEFAULT_SELECTORS: &[&str] = &[
+    "article",
+    "main",
+    "[role=\"main\"]",
+    ".entry-content",
+    ".post-content",
+    ".article-content",
+    "#content",
+    ".content",
+    ".post",
+    ".story-body",
+];
+
+/// What an on-demand extraction produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnDemand {
+    pub html: String,
+    pub matched: usize,
+    /// The page the body came from, after redirects and meta-refresh hops.
+    pub url: String,
+    /// The selector that matched, so the caller can say what was used.
+    pub selector: String,
+}
+
+/// Fetches one article's page and extracts its body, for a reader asking now.
+///
+/// `selector` and `filter` override the feed's own when given, which is also how a settings screen
+/// previews a candidate selector against a real article. Unlike the refresh path, an explicit
+/// request is not gated on `path_entries_conditions`: a human asking for one article is the
+/// condition.
+///
+/// Returns `Ok(None)` when no selector matched anything, so the caller can tell "the page has no
+/// recognisable article element" from "the page could not be fetched", which is an error.
+pub async fn on_demand(
+    fetcher: &(dyn Fetcher + '_),
+    feed: &Feed,
+    entry: &Entry,
+    settings: &Settings,
+    sanitize: &Sanitize,
+    selector: Option<&str>,
+    filter: Option<&str>,
+) -> crate::error::Result<Option<OnDemand>> {
+    let page = fetch_page(fetcher, &entry.link, settings).await?;
+    let filter = filter
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| nonblank(feed.path_entries_filter.as_deref()));
+    let configured = selector
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| nonblank(feed.path_entries.as_deref()));
+    let candidates: Vec<&str> = match configured {
+        Some(one) => vec![one],
+        None => DEFAULT_SELECTORS.to_vec(),
+    };
+
+    let options = SanitizeOptions {
+        base_url: fulltext::document_base(&page.text, &page.url),
+        force_https_domains: sanitize.force_https_domains.clone(),
+        max_length: sanitize.max_length,
+    };
+    for candidate in candidates {
+        let extracted =
+            match fulltext::extract(&page.text, candidate, filter.unwrap_or(""), &options) {
+                Ok(extracted) => extracted,
+                // A selector the caller typed that is not valid CSS is their typo, not a fault.
+                Err(err @ FeedError::BadConfig(_)) if selector.is_some() => {
+                    return Err(crate::error::validation(err.to_string()))
+                }
+                Err(err) => return Err(err.into()),
+            };
+        if extracted.matched > 0 && !extracted.html.is_empty() {
+            return Ok(Some(OnDemand {
+                html: extracted.html,
+                matched: extracted.matched,
+                url: page.url,
+                selector: candidate.to_owned(),
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// Applies the scraped body according to the feed's `content_action`.
@@ -430,5 +534,128 @@ mod tests {
         run(&feed, &mut entry, &fetcher).await;
         assert!(entry.content.contains("The whole article, in full."));
         assert_eq!(fetcher.requests().len(), 2);
+    }
+    // --- on-demand extraction -------------------------------------------------
+
+    #[tokio::test]
+    async fn on_demand_falls_back_to_the_default_selectors() {
+        let feed = feed_with("", "");
+        let fetcher = FixtureFetcher::new().with("https://e.example/1", html(PAGE));
+        let entry = entry("https://e.example/1", "Teaser");
+        let got = on_demand(
+            &fetcher,
+            &feed,
+            &entry,
+            &Settings::default(),
+            &Sanitize::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("fetched")
+        .expect("a match");
+        assert!(
+            got.html.contains("The whole article, in full."),
+            "{}",
+            got.html
+        );
+        assert_eq!(
+            got.selector, "article",
+            "the first default that matches wins"
+        );
+        assert_eq!(got.url, "https://e.example/1");
+    }
+
+    #[tokio::test]
+    async fn on_demand_honours_an_explicit_selector_over_the_feed_s() {
+        let feed = feed_with("nav", "");
+        let fetcher = FixtureFetcher::new().with("https://e.example/1", html(PAGE));
+        let entry = entry("https://e.example/1", "Teaser");
+        let got = on_demand(
+            &fetcher,
+            &feed,
+            &entry,
+            &Settings::default(),
+            &Sanitize::default(),
+            Some("article"),
+            None,
+        )
+        .await
+        .expect("fetched")
+        .expect("a match");
+        assert_eq!(
+            got.selector, "article",
+            "the caller's selector outranks the feed's"
+        );
+        assert!(!got.html.contains("Menus and ads"));
+    }
+
+    #[tokio::test]
+    async fn on_demand_reports_a_page_with_no_recognisable_article() {
+        let feed = feed_with("", "");
+        let fetcher = FixtureFetcher::new().with(
+            "https://e.example/1",
+            html("<html><body><div>nothing semantic here</div></body></html>"),
+        );
+        let entry = entry("https://e.example/1", "Teaser");
+        let got = on_demand(
+            &fetcher,
+            &feed,
+            &entry,
+            &Settings::default(),
+            &Sanitize::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("fetched");
+        assert_eq!(
+            got, None,
+            "no selector matched, which the caller reports as such"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_demand_reports_a_page_that_cannot_be_fetched() {
+        let feed = feed_with("article", "");
+        let fetcher = FixtureFetcher::new().with(
+            "https://e.example/1",
+            FixtureResponse::Error(freshrss_feed::http::reqwest::FixtureError::Http(503)),
+        );
+        let entry = entry("https://e.example/1", "Teaser");
+        let err = on_demand(
+            &fetcher,
+            &feed,
+            &entry,
+            &Settings::default(),
+            &Sanitize::default(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("the page is unavailable");
+        assert!(err.to_string().contains("503"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_explicit_selector_is_a_validation_error() {
+        let feed = feed_with("", "");
+        let fetcher = FixtureFetcher::new().with("https://e.example/1", html(PAGE));
+        let entry = entry("https://e.example/1", "Teaser");
+        let err = on_demand(
+            &fetcher,
+            &feed,
+            &entry,
+            &Settings::default(),
+            &Sanitize::default(),
+            Some("article:::not-css"),
+            None,
+        )
+        .await
+        .expect_err("not a selector");
+        assert!(
+            matches!(err, crate::error::Error::Validation(_)),
+            "a typed selector is the caller's typo: {err:?}"
+        );
     }
 }

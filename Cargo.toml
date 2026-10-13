@@ -26,7 +26,7 @@ tokio = { version = "1.53.2", features = [
 ] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = [
-    "compression-gzip", "fs", "set-header", "trace",
+    "compression-br", "compression-gzip", "fs", "set-header", "trace",
 ] }
 hyper = "1.12.0"
 http = "1.5.0"

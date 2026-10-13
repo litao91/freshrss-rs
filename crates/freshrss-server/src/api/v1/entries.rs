@@ -10,13 +10,14 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::dto::{EntryDetailDto, EntryPageDto, LabelRefDto};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extract::CurrentUser;
 use crate::db::dao::entry_query::{self, count_unread, list, Cursor, EntryQuery};
-use crate::db::dao::{entry as entry_dao, tag as tag_dao};
+use crate::db::dao::{entry as entry_dao, feed as feed_dao, tag as tag_dao};
+use crate::domain::attributes::keys;
 use crate::domain::ids::{now_micros, EntryId};
 use crate::domain::list_type::ListType;
 use crate::domain::sort::{Order, SecondarySort, Sort};
@@ -24,6 +25,8 @@ use crate::domain::state::{Cond, EntryState};
 use crate::error::{Error, Result};
 use crate::router::AppState;
 use crate::service::entries as entry_service;
+use crate::service::ingest::Sanitize;
+use crate::service::refresh::{fulltext, Settings};
 use freshrss_search::ast::Expr;
 
 /// The largest page the API will serve.
@@ -43,6 +46,7 @@ pub fn router() -> Router<AppState> {
         .route("/unstar", post(unstar))
         .route("/mark-all-read", post(mark_all_read))
         .route("/{id}", get(show))
+        .route("/{id}/fulltext", post(fulltext))
         .route("/{id}/labels", post(add_label))
         .route("/{id}/labels/{name}", delete(remove_label))
 }
@@ -636,6 +640,118 @@ pub async fn remove_label(
         .map_err(ApiError)?;
 
     Ok(Json(labels))
+}
+
+/// The reading pane's "full article" request.
+#[derive(Debug, Deserialize, Default)]
+pub struct FulltextRequest {
+    /// Overrides the feed's `pathEntries`. Present makes this a preview: nothing is stored.
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Overrides the feed's `path_entries_filter`.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+/// The body of one article's page, extracted on demand.
+#[derive(Debug, Serialize)]
+pub struct FulltextDto {
+    /// Sanitized HTML, safe for the pane's one `{@html}`.
+    pub content_html: String,
+    /// How many elements the selector matched; zero never comes back, it is an error instead.
+    pub matched: usize,
+    /// The page the body came from, after redirects and meta-refresh hops.
+    pub url: String,
+    /// The selector that matched, so the pane and the settings preview can say what was used.
+    pub selector: String,
+    /// True when the result was stored on the entry, so a reload shows it without re-fetching.
+    pub stored: bool,
+}
+
+/// Fetches an article's own page and extracts the body from it.
+///
+/// The result is stored in the entry's attributes and returned by `GET /entries/{id}` as
+/// `full_content`, so asking once is enough: a reload, another device and the next refresh all see
+/// it without fetching again. Storing it in an attribute rather than in `content` is what keeps an
+/// upstream edit detected at the next refresh from silently discarding what the reader asked for.
+pub async fn fulltext(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    PathParam(raw_id): PathParam<String>,
+    body: Option<Json<FulltextRequest>>,
+) -> ApiResult<Json<FulltextDto>> {
+    let req = body.map(|Json(req)| req).unwrap_or_default();
+    let id_user = user.id;
+    let id = entry_id(raw_id).map_err(ApiError)?;
+
+    let (entry, feed) = state
+        .db
+        .with(move |mut conn| async move {
+            let entry = entry_dao::find_by_id(&mut conn, id, id_user)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("entry {id:?}")))?;
+            let feed = feed_dao::find_by_id(&mut conn, entry.id_feed, id_user)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("feed {}", entry.id_feed)))?;
+            Ok((entry, feed))
+        })
+        .await
+        .map_err(ApiError)?;
+
+    let settings = Settings::from_config(&state.config);
+    let sanitize = Sanitize {
+        force_https_domains: settings.force_https_domains.clone(),
+        max_length: settings.max_content_length,
+    };
+    let extracted = fulltext::on_demand(
+        &*state.fetcher,
+        &feed,
+        &entry,
+        &settings,
+        &sanitize,
+        req.selector.as_deref(),
+        req.filter.as_deref(),
+    )
+    .await
+    .map_err(ApiError)?;
+    let Some(extracted) = extracted else {
+        let tried = match req.selector.as_deref() {
+            Some(selector) => format!("selector {selector:?}"),
+            None => format!(
+                "any of the default selectors ({})",
+                fulltext::DEFAULT_SELECTORS.join(", ")
+            ),
+        };
+        return Err(ApiError(Error::Validation(format!(
+            "the article page has no element matching the {tried}"
+        ))));
+    };
+
+    // An explicit selector is a preview of a configuration the user is still editing; storing it
+    // would let a settings screen rewrite articles from under the reader.
+    let stored = req.selector.is_none();
+    if stored {
+        let mut entry = entry;
+        entry
+            .attributes
+            .set_str(keys::FULL_CONTENT, Some(&extracted.html));
+        let attributes = entry.attributes.clone();
+        state
+            .db
+            .with_writer(move |mut conn| async move {
+                entry_dao::update_attributes(&mut conn, id.micros(), id_user, &attributes).await
+            })
+            .await
+            .map_err(ApiError)?;
+    }
+
+    Ok(Json(FulltextDto {
+        content_html: extracted.html,
+        matched: extracted.matched,
+        url: extracted.url,
+        selector: extracted.selector,
+        stored,
+    }))
 }
 
 #[cfg(test)]

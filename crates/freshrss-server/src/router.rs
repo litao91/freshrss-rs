@@ -9,6 +9,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use tower_http::compression::CompressionLayer;
 
 use freshrss_feed::http::{Guard, ReqwestFetcher};
 use freshrss_feed::Fetcher;
@@ -87,6 +88,10 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/v1", api)
         .merge(crate::static_files::router())
         .with_state(state)
+        // Reader traffic is JSON and HTML, both of which compress four-to-one, and a self-hosted
+        // reader is often reached over a thin uplink. tower-http skips what is already compressed
+        // — fonts and images among the static assets — so this costs CPU only where it pays.
+        .layer(CompressionLayer::new().gzip(true).br(true))
 }
 
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
@@ -254,6 +259,35 @@ mod tests {
             post(app, "/api/v1/entries/read", None, "{}").await,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn responses_are_compressed_when_the_client_asks() {
+        use axum::http::header;
+        let res = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/version")
+                    .header(header::ACCEPT_ENCODING, "gzip, br")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("br"),
+            "brotli is preferred when the client offers both"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_does_not_ask_gets_plain_bytes() {
+        let (_, body) = get_json(app().await, "/version").await;
+        assert_eq!(body["name"], "freshrss-server", "uncompressed and readable");
     }
 
     #[tokio::test]

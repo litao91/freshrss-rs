@@ -65,6 +65,13 @@ pub struct MarkWhen {
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub static_dir: PathBuf,
+    /// Origins trusted in addition to the request's own `Host`, for the cross-origin check.
+    ///
+    /// Exists for one case: a development proxy. `npm run dev` serves the SPA on its own port and
+    /// forwards `/api`, so the browser's `Origin` names the proxy rather than this server, and
+    /// without listing it every mutation in development would be refused. Leave it empty in
+    /// production — an origin listed here can make authenticated requests as though it were us.
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -74,6 +81,7 @@ impl Default for ServerConfig {
                 .parse()
                 .expect("valid default bind address"),
             static_dir: PathBuf::from("static"),
+            allowed_origins: Vec::new(),
         }
     }
 }

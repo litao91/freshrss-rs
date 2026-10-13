@@ -396,6 +396,11 @@ async fn fetched(
             .set_str(keys::UNICITY_CRITERIA, Some(criteria.as_str()));
     }
     adopt_identity(&mut stored, &raw);
+    // The icon is refreshed every time rather than adopted-only-when-blank: a rebranded site
+    // changes its icon, and unlike the name there is no user-set value to protect.
+    if let Some(icon) = nonblank(raw.icon.as_deref()) {
+        stored.set_feed_icon_url(Some(icon));
+    }
     // What actually has to be written, so a refresh that changed nothing about the feed's identity
     // does not spend two updates saying so.
     let renamed = stored.name != feed.name;

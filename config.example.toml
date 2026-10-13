@@ -9,6 +9,9 @@ bind = "127.0.0.1:8080"
 # request (so `npm run dev` output shows up immediately); in release builds the folder
 # is embedded into the binary by rust-embed.
 static_dir = "static"
+# Origins trusted by the cross-origin check besides the request's own Host. Needed only when a
+# development proxy serves the SPA from another port; leave empty in production.
+# allowed_origins = ["http://localhost:5173"]
 
 [database]
 # SQLite database file. Created (with the full schema) if missing.
