@@ -31,7 +31,7 @@ export const SHORTCUTS: Shortcut[] = [
   { key: 'v', description: 'Open the original in a new tab', reading: true },
   { key: 'u', description: 'Unread or all', list: true },
   { key: 'a', description: 'Mark everything in this view read', shift: true, list: true },
-  { key: 'r', description: 'Refresh the feeds', list: true },
+  { key: 'r', description: 'Refresh the feeds', list: true, reading: true },
   { key: 'f', description: 'Focus mode', list: true, reading: true },
   { key: 'b', description: 'Show or hide the sidebar', list: true, reading: true },
   { key: '+', description: 'Larger text', list: true, reading: true },

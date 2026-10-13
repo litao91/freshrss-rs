@@ -12,17 +12,21 @@
   import ReadingPane from './components/ReadingPane.svelte';
   import Toast from './components/Toast.svelte';
   import TopBar from './components/TopBar.svelte';
+  import AddDialog from './components/dialogs/AddDialog.svelte';
   import FolderDialog from './components/dialogs/FolderDialog.svelte';
+  import ProblemsDialog from './components/dialogs/ProblemsDialog.svelte';
 
-  import { entries, loadMore, markAllRead, setRead, setStarred } from './lib/entries.svelte';
+  import { entries, loadMore, markAllRead, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
   import { find as findShortcut } from './lib/keys';
   import { nudgeSize } from './lib/prefs.svelte';
+  import { refreshJob, resumeRefresh, startRefresh, stopPolling } from './lib/refresh.svelte';
 
   let search = $state('');
-  let refreshing = $state(false);
 
   // `undefined` means closed; `null` means "create a new folder".
   let folderDialog = $state<CategoryNode | null | undefined>(undefined);
+  let addDialogOpen = $state(false);
+  let problemsDialogOpen = $state(false);
 
   let topBar: TopBar | undefined = $state();
   let entryList: EntryList | undefined = $state();
@@ -208,12 +212,20 @@
     void bootstrap().then(() => {
       // The tree has to exist before the URL can resolve feed and folder ids to names.
       syncScopeFromUrl();
+      // A refresh job started before a page reload is still running server-side; picking it back
+      // up here is what makes the spinner survive the reload instead of reporting idle.
+      if (isSignedIn()) void resumeRefresh();
     });
 
     return () => {
       window.removeEventListener('keydown', onKeydown);
       window.removeEventListener('popstate', syncScopeFromUrl);
     };
+  });
+
+  // The refresh poller is a module-level timer; teardown must not leave it running.
+  $effect(() => {
+    return () => stopPolling();
   });
 
   async function reload(): Promise<void> {
@@ -225,6 +237,19 @@
     }
   }
 
+  /**
+   * Picks up new feeds and articles after a dialog changed something, without touching the scope:
+   * unlike `reload`, a reader with an article open keeps reading it.
+   */
+  async function refreshData(): Promise<void> {
+    try {
+      await refreshTree();
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Could not reload subscriptions');
+    }
+    await reloadEntries();
+  }
+
   function onSearchSubmit(query: string): void {
     const scope: Scope = query ? { kind: 'search', query } : { kind: 'main' };
     selectScope(scope);
@@ -233,11 +258,8 @@
   }
 
   function onRefresh(): void {
-    // The refresh pipeline lands in a later stage; until then this just re-reads the tree.
-    refreshing = true;
-    void reload().finally(() => {
-      refreshing = false;
-    });
+    // Enqueues the server-side job; the store polls it and guards against a second start.
+    void startRefresh();
   }
 
   const title = $derived(scopeTitle(view.scope));
@@ -264,12 +286,12 @@
       onSearch={onSearchSubmit}
       onRefresh={onRefresh}
       onShowShortcuts={() => {}}
-      {refreshing}
+      refreshing={refreshJob.running}
     />
 
     <NavTree
-      onAddSubscription={() => notifyError('Adding a subscription arrives with the refresh pipeline.')}
-      onShowProblems={() => notifyError('The problems dialog arrives with the refresh pipeline.')}
+      onAddSubscription={() => (addDialogOpen = true)}
+      onShowProblems={() => (problemsDialogOpen = true)}
       onManageFolder={(folder) => (folderDialog = folder)}
       onManageFeed={() => notifyError('Feed settings arrive with the refresh pipeline.')}
     />
@@ -298,6 +320,12 @@
     {/if}
 
     <FolderDialog folder={folderDialog} onclose={() => (folderDialog = undefined)} onChanged={reload} />
+    <AddDialog open={addDialogOpen} onclose={() => (addDialogOpen = false)} onChanged={refreshData} />
+    <ProblemsDialog
+      open={problemsDialogOpen}
+      onclose={() => (problemsDialogOpen = false)}
+      onChanged={refreshData}
+    />
   </div>
 {/if}
 

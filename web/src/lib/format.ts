@@ -77,3 +77,22 @@ export function formatFullTime(seconds: number): string {
 export function isoTime(seconds: number): string {
   return toDate(seconds).toISOString();
 }
+
+const RELATIVE_FMT = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+/**
+ * Unix seconds → a relative phrase ("3 hours ago", "yesterday").
+ *
+ * The API uses `0` for "has not happened" (no error recorded, never refreshed), and rendering that
+ * as "56 years ago" would be a joke, so zero gets its own word.
+ */
+export function formatRelativeTime(seconds: number): string {
+  if (seconds <= 0) return 'never';
+  const delta = seconds - Date.now() / 1000; // negative for past events
+  const abs = Math.abs(delta);
+  if (abs < 90) return RELATIVE_FMT.format(Math.round(delta), 'second');
+  if (abs < 5400) return RELATIVE_FMT.format(Math.round(delta / 60), 'minute');
+  if (abs < 79200) return RELATIVE_FMT.format(Math.round(delta / 3600), 'hour');
+  if (abs < 2592000) return RELATIVE_FMT.format(Math.round(delta / 86400), 'day');
+  return RELATIVE_FMT.format(Math.round(delta / 2592000), 'month');
+}

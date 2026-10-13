@@ -184,6 +184,101 @@ export interface SessionInfo {
   current: boolean;
 }
 
+// --- feed discovery ----------------------------------------------------------
+
+/**
+ * Where a discovered candidate came from.
+ *
+ * `given` is the address the user typed; `link`/`anchor`/`area` are feeds the page *declared*
+ * (`<link rel="alternate">` and friends); the `*_extension` and `*_body` sources are guesses —
+ * URLs that merely look like feeds, found next to the page or in its text — and the UI says so.
+ */
+export type CandidateSource =
+  | 'given'
+  | 'link'
+  | 'anchor'
+  | 'area'
+  | 'local_extension'
+  | 'local_body'
+  | 'remote_extension'
+  | 'remote_body';
+
+export interface FeedCandidate {
+  url: string;
+  source: CandidateSource;
+  /** False when the address was tried and turned out not to be a feed; `rejected` says why. */
+  verified: boolean;
+  title: string | null;
+  website: string | null;
+  description: string | null;
+  icon: string | null;
+  item_count: number | null;
+  format: string | null;
+  /** The rejection reason, or null for a candidate that is a feed. */
+  rejected: string | null;
+}
+
+export interface DiscoverResult {
+  /** True when the given address is itself a feed; the lone `given` candidate is the answer. */
+  is_feed: boolean;
+  url: string;
+  candidates: FeedCandidate[];
+}
+
+// --- problems ------------------------------------------------------------------
+
+/** A feed that needs attention: its last check failed, or the reader deliberately muted it. */
+export interface ProblemFeed {
+  id: string;
+  name: string;
+  url: string;
+  /** Unix seconds of the last failed check; 0 means no error. */
+  error: number;
+  muted: boolean;
+  /** Unix seconds of the last successful refresh; 0 means never. */
+  last_update: number;
+  unread: number;
+  total: number;
+}
+
+// --- refresh -------------------------------------------------------------------
+
+export type FeedRefreshStatus = 'fetched' | 'unchanged' | 'not_modified' | 'muted' | 'failed';
+
+/** The outcome of refreshing one feed. `message` is present when `status` is `failed`. */
+export interface FeedRefreshResult {
+  new_entries: number;
+  updated_entries: number;
+  unchanged: number;
+  status: FeedRefreshStatus;
+  message?: string;
+}
+
+export interface RefreshJobError {
+  feed_id: string;
+  name: string;
+  message: string;
+  http_status: number | null;
+}
+
+export interface RefreshJob {
+  state: 'running' | 'done' | 'failed';
+  feeds_done: number;
+  new_entries: number;
+  updated_entries: number;
+  errors: RefreshJobError[];
+  /** Unix seconds, or null while the job is still running. */
+  finished_at: number | null;
+}
+
+/** The startup probe: is a job already running server-side (e.g. across a page reload)? */
+export interface RefreshStatus {
+  running: boolean;
+  job_id: string | null;
+  feeds_done: number;
+  new_entries: number;
+}
+
 // --- entries ----------------------------------------------------------------
 
 export interface LabelRef {
@@ -343,6 +438,11 @@ export const api = {
 
   feeds: () => request<FeedNode[]>('/feeds'),
 
+  /** Probes an address and reports what feeds it yields, without subscribing to anything. */
+  discoverFeeds: (url: string) =>
+    request<DiscoverResult>('/feeds/discover', { method: 'POST', body: { url } }),
+
+  /** Subscribes, and eagerly fetches the feed: `new_entries` is what arrived right now. */
   createFeed: (body: {
     url: string;
     name?: string;
@@ -350,7 +450,7 @@ export const api = {
     priority?: number;
     ttl?: number;
     muted?: boolean;
-  }) => request<FeedNode>('/feeds', { method: 'POST', body }),
+  }) => request<{ feed: FeedNode; new_entries: number }>('/feeds', { method: 'POST', body }),
 
   updateFeed: (
     id: string,
@@ -374,6 +474,22 @@ export const api = {
 
   truncateFeed: (id: string) =>
     request<{ deleted: number }>(`/feeds/${id}/entries`, { method: 'DELETE' }),
+
+  /** Fetches one feed right now, out of band from the full refresh job. */
+  refreshFeed: (id: string) =>
+    request<FeedRefreshResult>(`/feeds/${encodeURIComponent(id)}/refresh`, { method: 'POST' }),
+
+  // --- problems and refresh jobs ---
+
+  problems: () => request<{ count: number; feeds: ProblemFeed[] }>('/problems'),
+
+  /** Enqueues a refresh of everything and returns immediately; poll `refreshJob` for progress. */
+  startRefresh: () => request<{ job_id: string }>('/refresh', { method: 'POST', body: {} }),
+
+  refreshJob: (jobId: string) => request<RefreshJob>(`/refresh/${encodeURIComponent(jobId)}`),
+
+  /** The once-at-startup probe used to resume the spinner after a page reload mid-job. */
+  refreshStatus: () => request<RefreshStatus>('/refresh/status'),
 
   // --- entries ---
 

@@ -655,8 +655,8 @@ html[data-rd-nav='kapali'] .rd-nav-dock i.ri-sidebar-unfold-line {
   display: inline;
 }
 
-/* Refresh spins while a job is running. */
-.rd-icon-btn .ri-refresh-line.is-spinning {
+/* Refresh spins while a job is running — in the top bar and on per-feed retry buttons. */
+.ri-refresh-line.is-spinning {
   animation: rd-spin 900ms linear infinite;
 }
 
@@ -1819,6 +1819,16 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* The per-row retry sits under the details, with the outcome line between when present. */
+.rd-problems li .rd-btn {
+  margin-top: 0.5rem;
+}
+
+.rd-problems li .rd-hint,
+.rd-problems li .rd-field-error {
+  margin-top: 0.45rem;
+}
+
 .rd-problems-text summary {
   cursor: pointer;
   color: var(--fd-muted);
@@ -1864,6 +1874,21 @@ kbd {
 .rd-pack-desc {
   color: var(--fd-muted);
   font-size: 0.78rem;
+}
+
+/* Discovery candidate card: name over address over provenance, stacked inside the flex card. */
+.rd-pack-body {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Rejected candidates stay visible — "we tried these and none was a feed" is the answer — but
+   read as inert rather than selectable. */
+.rd-pack[disabled] {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .rd-field-row {
