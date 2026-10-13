@@ -56,6 +56,8 @@
   let authPass = $state('');
   /** Set by the explicit "clear credentials" button, because an empty form field means "keep". */
   let clearAuth = $state(false);
+  /** Second press of the remove button deletes; cancelled by anything that closes or reloads. */
+  let confirmRemove = $state(false);
   let rules = $state<RuleRow[]>([]);
   /** False when the rules could not be loaded; saving must then not PUT them. */
   let filtersLoaded = $state(false);
@@ -121,6 +123,7 @@
     authUser = '';
     authPass = '';
     clearAuth = false;
+    confirmRemove = false;
     rules = [];
     filtersLoaded = false;
     filtersOriginal = '';
@@ -230,6 +233,35 @@
 
   function handleCancel(): void {
     onclose();
+  }
+
+  /**
+   * Unsubscribes, in two steps: the first press arms the button, the second deletes.
+   *
+   * A `confirm()` dialog would work too, but the reader's other destructive actions confirm in
+   * place, and a native modal inside a `<dialog>` stacks two modals the browser has to untangle.
+   * The articles go with the subscription — that is what unsubscribing means — so the sidebar and
+   * the list both reload afterwards.
+   */
+  async function removeFeed(): Promise<void> {
+    if (!feed) return;
+    if (!confirmRemove) {
+      confirmRemove = true;
+      return;
+    }
+    const id = feed.id;
+    const gone = feed.name;
+    busy = true;
+    try {
+      await api.deleteFeed(id);
+      notify(tf('feed.removed', { name: gone }));
+      onclose();
+      await onChanged();
+    } catch (err) {
+      formError = err instanceof ApiError ? err.message : t('feed.removeError');
+    } finally {
+      busy = false;
+    }
   }
 </script>
 
@@ -406,6 +438,20 @@
     {#if formError}
       <p class="rd-field-error" role="alert">{formError}</p>
     {/if}
+
+    <div class="rd-feed-remove">
+      {#if confirmRemove}
+        <p class="rd-field-error" role="alert">{tf('feed.removeConfirm', { name: feed?.name ?? '' })}</p>
+      {/if}
+      <button
+        class="rd-btn rd-btn--danger"
+        type="button"
+        disabled={busy || loading}
+        onclick={() => void removeFeed()}
+      >
+        {confirmRemove ? t('feed.removeSure') : t('feed.remove')}
+      </button>
+    </div>
 
     <div class="rd-dialog-actions">
       <button class="rd-btn rd-btn--quiet" type="button" disabled={busy} onclick={handleCancel}>

@@ -154,6 +154,11 @@ const en: Record<string, string> = {
   'feed.authHint':
     'Stored credentials are never sent back. Fill in both fields to set new ones; saving with both empty keeps what is stored.',
   'feed.clearAuth': 'Clear credentials',
+  'feed.remove': 'Remove subscription',
+  'feed.removeSure': 'Press again to remove it and its articles',
+  'feed.removeConfirm': 'Removing “{name}” deletes its articles from your reader.',
+  'feed.removed': 'Removed {name}.',
+  'feed.removeError': 'Could not remove the subscription',
   'feed.filters': 'Filter rules',
   'feed.filtersHint': 'Each rule runs a search over new articles and applies its actions.',
   'feed.ruleSearch': 'Search, e.g. intitle:sponsored',
@@ -355,6 +360,11 @@ const tr: Record<string, string> = {
   'feed.authHint':
     'Saklı kimlik bilgileri asla geri gönderilmez. Yenilerini ayarlamak için iki alanı da doldurun; ikisi boş kaydedilirse saklı değerler korunur.',
   'feed.clearAuth': 'Kimlik bilgilerini sil',
+  'feed.remove': 'Aboneliği kaldır',
+  'feed.removeSure': 'Kaldırmak için tekrar basın',
+  'feed.removeConfirm': '“{name}” kaldırılırsa makaleleri de okuyucunuzdan silinir.',
+  'feed.removed': '{name} kaldırıldı.',
+  'feed.removeError': 'Abonelik kaldırılamadı',
   'feed.filters': 'Filtre kuralları',
   'feed.filtersHint': 'Her kural yeni makalelerde bir arama çalıştırır ve eylemlerini uygular.',
   'feed.ruleSearch': 'Arama, örn. intitle:sponsored',

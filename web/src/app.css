@@ -1764,6 +1764,21 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   border-top: 1px solid var(--fd-line);
 }
 
+/* The destructive action sits apart from the save/cancel pair, at the opposite end, so arming it
+   cannot be mistaken for submitting the form. */
+.rd-feed-remove {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--fd-line);
+}
+
+.rd-feed-remove .rd-field-error {
+  margin: 0;
+}
+
 .rd-dialog-actions .rd-btn--quiet {
   margin-right: auto;
 }
