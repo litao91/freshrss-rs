@@ -141,7 +141,12 @@ async fn complete_one(
         force_https_domains: sanitize.force_https_domains.clone(),
         max_length: sanitize.max_length,
     };
-    let extracted = match fulltext::extract(&page.text, selector, filter.unwrap_or(""), &options) {
+    let extracted = match fulltext::extract(
+        &page.text,
+        std::slice::from_ref(&selector),
+        filter.unwrap_or(""),
+        &options,
+    ) {
         Ok(extracted) => extracted,
         Err(err) => {
             tracing::warn!(
@@ -299,26 +304,24 @@ pub async fn on_demand(
         force_https_domains: sanitize.force_https_domains.clone(),
         max_length: sanitize.max_length,
     };
-    for candidate in candidates {
-        let extracted =
-            match fulltext::extract(&page.text, candidate, filter.unwrap_or(""), &options) {
-                Ok(extracted) => extracted,
-                // A selector the caller typed that is not valid CSS is their typo, not a fault.
-                Err(err @ FeedError::BadConfig(_)) if selector.is_some() => {
-                    return Err(crate::error::validation(err.to_string()))
-                }
-                Err(err) => return Err(err.into()),
-            };
-        if extracted.matched > 0 && !extracted.html.is_empty() {
-            return Ok(Some(OnDemand {
-                html: extracted.html,
-                matched: extracted.matched,
-                url: page.url,
-                selector: candidate.to_owned(),
-            }));
+    let extracted = match fulltext::extract(&page.text, &candidates, filter.unwrap_or(""), &options)
+    {
+        Ok(extracted) => extracted,
+        // A selector the caller typed that is not valid CSS is their typo, not a fault.
+        Err(err @ FeedError::BadConfig(_)) if selector.is_some() => {
+            return Err(crate::error::validation(err.to_string()))
         }
+        Err(err) => return Err(err.into()),
+    };
+    if extracted.matched == 0 || extracted.html.is_empty() {
+        return Ok(None);
     }
-    Ok(None)
+    Ok(Some(OnDemand {
+        html: extracted.html,
+        matched: extracted.matched,
+        url: page.url,
+        selector: extracted.selector,
+    }))
 }
 
 /// Applies the scraped body according to the feed's `content_action`.

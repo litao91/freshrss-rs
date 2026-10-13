@@ -46,12 +46,39 @@ pub struct Extracted {
     /// logs them differently: zero matches is a selector that has gone stale, while matches that
     /// produced nothing is a filter that was too broad.
     pub matched: usize,
+    /// The selector that produced [`Extracted::html`], when several were offered.
+    pub selector: String,
+}
+
+/// How article-like one element is: the volume of visible text, discounted by the share of it that
+/// lives inside links.
+///
+/// Teaser cards, nav blocks and "more from us" grids are short and mostly anchors; a story body is
+/// long and mostly prose. Choosing the highest-scoring candidate is what keeps a page whose
+/// sidebar is built out of `<article>` cards — a common WordPress theme shape — from having those
+/// cards returned as the article.
+fn article_score(element: &ElementRef<'_>, anchors: &Selector) -> f64 {
+    let text: String = element.text().collect();
+    let chars = text.chars().count();
+    if chars == 0 {
+        return 0.0;
+    }
+    let linked: usize = element
+        .select(anchors)
+        .map(|a| a.text().collect::<String>().chars().count())
+        .sum();
+    let density = (linked as f64 / chars as f64).min(1.0);
+    chars as f64 * (1.0 - density)
 }
 
 /// Extracts an article body from a fetched page.
 ///
-/// `selector` is the feed's `pathEntries` and `filter` its `path_entries_filter`, either of which may
-/// be empty. The result is already sanitized against `options`, so the caller stores it as-is.
+/// `selectors` are the candidates in priority order — one configured `pathEntries`, or the
+/// conventional container elements — and `filter` is `path_entries_filter`. With a single candidate
+/// the first match wins as configured; with several, each is scored and the most article-like wins,
+/// because "the first selector that matches anything" returns a sidebar of teaser cards on any page
+/// whose theme builds them from `<article>`. Ties keep the earlier selector. The result is already
+/// sanitized against `options`, so the caller stores it as-is.
 ///
 /// # Errors
 ///
@@ -60,32 +87,56 @@ pub struct Extracted {
 /// has no article on it.
 pub fn extract(
     page: &str,
-    selector: &str,
+    selectors: &[&str],
     filter: &str,
     options: &SanitizeOptions,
 ) -> Result<Extracted, FeedError> {
-    let selector = trim_selector(selector);
-    if selector.is_empty() {
+    let parsed: Vec<(&str, Selector)> = selectors
+        .iter()
+        .map(|s| trim_selector(s))
+        .filter(|s| !s.is_empty())
+        .map(|s| Ok((s, parse_selector(s)?)))
+        .collect::<Result<_, FeedError>>()?;
+    if parsed.is_empty() {
         return Ok(Extracted::default());
     }
-    let selector = parse_selector(selector)?;
 
     let filter = trim_selector(filter);
     let filter_selector = (!filter.is_empty())
         .then(|| parse_selector(filter))
         .transpose()?;
 
-    let mut document = Html::parse_document(page);
-    let matched: Vec<_> = document
-        .select(&selector)
-        .map(|element| element.id())
-        .collect();
-    if matched.is_empty() {
-        return Ok(Extracted::default());
+    let document = Html::parse_document(page);
+    static ANCHORS: LazyLock<Selector> =
+        LazyLock::new(|| Selector::parse("a").expect("`a` is a valid selector"));
+
+    // Score every candidate against the one parse, then serialize only the winner: scoring is cheap
+    // text accounting, while serializing and sanitizing a whole page section is not.
+    let mut best: Option<(f64, &str, Vec<_>)> = None;
+    for (name, selector) in &parsed {
+        let matched: Vec<_> = document
+            .select(selector)
+            .map(|element| (element.id(), article_score(&element, &ANCHORS)))
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        let score = matched.iter().map(|(_, s)| s).sum();
+        let ids: Vec<_> = matched.into_iter().map(|(id, _)| id).collect();
+        let better = best
+            .as_ref()
+            .is_none_or(|(best_score, _, _)| score > *best_score);
+        if better {
+            best = Some((score, name, ids));
+        }
     }
+    let Some((_, selector_name, matched)) = best else {
+        return Ok(Extracted::default());
+    };
 
     // Node ids rather than element references, collected before anything is mutated: an
     // `ElementRef` borrows the whole document, and removing a node needs it mutably.
+    let mut document = document;
     let mut dropped = HashSet::new();
     if let Some(filter) = &filter_selector {
         let mut doomed = Vec::new();
@@ -127,6 +178,7 @@ pub fn extract(
     Ok(Extracted {
         html: html.trim().to_owned(),
         matched: matched.len(),
+        selector: selector_name.to_owned(),
     })
 }
 
@@ -287,7 +339,7 @@ mod tests {
 
     #[test]
     fn extracts_the_selected_element() {
-        let extracted = extract(PAGE, "article.post", "", &options()).unwrap();
+        let extracted = extract(PAGE, &["article.post"], "", &options()).unwrap();
         assert_eq!(extracted.matched, 1);
         assert!(
             extracted.html.contains("The first paragraph."),
@@ -306,7 +358,7 @@ mod tests {
 
     #[test]
     fn several_matches_are_concatenated() {
-        let extracted = extract(PAGE, "article.post p", "", &options()).unwrap();
+        let extracted = extract(PAGE, &["article.post p"], "", &options()).unwrap();
         assert_eq!(extracted.matched, 2);
         let first = extracted.html.find("first paragraph").expect("first");
         let second = extracted.html.find("second paragraph").expect("second");
@@ -315,7 +367,7 @@ mod tests {
 
     #[test]
     fn the_filter_strips_boilerplate_from_inside_the_article() {
-        let extracted = extract(PAGE, "article.post", ".share, .related", &options()).unwrap();
+        let extracted = extract(PAGE, &["article.post"], ".share, .related", &options()).unwrap();
         assert_eq!(extracted.matched, 1);
         assert!(
             extracted.html.contains("first paragraph"),
@@ -332,32 +384,32 @@ mod tests {
 
     #[test]
     fn a_selector_that_matches_only_the_filter_yields_nothing_but_still_reports_the_match() {
-        let extracted = extract(PAGE, ".share", ".share", &options()).unwrap();
+        let extracted = extract(PAGE, &[".share"], ".share", &options()).unwrap();
         assert_eq!(extracted.matched, 1, "the selector did match");
         assert!(extracted.html.is_empty(), "{}", extracted.html);
     }
 
     #[test]
     fn a_selector_that_matches_nothing_is_reported_as_zero() {
-        let extracted = extract(PAGE, "#does-not-exist", "", &options()).unwrap();
+        let extracted = extract(PAGE, &["#does-not-exist"], "", &options()).unwrap();
         assert_eq!(extracted, Extracted::default());
     }
 
     #[test]
     fn an_empty_selector_extracts_nothing() {
         assert_eq!(
-            extract(PAGE, "", "", &options()).unwrap(),
+            extract(PAGE, &[""], "", &options()).unwrap(),
             Extracted::default()
         );
         assert_eq!(
-            extract(PAGE, "  , ", "", &options()).unwrap(),
+            extract(PAGE, &["  , "], "", &options()).unwrap(),
             Extracted::default()
         );
     }
 
     #[test]
     fn an_invalid_selector_is_a_configuration_error_not_an_empty_result() {
-        let err = extract(PAGE, "article >>>", "", &options()).unwrap_err();
+        let err = extract(PAGE, &["article >>>"], "", &options()).unwrap_err();
         assert!(matches!(err, FeedError::BadConfig(_)), "{err}");
         assert!(err.to_string().contains("article >>>"), "{err}");
 
@@ -368,9 +420,9 @@ mod tests {
     #[test]
     fn a_trailing_comma_is_tolerated() {
         // PHP trims `, ` off both ends, because a trailing comma makes the whole list invalid.
-        let extracted = extract(PAGE, "article.post,", "", &options()).unwrap();
+        let extracted = extract(PAGE, &["article.post,"], "", &options()).unwrap();
         assert_eq!(extracted.matched, 1);
-        let extracted = extract(PAGE, "article.post", ".share,", &options()).unwrap();
+        let extracted = extract(PAGE, &["article.post"], ".share,", &options()).unwrap();
         assert!(
             !extracted.html.contains("Share this!"),
             "{}",
@@ -381,7 +433,7 @@ mod tests {
     #[test]
     fn the_extraction_is_sanitized() {
         let hostile = r#"<html><body><article><p>Safe</p><script>alert(1)</script><a href="javascript:alert(1)">x</a><img src="/p.png"></article></body></html>"#;
-        let extracted = extract(hostile, "article", "", &options()).unwrap();
+        let extracted = extract(hostile, &["article"], "", &options()).unwrap();
         assert!(!extracted.html.contains("<script"), "{}", extracted.html);
         assert!(
             !extracted.html.contains("javascript:"),
@@ -400,7 +452,7 @@ mod tests {
         // The second pass exists because sanitizing rewrites markup, so a selector can match the
         // output that did not match the input. `.keep` survives sanitizing and is then removed.
         let page = r#"<html><body><article><p>Body</p><span class="keep">boilerplate</span></article></body></html>"#;
-        let extracted = extract(page, "article", "span", &options()).unwrap();
+        let extracted = extract(page, &["article"], "span", &options()).unwrap();
         assert!(extracted.html.contains("Body"), "{}", extracted.html);
         assert!(
             !extracted.html.contains("boilerplate"),
@@ -527,7 +579,7 @@ mod tests {
         // html5ever rather than an XML parser, because an article page is written by a CMS and not by
         // a machine that cares about well-formedness.
         let page = "<html><body><article><p>Unclosed<p>Also unclosed</article>";
-        let extracted = extract(page, "article", "", &options()).unwrap();
+        let extracted = extract(page, &["article"], "", &options()).unwrap();
         assert_eq!(extracted.matched, 1);
         assert!(extracted.html.contains("Unclosed"), "{}", extracted.html);
         assert!(
@@ -535,5 +587,46 @@ mod tests {
             "{}",
             extracted.html
         );
+    }
+
+    #[test]
+    fn a_sidebar_of_article_cards_loses_to_the_story_body() {
+        // A WordPress theme shape seen in the wild: the sidebar is built out of <article> teaser
+        // cards that are almost entirely links, while the body sits in <main>. First-match-wins
+        // returned the cards as "the article".
+        let page = r#"<html><body>
+          <aside>
+            <article class="card"><a href="/a"><img src="/a.jpg"><span>Teaser one</span></a></article>
+            <article class="card"><a href="/b"><img src="/b.jpg"><span>Teaser two</span></a></article>
+            <article class="card"><a href="/c"><img src="/c.jpg"><span>Teaser three</span></a></article>
+          </aside>
+          <main>
+            <p>Paragraph one of the actual story, long enough to outweigh the cards, and then some
+               more prose to make the point: the body is mostly text and only lightly linked, see
+               <a href="/x">this one reference</a> and nothing else.</p>
+            <p>Paragraph two continues the story with further sentences of ordinary prose.</p>
+          </main>
+        </body></html>"#;
+        let extracted = extract(page, &["article", "main"], "", &options()).unwrap();
+        assert_eq!(extracted.selector, "main", "{:?}", extracted.html);
+        assert!(
+            extracted.html.contains("Paragraph one"),
+            "{}",
+            extracted.html
+        );
+        assert!(!extracted.html.contains("Teaser one"), "{}", extracted.html);
+    }
+
+    #[test]
+    fn a_configured_selector_is_not_second_guessed() {
+        // An operator who points pathEntries at the cards gets the cards: scoring only ranks the
+        // conventional defaults, it does not overrule an explicit choice.
+        let page = r#"<html><body>
+          <article class="card"><a href="/a"><span>Teaser one</span></a></article>
+          <main><p>A long paragraph of prose that would outscore the card if it were asked.</p></main>
+        </body></html>"#;
+        let extracted = extract(page, &["article.card"], "", &options()).unwrap();
+        assert_eq!(extracted.selector, "article.card");
+        assert!(extracted.html.contains("Teaser one"), "{}", extracted.html);
     }
 }
