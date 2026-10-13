@@ -279,7 +279,7 @@ mod tests {
             "blank means unset"
         );
         assert!(User::validate_email(Some("a@b.co")).is_ok());
-        assert!(User::validate_email(Some("litao912002@hotmail.com")).is_ok());
+        assert!(User::validate_email(Some("reader@example.com")).is_ok());
         assert!(User::validate_email(Some("no-at-sign")).is_err());
         assert!(User::validate_email(Some("@b.co")).is_err());
         assert!(User::validate_email(Some("a@")).is_err());
@@ -306,9 +306,9 @@ mod tests {
         };
         assert_eq!(user.initial(), "A");
 
-        let mut litao = user.clone();
-        litao.username = "litao9120021062".into();
-        assert_eq!(litao.initial(), "L");
+        let mut lowercase = user.clone();
+        lowercase.username = "bobthebuilder".into();
+        assert_eq!(lowercase.initial(), "B");
 
         let mut numeric = user.clone();
         numeric.username = "9lives".into();

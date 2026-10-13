@@ -262,7 +262,7 @@ mod tests {
     fn display_initial_matches_the_account_menu_avatar() {
         let user = CurrentUser {
             id: 1,
-            username: "litao9120021062".into(),
+            username: "lovelace".into(),
             email: None,
             is_admin: false,
             created_at: 0,
