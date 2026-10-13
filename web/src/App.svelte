@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { CategoryNode, FeedNode } from './lib/api';
+  import { t } from './lib/i18n';
   import { initPrefs, setNavOpen, toggleFocus, toggleNav } from './lib/prefs.svelte';
   import { bootstrap, isSignedIn, refreshTree, session, tree } from './lib/session.svelte';
   import { notifyError } from './lib/toast.svelte';
@@ -13,10 +14,15 @@
   import Toast from './components/Toast.svelte';
   import TopBar from './components/TopBar.svelte';
   import AddDialog from './components/dialogs/AddDialog.svelte';
+  import FeedDialog from './components/dialogs/FeedDialog.svelte';
   import FolderDialog from './components/dialogs/FolderDialog.svelte';
+  import HelpDialog from './components/dialogs/HelpDialog.svelte';
+  import ImportDialog from './components/dialogs/ImportDialog.svelte';
+  import MarkAllDialog from './components/dialogs/MarkAllDialog.svelte';
+  import PackagesDialog from './components/dialogs/PackagesDialog.svelte';
   import ProblemsDialog from './components/dialogs/ProblemsDialog.svelte';
 
-  import { entries, loadMore, markAllRead, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
+  import { entries, loadMore, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
   import { find as findShortcut } from './lib/keys';
   import { nudgeSize } from './lib/prefs.svelte';
   import { refreshJob, resumeRefresh, startRefresh, stopPolling } from './lib/refresh.svelte';
@@ -25,8 +31,14 @@
 
   // `undefined` means closed; `null` means "create a new folder".
   let folderDialog = $state<CategoryNode | null | undefined>(undefined);
+  /** `undefined` means closed; a feed node opens `#rd-feed-dialog` for it. */
+  let feedDialog = $state<FeedNode | undefined>(undefined);
   let addDialogOpen = $state(false);
   let problemsDialogOpen = $state(false);
+  let helpDialogOpen = $state(false);
+  let markAllDialogOpen = $state(false);
+  let importDialogOpen = $state(false);
+  let packagesDialogOpen = $state(false);
 
   let topBar: TopBar | undefined = $state();
   let entryList: EntryList | undefined = $state();
@@ -176,7 +188,9 @@
         toggleReadFilter();
         break;
       case 'a':
-        void markAllRead().then(() => refreshTree().catch(() => undefined));
+        // Confirmation first: the action marks every article the filters select read server-side,
+        // not just the loaded pages, and the dialog is what shows the scope and the count.
+        markAllDialogOpen = true;
         break;
       case 'r':
         onRefresh();
@@ -197,7 +211,7 @@
         topBar?.focusSearch();
         break;
       case '?':
-        // The shortcuts dialog arrives in a later stage.
+        helpDialogOpen = true;
         break;
       default:
         break;
@@ -233,7 +247,7 @@
       await refreshTree();
       syncScopeFromUrl();
     } catch (err) {
-      notifyError(err instanceof Error ? err.message : 'Could not reload subscriptions');
+      notifyError(err instanceof Error ? err.message : t('app.couldNotReload'));
     }
   }
 
@@ -245,7 +259,7 @@
     try {
       await refreshTree();
     } catch (err) {
-      notifyError(err instanceof Error ? err.message : 'Could not reload subscriptions');
+      notifyError(err instanceof Error ? err.message : t('app.couldNotReload'));
     }
     await reloadEntries();
   }
@@ -273,7 +287,7 @@
 {#if session.loading}
   <div class="rd-auth">
     <div class="rd-auth-card">
-      <div class="rd-auth-brand"><span>Loading…</span></div>
+      <div class="rd-auth-brand"><span>{t('common.loading')}</span></div>
     </div>
   </div>
 {:else if !isSignedIn()}
@@ -285,7 +299,7 @@
       bind:search
       onSearch={onSearchSubmit}
       onRefresh={onRefresh}
-      onShowShortcuts={() => {}}
+      onShowShortcuts={() => (helpDialogOpen = true)}
       refreshing={refreshJob.running}
     />
 
@@ -293,7 +307,9 @@
       onAddSubscription={() => (addDialogOpen = true)}
       onShowProblems={() => (problemsDialogOpen = true)}
       onManageFolder={(folder) => (folderDialog = folder)}
-      onManageFeed={() => notifyError('Feed settings arrive with the refresh pipeline.')}
+      onManageFeed={(feed) => (feedDialog = feed)}
+      onShowPackages={() => (packagesDialogOpen = true)}
+      onImportOpml={() => (importDialogOpen = true)}
     />
 
     <div class="rd-scrim" role="presentation" onclick={() => setNavOpen(false)}></div>
@@ -305,6 +321,7 @@
         highlighted = id;
         selectEntry(id);
       }}
+      onMarkAll={() => (markAllDialogOpen = true)}
     />
 
     {#if view.selectedEntryId}
@@ -320,10 +337,23 @@
     {/if}
 
     <FolderDialog folder={folderDialog} onclose={() => (folderDialog = undefined)} onChanged={reload} />
+    <FeedDialog feed={feedDialog} onclose={() => (feedDialog = undefined)} onChanged={refreshData} />
     <AddDialog open={addDialogOpen} onclose={() => (addDialogOpen = false)} onChanged={refreshData} />
     <ProblemsDialog
       open={problemsDialogOpen}
       onclose={() => (problemsDialogOpen = false)}
+      onChanged={refreshData}
+    />
+    <HelpDialog open={helpDialogOpen} onclose={() => (helpDialogOpen = false)} />
+    <MarkAllDialog open={markAllDialogOpen} onclose={() => (markAllDialogOpen = false)} />
+    <ImportDialog
+      open={importDialogOpen}
+      onclose={() => (importDialogOpen = false)}
+      onChanged={refreshData}
+    />
+    <PackagesDialog
+      open={packagesDialogOpen}
+      onclose={() => (packagesDialogOpen = false)}
       onChanged={refreshData}
     />
   </div>

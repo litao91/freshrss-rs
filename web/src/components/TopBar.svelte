@@ -1,12 +1,14 @@
 <script lang="ts">
+  import { LANGUAGES, t } from '../lib/i18n';
   import {
     MAX_SIZE,
     MIN_SIZE,
-    THEME_LABELS,
     nudgeSize,
     prefs,
     setDensity,
+    setLanguage,
     setTheme,
+    toggleFocus,
     toggleNav,
     type Density,
     type ThemeName,
@@ -30,17 +32,19 @@
   let displayMenu: HTMLDetailsElement | undefined = $state();
   let accountMenu: HTMLDetailsElement | undefined = $state();
 
-  const themeOptions: { value: ThemePref; label: string }[] = [
-    { value: 'kagit', label: THEME_LABELS.kagit },
-    { value: 'sepya', label: THEME_LABELS.sepya },
-    { value: 'gece', label: THEME_LABELS.gece },
-    { value: 'auto', label: 'Auto' },
-  ];
+  // Derived rather than plain constants: the labels go through `t()`, so they have to re-render
+  // when the language changes.
+  const themeOptions = $derived.by<{ value: ThemePref; label: string }[]>(() => [
+    { value: 'kagit', label: t('theme.kagit') },
+    { value: 'sepya', label: t('theme.sepya') },
+    { value: 'gece', label: t('theme.gece') },
+    { value: 'auto', label: t('theme.auto') },
+  ]);
 
-  const densities: { value: Density; label: string }[] = [
-    { value: 'rahat', label: 'Comfortable' },
-    { value: 'sikisik', label: 'Compact' },
-  ];
+  const densities = $derived.by<{ value: Density; label: string }[]>(() => [
+    { value: 'rahat', label: t('topbar.comfortable') },
+    { value: 'sikisik', label: t('topbar.compact') },
+  ]);
 
   /** Exposed so the `/` shortcut can focus the box. */
   export function focusSearch(): void {
@@ -71,11 +75,11 @@
     type="button"
     aria-expanded={prefs.navOpen}
     aria-controls="rd-nav"
-    title="Menu"
+    title={t('topbar.menu')}
     onclick={() => toggleNav()}
   >
     <i class="ri-menu-line" aria-hidden="true"></i>
-    <span class="rd-sr">Menu</span>
+    <span class="rd-sr">{t('topbar.menu')}</span>
   </button>
 
   <button
@@ -84,12 +88,12 @@
     data-rd-nav-dock
     aria-expanded={prefs.navOpen}
     aria-controls="rd-nav"
-    title="Subscriptions panel (b)"
+    title="{t('topbar.subscriptionsPanel')} (b)"
     onclick={() => toggleNav()}
   >
     <i class="ri-sidebar-fold-line" aria-hidden="true"></i>
     <i class="ri-sidebar-unfold-line" aria-hidden="true"></i>
-    <span class="rd-sr">Subscriptions panel</span>
+    <span class="rd-sr">{t('topbar.subscriptionsPanel')}</span>
   </button>
 
   <a class="rd-brand" href="/">
@@ -106,12 +110,12 @@
   </a>
 
   <form class="rd-search" role="search" onsubmit={submitSearch}>
-    <label class="rd-sr" for="rd-search">Search articles</label>
+    <label class="rd-sr" for="rd-search">{t('topbar.search')}</label>
     <i class="ri-search-line" aria-hidden="true"></i>
     <input
       id="rd-search"
       type="search"
-      placeholder="Search articles"
+      placeholder={t('topbar.search')}
       autocomplete="off"
       spellcheck="false"
       bind:this={searchEl}
@@ -123,7 +127,7 @@
     <button
       class="rd-icon-btn"
       type="button"
-      title="Refresh (r)"
+      title="{t('topbar.refresh')} (r)"
       disabled={refreshing}
       onclick={() => {
         onRefresh();
@@ -131,16 +135,16 @@
       }}
     >
       <i class="ri-refresh-line" class:is-spinning={refreshing} aria-hidden="true"></i>
-      <span class="rd-sr">Refresh</span>
+      <span class="rd-sr">{t('topbar.refresh')}</span>
     </button>
 
     <details class="rd-menu" bind:this={displayMenu}>
-      <summary class="rd-icon-btn" title="Display">
+      <summary class="rd-icon-btn" title={t('topbar.display')}>
         <i class="ri-font-size-2" aria-hidden="true"></i>
-        <span class="rd-sr">Display</span>
+        <span class="rd-sr">{t('topbar.display')}</span>
       </summary>
       <div class="rd-menu-panel rd-display">
-        <p class="rd-menu-label" id="rd-theme-label">Appearance</p>
+        <p class="rd-menu-label" id="rd-theme-label">{t('topbar.appearance')}</p>
         <div class="rd-themes" role="group" aria-labelledby="rd-theme-label">
           {#each themeOptions as option (option.value)}
             <button
@@ -163,32 +167,32 @@
           {/each}
         </div>
 
-        <p class="rd-menu-label" id="rd-size-label">Text size</p>
+        <p class="rd-menu-label" id="rd-size-label">{t('topbar.textSize')}</p>
         <div class="rd-stepper" role="group" aria-labelledby="rd-size-label">
           <button
             class="rd-icon-btn"
             type="button"
-            title="Smaller text (-)"
+            title="{t('topbar.smallerText')} (-)"
             disabled={prefs.size <= MIN_SIZE}
             onclick={() => nudgeSize(-1)}
           >
             <i class="ri-subtract-line" aria-hidden="true"></i>
-            <span class="rd-sr">Smaller text</span>
+            <span class="rd-sr">{t('topbar.smallerText')}</span>
           </button>
           <output class="rd-stepper-value" for="rd-search">{prefs.size}</output>
           <button
             class="rd-icon-btn"
             type="button"
-            title="Larger text (+)"
+            title="{t('topbar.largerText')} (+)"
             disabled={prefs.size >= MAX_SIZE}
             onclick={() => nudgeSize(1)}
           >
             <i class="ri-add-line" aria-hidden="true"></i>
-            <span class="rd-sr">Larger text</span>
+            <span class="rd-sr">{t('topbar.largerText')}</span>
           </button>
         </div>
 
-        <p class="rd-menu-label" id="rd-density-label">List density</p>
+        <p class="rd-menu-label" id="rd-density-label">{t('topbar.density')}</p>
         <div class="rd-segment" role="group" aria-labelledby="rd-density-label">
           {#each densities as option (option.value)}
             <button
@@ -202,29 +206,64 @@
           {/each}
         </div>
 
-        <label class="rd-menu-label" for="rd-lang">Language</label>
-        <select id="rd-lang" class="rd-input" data-feeddi-lang value={session.config?.language ?? 'en'}>
-          <option value="en" lang="en">English</option>
+        <p class="rd-menu-label" id="rd-view-label">{t('topbar.focusMode')}</p>
+        <div class="rd-view-toggles" role="group" aria-labelledby="rd-view-label">
+          <!-- Visible controls for the two view states the `f` and `b` shortcuts drive; the top
+               bar's dock button and the reading bar's focus button only cover part of the screen. -->
+          <button
+            class="rd-menu-item"
+            type="button"
+            aria-pressed={prefs.focus}
+            title="{t('topbar.focusMode')} (f)"
+            onclick={() => toggleFocus()}
+          >
+            <i class={prefs.focus ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'} aria-hidden="true"></i>
+            {t('topbar.focusMode')}
+            <span class="rd-hint">{t('topbar.focusModeHint')}</span>
+          </button>
+          <button
+            class="rd-menu-item"
+            type="button"
+            aria-pressed={prefs.navOpen}
+            title="{t('topbar.subscriptionsPanel')} (b)"
+            onclick={() => toggleNav()}
+          >
+            <i class="ri-layout-left-2-line" aria-hidden="true"></i>
+            {t('topbar.subscriptionsPanel')}
+          </button>
+        </div>
+
+        <label class="rd-menu-label" for="rd-lang">{t('topbar.language')}</label>
+        <select
+          id="rd-lang"
+          class="rd-input"
+          data-feeddi-lang
+          value={prefs.language}
+          onchange={(e) => setLanguage((e.currentTarget.value === 'tr' ? 'tr' : 'en') as 'en' | 'tr')}
+        >
+          {#each LANGUAGES as language (language.value)}
+            <option value={language.value} lang={language.value}>{language.label}</option>
+          {/each}
         </select>
       </div>
     </details>
 
-    <button class="rd-icon-btn rd-hide-touch" type="button" title="Keyboard shortcuts (?)" onclick={onShowShortcuts}>
+    <button class="rd-icon-btn rd-hide-touch" type="button" title="{t('topbar.shortcuts')} (?)" onclick={onShowShortcuts}>
       <i class="ri-keyboard-box-line" aria-hidden="true"></i>
-      <span class="rd-sr">Keyboard shortcuts</span>
+      <span class="rd-sr">{t('topbar.shortcuts')}</span>
     </button>
 
     {#if session.user}
       <details class="rd-menu rd-menu--end" bind:this={accountMenu}>
-        <summary class="rd-avatar" title="Account menu">
+        <summary class="rd-avatar" title={t('topbar.accountMenu')}>
           <span aria-hidden="true">{session.user.initial}</span>
-          <span class="rd-sr">Account menu</span>
+          <span class="rd-sr">{t('topbar.accountMenu')}</span>
         </summary>
         <div class="rd-menu-panel">
           <p class="rd-menu-user">{session.user.username}</p>
           <button class="rd-menu-item" type="button" onclick={handleSignOut}>
             <i class="ri-logout-box-r-line" aria-hidden="true"></i>
-            Sign out
+            {t('topbar.signOut')}
           </button>
         </div>
       </details>

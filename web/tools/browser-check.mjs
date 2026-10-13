@@ -233,6 +233,10 @@ try {
 
   // --- mark all read -----------------------------------------------------
   await page.locator('.rd-list-head button', { hasText: 'Mark all as read' }).click();
+  // The button asks for confirmation first; the dialog names the scope and the count.
+  await page.waitForSelector('#rd-markall-dialog[open]', { timeout: 5000 });
+  check('the mark-all button asks for confirmation', (await page.locator('#rd-markall-title').textContent() ?? '').includes('?'));
+  await page.locator('#rd-markall-dialog button[type="submit"]').click();
   await page.waitForTimeout(1500);
   const unreadLeft = await page.locator('.rd-item.is-unread').count();
   check('mark-all-read clears the unread list', unreadLeft === 0, `${unreadLeft} still unread`);

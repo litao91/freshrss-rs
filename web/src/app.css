@@ -655,8 +655,9 @@ html[data-rd-nav='kapali'] .rd-nav-dock i.ri-sidebar-unfold-line {
   display: inline;
 }
 
-/* Refresh spins while a job is running — in the top bar and on per-feed retry buttons. */
-.ri-refresh-line.is-spinning {
+/* Any icon spins while the action behind it is in flight: the refresh job, a per-feed retry, an
+   on-demand full-text fetch. */
+i.is-spinning {
   animation: rd-spin 900ms linear infinite;
 }
 
@@ -738,6 +739,28 @@ html[data-rd-nav='kapali'] .rd-nav-dock i.ri-sidebar-unfold-line {
 .rd-menu-item i {
   color: var(--fd-muted);
   font-size: 1rem;
+}
+
+/* Focus-mode and sidebar toggles in the display panel: stacked menu rows with a pressed state,
+   so the two view states the `f` and `b` shortcuts drive are visible and reachable by mouse. */
+.rd-view-toggles {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0 0.25rem 0.5rem;
+}
+
+.rd-view-toggles .rd-menu-item[aria-pressed='true'] {
+  background: var(--fd-soft);
+  color: var(--fd-accent);
+}
+
+.rd-view-toggles .rd-menu-item[aria-pressed='true'] i {
+  color: var(--fd-accent);
+}
+
+.rd-view-toggles .rd-hint {
+  margin-left: auto;
+  font-size: 0.72rem;
 }
 
 .rd-menu-user {
@@ -1059,6 +1082,23 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   padding: 0.8rem 0.5rem;
   color: var(--fd-muted);
   font-size: 0.8125rem;
+}
+
+/* The reference reader's bulk-action footer, pinned under the tree: problems, starter packs,
+   import and export. `margin-top: auto` keeps it at the bottom of a short tree and lets it
+   scroll with the content of a long one. */
+.rd-nav-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--fd-line);
+}
+
+.rd-nav-foot .rd-btn {
+  justify-content: flex-start;
+  width: 100%;
 }
 
 /* ==========================================================================
@@ -1698,6 +1738,10 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   flex-direction: column;
   gap: 0.6rem;
   padding: 1.15rem 1.25rem 1.25rem;
+  /* The feed dialog is taller than a short screen; scrolling the body is what keeps its
+     actions reachable instead of clipped by the dialog's own max-height. */
+  max-height: calc(100dvh - 3rem);
+  overflow-y: auto;
 }
 
 .rd-dialog-body h2 {
@@ -1907,6 +1951,69 @@ kbd {
 
 .rd-check input {
   accent-color: var(--fd-accent);
+}
+
+/* --- feed dialog and import report form furniture --- */
+
+/* Pairs of short fields (name/folder, priority/type, ttl/muted) share a row on wide dialogs. */
+.rd-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+@media (max-width: 40rem) {
+  .rd-field-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Bottom-aligns the muted checkbox with the ttl field beside it. */
+.rd-field-row--bottom {
+  align-self: end;
+  padding-bottom: 0.3rem;
+}
+
+/* Keeps quiet buttons their content width inside the flex-column dialog body. */
+.rd-self-start {
+  align-self: flex-start;
+}
+
+.rd-filter-rule {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--fd-line);
+  border-radius: var(--rd-radius-sm);
+  background: var(--fd-bg);
+}
+
+.rd-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.rd-filter-actions .rd-icon-btn {
+  margin-left: auto;
+}
+
+.rd-report {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--fd-line);
+  border-radius: var(--rd-radius-sm);
+  background: var(--fd-bg);
+}
+
+.rd-report-errors {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--fd-danger);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
 }
 
 /* ==========================================================================

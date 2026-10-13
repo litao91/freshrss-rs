@@ -27,13 +27,17 @@ export class ApiError extends Error {
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   body?: unknown;
+  /** A pre-encoded body (the OPML bytes); takes precedence over `body` and is sent as-is. */
+  raw?: BodyInit;
+  /** The `Content-Type` for a `raw` body. */
+  contentType?: string;
   /** Abort signal, for cancelling an in-flight list fetch when the user navigates. */
   signal?: AbortSignal;
   headers?: Record<string, string>;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal, headers } = options;
+  const { method = 'GET', body, raw, contentType, signal, headers } = options;
 
   let res: Response;
   try {
@@ -44,10 +48,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       // cross-origin request would not carry it anyway.
       credentials: 'same-origin',
       headers: {
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        // A raw body carries its own type (or none); a JSON body is always `application/json`.
+        ...(raw !== undefined
+          ? contentType
+            ? { 'Content-Type': contentType }
+            : {}
+          : body !== undefined
+            ? { 'Content-Type': 'application/json' }
+            : {}),
         ...headers,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
     });
   } catch (err) {
     // A network failure is not an ApiError; it has no status and no code.
@@ -225,6 +236,39 @@ export interface DiscoverResult {
   candidates: FeedCandidate[];
 }
 
+// --- feed filter rules -----------------------------------------------------------
+
+/** One of the three actions a filter rule can perform, as the server serializes them. */
+export type FilterActionName = 'read' | 'star' | 'label';
+
+/** One `{search, actions}` rule; both halves are required or the server refuses the rule. */
+export interface FilterRule {
+  search: string;
+  actions: FilterActionName[];
+}
+
+// --- OPML import/export and starter packs ----------------------------------------
+
+/** What one OPML import — or one starter-pack install — did. */
+export interface ImportReport {
+  created_feeds: number;
+  skipped_feeds: number;
+  created_categories: number;
+  /** One line per feed that could not be added. */
+  errors: string[];
+}
+
+/** A subscription starter pack: a themed bundle of feeds that installs into its own folder. */
+export interface Package {
+  slug: string;
+  name: string;
+  description: string;
+  feeds: { url: string; title: string }[];
+}
+
+/** Plain `<a href>` target: the session cookie rides along, so a link is the whole download UI. */
+export const OPML_EXPORT_URL = '/api/v1/export/opml';
+
 // --- problems ------------------------------------------------------------------
 
 /** A feed that needs attention: its last check failed, or the reader deliberately muted it. */
@@ -335,8 +379,19 @@ export interface EntryPage {
 export interface EntryFull extends EntrySummary {
   content_html: string;
   content_text: string;
+  /** The body scraped from the article's own page, once the reader has asked for it. */
+  full_content?: string | null;
   guid: string;
   enclosures: Enclosure[];
+}
+
+/** What an on-demand full-text extraction produced. */
+export interface FulltextResult {
+  content_html: string;
+  matched: number;
+  url: string;
+  selector: string;
+  stored: boolean;
 }
 
 export interface FeedRef {
@@ -457,15 +512,32 @@ export const api = {
     body: {
       name?: string;
       url?: string;
+      /** Folder ids travel as JSON strings; the server's `deserialize_id` accepts both forms. */
       category_id?: string;
       clear_category?: boolean;
       priority?: number;
       ttl?: number;
+      kind?: number;
       muted?: boolean;
       path_entries?: string;
       path_entries_filter?: string;
+      /** Both halves together; an empty username clears the stored credentials. */
+      http_auth?: { username: string; password: string };
     },
   ) => request<FeedNode>(`/feeds/${id}`, { method: 'PUT', body }),
+
+  /** One feed, fresh from the server — what `#rd-feed-dialog` seeds its form from. */
+  feed: (id: string) => request<FeedNode>(`/feeds/${encodeURIComponent(id)}`),
+
+  feedFilters: (id: string) =>
+    request<{ filters: FilterRule[] }>(`/feeds/${encodeURIComponent(id)}/filters`),
+
+  /** Replaces the feed's rules wholesale; each search is parsed server-side and refused if bad. */
+  setFeedFilters: (id: string, filters: FilterRule[]) =>
+    request<{ filters: FilterRule[] }>(`/feeds/${encodeURIComponent(id)}/filters`, {
+      method: 'PUT',
+      body: { filters },
+    }),
 
   deleteFeed: (id: string) => request<void>(`/feeds/${id}`, { method: 'DELETE' }),
 
@@ -526,8 +598,39 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  /** Fetches the article body from the article's own page, and stores it on the entry. */
+  fulltext: (id: string) =>
+    request<FulltextResult>(`/entries/${encodeURIComponent(id)}/fulltext`, {
+      method: 'POST',
+      body: {},
+    }),
+
   parseSearch: (q: string) => request<SearchParse>('/search/parse', { method: 'POST', body: { q } }),
 
   previewSearch: (q: string, entry_id: string) =>
     request<SearchPreview>('/search/preview', { method: 'POST', body: { q, entry_id } }),
+
+  // --- OPML import and starter packs ---
+
+  /**
+   * Posts the raw OPML bytes; `dry_run=true` previews without touching the subscriptions.
+   * `forceCategory` files everything under one folder instead of keeping the file's own.
+   */
+  importOpml: (data: BodyInit, dryRun: boolean, forceCategory?: string) => {
+    const q = new URLSearchParams({ dry_run: String(dryRun) });
+    if (forceCategory) q.set('force_category', forceCategory);
+    return request<ImportReport>(`/import/opml?${q.toString()}`, {
+      method: 'POST',
+      raw: data,
+      contentType: 'application/xml',
+    });
+  },
+
+  packages: () => request<Package[]>('/packages'),
+
+  installPackage: (slug: string) =>
+    request<ImportReport>(`/packages/${encodeURIComponent(slug)}/install`, {
+      method: 'POST',
+      body: {},
+    }),
 };

@@ -31,6 +31,9 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let copied = $state(false);
+  /** Whether the pane shows the scraped full article rather than the feed's own body. */
+  let showFull = $state(false);
+  let fetchingFull = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
   let controller: AbortController | null = null;
 
@@ -61,8 +64,21 @@
       ADD_ATTR: ['target', 'rel', 'controls', 'preload', 'sandbox', 'allowfullscreen'],
     });
 
-  /** The prose, sanitized. Derived so it recomputes only when the article changes. */
-  const body = $derived(detail ? clean(detail.entry.content_html) : '');
+  /**
+   * The prose, sanitized. Derived so it recomputes only when the article or the mode changes.
+   *
+   * The full article is preferred once asked for: it is what the reader asked to read, and the
+   * feed's body stays one toggle away rather than being replaced.
+   */
+  const body = $derived(
+    detail
+      ? clean(
+          showFull && detail.entry.full_content
+            ? detail.entry.full_content
+            : detail.entry.content_html,
+        )
+      : '',
+  );
 
   /**
    * The list's copy of the open article, when the list has it.
@@ -90,6 +106,10 @@
 
     loading = true;
     error = null;
+    // The mode belongs to the article being read, not to the pane: carrying it across would show
+    // one article's scraped body request as though it applied to the next.
+    showFull = false;
+    fetchingFull = false;
     try {
       // The listing context travels with the request, so prev/next follow the order on screen rather
       // than the order in the database.
@@ -115,6 +135,36 @@
       detail = null;
     } finally {
       if (!mine.aborted) loading = false;
+    }
+  }
+
+  /**
+   * Shows the article body scraped from its own page, fetching it the first time.
+   *
+   * The server stores what it scraped, so the second click on a later day costs nothing and another
+   * device sees the same body; while it has none, this is the one button in the reader that waits on
+   * a third-party page, hence its own busy state.
+   */
+  async function toggleFull(): Promise<void> {
+    if (!detail) return;
+    if (showFull) {
+      showFull = false;
+      return;
+    }
+    if (detail.entry.full_content) {
+      showFull = true;
+      return;
+    }
+    fetchingFull = true;
+    try {
+      const got = await api.fulltext(detail.entry.id);
+      if (!detail) return;
+      detail.entry.full_content = got.content_html;
+      showFull = true;
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Could not fetch the full article');
+    } finally {
+      fetchingFull = false;
     }
   }
 
@@ -267,6 +317,20 @@
         <i class="ri-external-link-line" aria-hidden="true"></i>
         <span class="rd-sr">Open original</span>
       </a>
+    {/if}
+    {#if detail?.entry.link}
+      <button
+        class="rd-icon-btn rd-fulltext-btn"
+        type="button"
+        title={showFull ? 'Show the feed’s version' : 'Show the full article'}
+        aria-pressed={showFull}
+        aria-busy={fetchingFull}
+        disabled={fetchingFull}
+        onclick={() => void toggleFull()}
+      >
+        <i class={fetchingFull ? 'ri-loader-4-line is-spinning' : showFull ? 'ri-file-text-line' : 'ri-article-line'}></i>
+        <span class="rd-sr">{showFull ? 'Show the feed’s version' : 'Show the full article'}</span>
+      </button>
     {/if}
     <button class="rd-icon-btn rd-share-btn" type="button" title="Share" onclick={() => void share()}>
       <i class={copied ? 'ri-check-line' : 'ri-share-line'} aria-hidden="true"></i>

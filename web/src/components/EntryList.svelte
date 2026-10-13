@@ -9,18 +9,9 @@
    */
   import { onMount, tick } from 'svelte';
   import type { EntrySummary } from '../lib/api';
-  import {
-    entries,
-    isEmpty,
-    loadMore,
-    markAllRead,
-    reload,
-    setRead,
-    setStarred,
-  } from '../lib/entries.svelte';
+  import { entries, isEmpty, loadMore, reload, setRead, setStarred } from '../lib/entries.svelte';
   import { formatCount, formatListTime } from '../lib/format';
-  import { notifyError } from '../lib/toast.svelte';
-  import { refreshTree } from '../lib/session.svelte';
+  import { t } from '../lib/i18n';
   import {
     SORT_LABELS,
     scopeTitle,
@@ -34,9 +25,12 @@
   let {
     selectedId,
     onOpen,
+    onMarkAll,
   }: {
     selectedId: string | null;
     onOpen: (id: string) => void;
+    /** Asks App to open `#rd-markall-dialog`: marking everything read needs a confirmation. */
+    onMarkAll: () => void;
   } = $props();
 
   let scrollEl: HTMLElement | undefined = $state();
@@ -55,6 +49,11 @@
 
   /** Which sorts the segment control offers. The rest are reachable from a saved query. */
   const sorts: SortKey[] = ['id', 'date', 'title', 'feed'];
+
+  /** The sort button's label; `SORT_LABELS` is the English fallback for an untranslated key. */
+  function sortLabel(sort: SortKey): string {
+    return t(`sort.${sort}`, SORT_LABELS[sort]);
+  }
 
   /**
    * Loads the next page when the sentinel scrolls into view.
@@ -116,19 +115,6 @@
     await setRead([entry.id], !entry.is_read);
   }
 
-  async function onMarkAll(): Promise<void> {
-    const marked = await markAllRead();
-    if (marked > 0) {
-      // The sidebar's badges come from a separate aggregate; without this they keep the number the
-      // reader just invalidated.
-      try {
-        await refreshTree();
-      } catch (err) {
-        notifyError(err instanceof Error ? err.message : 'Could not refresh the counts');
-      }
-    }
-  }
-
   /** Scrolls the selected row into view after `j`/`k`, without yanking the list when it is already visible. */
   export async function revealSelected(): Promise<void> {
     await tick();
@@ -145,14 +131,14 @@
     </div>
 
     <div class="rd-list-tools">
-      <div class="rd-segment" aria-label="Show" role="group">
+      <div class="rd-segment" aria-label={t('list.showAria')} role="group">
         <button
           type="button"
           class:is-active={view.readFilter === 'unread'}
           aria-pressed={view.readFilter === 'unread'}
           onclick={toggleReadFilter}
         >
-          Unread
+          {t('list.unread')}
           <span class="rd-segment-count">{unreadLabel}</span>
         </button>
         <button
@@ -161,48 +147,48 @@
           aria-pressed={view.readFilter === 'all'}
           onclick={toggleReadFilter}
         >
-          All
+          {t('list.all')}
         </button>
       </div>
 
-      <div class="rd-segment" aria-label="Sort" role="group">
+      <div class="rd-segment" aria-label={t('list.sortAria')} role="group">
         {#each sorts as sort (sort)}
           <button
             type="button"
             class:is-active={view.sort === sort}
             aria-pressed={view.sort === sort}
-            title="{SORT_LABELS[sort]} {view.order === 'desc' ? 'first' : 'last'}"
+            title="{sortLabel(sort)} {view.order === 'desc' ? t('list.first') : t('list.last')}"
             onclick={() => setSort(sort)}
           >
-            {SORT_LABELS[sort]}
+            {sortLabel(sort)}
           </button>
         {/each}
       </div>
 
-      <div class="rd-segment" aria-label="Sort order" role="group">
+      <div class="rd-segment" aria-label={t('list.orderAria')} role="group">
         <button
           type="button"
           class:is-active={view.order === 'desc'}
-          title="Newest first"
+          title={t('list.newestFirst')}
           onclick={() => view.order !== 'desc' && toggleOrder()}
         >
           <i class="ri-sort-desc" aria-hidden="true"></i>
-          <span class="rd-sr">Newest first</span>
+          <span class="rd-sr">{t('list.newestFirst')}</span>
         </button>
         <button
           type="button"
           class:is-active={view.order === 'asc'}
-          title="Oldest first"
+          title={t('list.oldestFirst')}
           onclick={() => view.order !== 'asc' && toggleOrder()}
         >
           <i class="ri-sort-asc" aria-hidden="true"></i>
-          <span class="rd-sr">Oldest first</span>
+          <span class="rd-sr">{t('list.oldestFirst')}</span>
         </button>
       </div>
 
       <button class="rd-btn rd-btn--quiet" type="button" onclick={onMarkAll}>
         <i class="ri-check-double-line" aria-hidden="true"></i>
-        Mark all as read
+        {t('list.markAll')}
       </button>
     </div>
   </div>
@@ -212,21 +198,21 @@
       <div class="rd-list-empty">
         <i class="ri-error-warning-line" aria-hidden="true"></i>
         <p>{entries.error}</p>
-        <button class="rd-btn" type="button" onclick={() => void reload()}>Try again</button>
+        <button class="rd-btn" type="button" onclick={() => void reload()}>{t('common.tryAgain')}</button>
       </div>
     {:else if entries.loading && entries.items.length === 0}
       <div class="rd-list-empty">
         <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
-        <p>Loading…</p>
+        <p>{t('common.loading')}</p>
       </div>
     {:else if isEmpty()}
       <div class="rd-list-empty">
         <i class="ri-inbox-line" aria-hidden="true"></i>
         {#if view.readFilter === 'unread'}
-          <p>Nothing unread here.</p>
-          <p class="rd-hint">Switch to <button type="button" class="rd-linkish" onclick={toggleReadFilter}>All</button> to see everything.</p>
+          <p>{t('list.nothingUnread')}</p>
+          <p class="rd-hint">{t('list.nothingUnreadHint')}</p>
         {:else}
-          <p>No articles match.</p>
+          <p>{t('list.noMatches')}</p>
         {/if}
       </div>
     {:else}
@@ -243,7 +229,7 @@
               <span class="rd-item-meta">
                 {#if !entry.is_read}
                   <span class="rd-dot" aria-hidden="true"></span>
-                  <span class="rd-sr">Unread:</span>
+                  <span class="rd-sr">{t('list.unreadSr')}</span>
                 {/if}
                 <span class="rd-item-feed">
                   {#if entry.thumbnail}
@@ -253,7 +239,7 @@
                   {/if}
                   {entry.feed_name}
                   {#if entry.is_updated}
-                    <i class="ri-pencil-line" title="Updated upstream" aria-hidden="true"></i>
+                    <i class="ri-pencil-line" title={t('list.updatedUpstream')} aria-hidden="true"></i>
                   {/if}
                 </span>
                 <time datetime={new Date(entry.date * 1000).toISOString()} title={new Date(entry.date * 1000).toLocaleString()}>
@@ -270,22 +256,22 @@
               class="rd-star"
               class:is-starred={entry.is_favorite}
               type="button"
-              title={entry.is_favorite ? 'Unstar (s)' : 'Star (s)'}
+              title={entry.is_favorite ? t('list.unstarTitle') : t('list.starTitle')}
               aria-pressed={entry.is_favorite}
               onclick={(event) => void toggleStar(entry, event)}
             >
               <i class={entry.is_favorite ? 'ri-star-fill' : 'ri-star-line'} aria-hidden="true"></i>
-              <span class="rd-sr">Star</span>
+              <span class="rd-sr">{t('list.starSr')}</span>
             </button>
 
             <button
               class="rd-star rd-read-toggle"
               type="button"
-              title={entry.is_read ? 'Mark as unread (m)' : 'Mark as read (m)'}
+              title={entry.is_read ? t('list.markUnreadTitle') : t('list.markReadTitle')}
               onclick={() => void toggleRead(entry)}
             >
               <i class={entry.is_read ? 'ri-mail-line' : 'ri-mail-unread-line'} aria-hidden="true"></i>
-              <span class="rd-sr">{entry.is_read ? 'Mark as unread' : 'Mark as read'}</span>
+              <span class="rd-sr">{entry.is_read ? t('list.markUnreadSr') : t('list.markReadSr')}</span>
             </button>
           </li>
         {/each}
@@ -295,13 +281,13 @@
     <div id="rd-sentinel" class="rd-list-end" bind:this={sentinel}>
       {#if entries.loadingMore}
         <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
-        Loading more…
+        {t('list.loadingMore')}
       {:else if entries.hasMore}
         <button class="rd-btn rd-btn--quiet" type="button" onclick={() => void loadMore()}>
-          Load more
+          {t('list.loadMore')}
         </button>
       {:else if entries.items.length > 0}
-        <span class="rd-hint">End of list</span>
+        <span class="rd-hint">{t('list.endOfList')}</span>
       {/if}
     </div>
   </div>

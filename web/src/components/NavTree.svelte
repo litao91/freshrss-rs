@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { CategoryNode, FeedNode, LabelCount } from '../lib/api';
+  import { OPML_EXPORT_URL } from '../lib/api';
   import { formatCount } from '../lib/format';
+  import { t, tf } from '../lib/i18n';
   import { tree } from '../lib/session.svelte';
   import { isActive, selectScope, view, type Scope } from '../lib/view.svelte';
 
@@ -13,9 +15,20 @@
     onManageFolder: (folder: CategoryNode | null) => void;
     /** Opens `#rd-feed-dialog`. */
     onManageFeed: (feed: FeedNode) => void;
+    /** Opens `#rd-packages-dialog`. */
+    onShowPackages: () => void;
+    /** Opens `#rd-import-dialog`. */
+    onImportOpml: () => void;
   }
 
-  let { onAddSubscription, onShowProblems, onManageFolder, onManageFeed }: Props = $props();
+  let {
+    onAddSubscription,
+    onShowProblems,
+    onManageFolder,
+    onManageFeed,
+    onShowPackages,
+    onImportOpml,
+  }: Props = $props();
 
   /** Collapsed folders, by id. Starting open matches the reference reader. */
   let collapsed = $state<Set<string>>(new Set());
@@ -88,11 +101,11 @@
   }
 </script>
 
-<nav id="rd-nav" class="rd-nav" aria-label="Subscriptions">
+<nav id="rd-nav" class="rd-nav" aria-label={t('nav.subscriptions')}>
   <div class="rd-nav-inner">
     <button class="rd-btn rd-btn--primary rd-add" type="button" onclick={onAddSubscription}>
       <i class="ri-add-line" aria-hidden="true"></i>
-      Add subscription
+      {t('nav.addSubscription')}
     </button>
 
     <ul class="rd-tree">
@@ -104,11 +117,11 @@
           onclick={(e) => go(e, mainScope())}
         >
           <i class="ri-inbox-2-line rd-tree-icon" aria-hidden="true"></i>
-          <span class="rd-tree-label">All articles</span>
+          <span class="rd-tree-label">{t('nav.allArticles')}</span>
           {#if counts && counts.main_stream.unread > 0}
             <span class="rd-count">
               <span>{formatCount(counts.main_stream.unread)}</span>
-              <span class="rd-sr">{counts.main_stream.unread} unread</span>
+              <span class="rd-sr">{tf('nav.unreadCount', { n: counts.main_stream.unread })}</span>
             </span>
           {/if}
         </a>
@@ -121,55 +134,48 @@
           onclick={(e) => go(e, starredScope())}
         >
           <i class="ri-star-line rd-tree-icon" aria-hidden="true"></i>
-          <span class="rd-tree-label">Starred</span>
+          <span class="rd-tree-label">{t('nav.starred')}</span>
           {#if counts && counts.starred.total > 0}
             <span class="rd-count">
               <span>{formatCount(counts.starred.total)}</span>
-              <span class="rd-sr">{counts.starred.total} starred</span>
+              <span class="rd-sr">{tf('nav.starredCount', { n: counts.starred.total })}</span>
             </span>
           {/if}
         </a>
       </li>
     </ul>
 
-    {#if problems > 0}
-      <button class="rd-btn rd-btn--quiet rd-btn--danger" type="button" onclick={onShowProblems}>
-        <i class="ri-error-warning-line" aria-hidden="true"></i>
-        {problems} {problems === 1 ? 'feed has' : 'feeds have'} problems
-      </button>
-    {/if}
-
     <div class="rd-nav-head">
-      <h2 class="rd-nav-heading">Subscriptions</h2>
+      <h2 class="rd-nav-heading">{t('nav.subscriptions')}</h2>
       <button
         class="rd-icon-btn"
         type="button"
-        title={allCollapsed ? 'Expand all folders' : 'Collapse all folders'}
+        title={allCollapsed ? t('nav.expandAll') : t('nav.collapseAll')}
         onclick={toggleAll}
       >
         <i class="ri-contract-up-down-line" aria-hidden="true"></i>
-        <span class="rd-sr">{allCollapsed ? 'Expand all folders' : 'Collapse all folders'}</span>
+        <span class="rd-sr">{allCollapsed ? t('nav.expandAll') : t('nav.collapseAll')}</span>
       </button>
       <button
         class="rd-icon-btn"
         type="button"
         aria-pressed={hideReadFeeds}
-        title={hideReadFeeds ? 'Show feeds with no unread articles' : 'Hide feeds with no unread articles'}
+        title={hideReadFeeds ? t('nav.showReadFeeds') : t('nav.hideReadFeeds')}
         onclick={() => (hideReadFeeds = !hideReadFeeds)}
       >
         <i class={hideReadFeeds ? 'ri-eye-off-line' : 'ri-eye-line'} aria-hidden="true"></i>
         <span class="rd-sr">
-          {hideReadFeeds ? 'Show feeds with no unread articles' : 'Hide feeds with no unread articles'}
+          {hideReadFeeds ? t('nav.showReadFeeds') : t('nav.hideReadFeeds')}
         </span>
       </button>
-      <button class="rd-icon-btn" type="button" title="New folder" onclick={() => onManageFolder(null)}>
+      <button class="rd-icon-btn" type="button" title={t('nav.newFolder')} onclick={() => onManageFolder(null)}>
         <i class="ri-folder-add-line" aria-hidden="true"></i>
-        <span class="rd-sr">New folder</span>
+        <span class="rd-sr">{t('nav.newFolder')}</span>
       </button>
     </div>
 
     {#if categories.length === 0 && orphans.length === 0}
-      <p class="rd-nav-empty">No subscriptions yet. Add one to get started.</p>
+      <p class="rd-nav-empty">{t('nav.empty')}</p>
     {/if}
 
     <ul class="rd-tree">
@@ -186,7 +192,7 @@
               onclick={() => toggleFolder(folder.id)}
             >
               <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
-              <span class="rd-sr">Show or hide the {folder.name} folder</span>
+              <span class="rd-sr">{tf('nav.folderToggle', { name: folder.name })}</span>
             </button>
             <a
               class="rd-tree-link"
@@ -203,18 +209,18 @@
               {#if folder.unread > 0}
                 <span class="rd-count">
                   <span>{formatCount(folder.unread)}</span>
-                  <span class="rd-sr">{folder.unread} unread</span>
+                  <span class="rd-sr">{tf('nav.unreadCount', { n: folder.unread })}</span>
                 </span>
               {/if}
             </a>
             <button
               class="rd-folder-toggle"
               type="button"
-              title="Folder settings"
+              title={t('nav.folderSettings')}
               onclick={() => onManageFolder(folder)}
             >
               <i class="ri-more-2-fill" aria-hidden="true"></i>
-              <span class="rd-sr">Settings for the {folder.name} folder</span>
+              <span class="rd-sr">{tf('nav.folderSettingsFor', { name: folder.name })}</span>
             </button>
           </div>
 
@@ -229,7 +235,7 @@
                     class:is-unread={feed.unread > 0}
                     class:is-error={feed.error > 0 || feed.muted}
                     href={scopeHref(fScope)}
-                    title={feed.muted ? `${feed.name} (muted)` : feed.name}
+                    title={feed.muted ? tf('nav.muted', { name: feed.name }) : feed.name}
                     onclick={(e) => go(e, fScope)}
                     oncontextmenu={(e) => {
                       e.preventDefault();
@@ -251,7 +257,7 @@
                     {#if feed.unread > 0}
                       <span class="rd-count">
                         <span>{formatCount(feed.unread)}</span>
-                        <span class="rd-sr">{feed.unread} unread</span>
+                        <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
                       </span>
                     {/if}
                   </a>
@@ -270,7 +276,7 @@
             class:is-active={isActive(view.scope, oScope)}
             class:is-unread={feed.unread > 0}
             href={scopeHref(oScope)}
-            title="Not in a folder"
+            title={t('nav.notInFolder')}
             onclick={(e) => go(e, oScope)}
             oncontextmenu={(e) => {
               e.preventDefault();
@@ -292,7 +298,7 @@
             {#if feed.unread > 0}
               <span class="rd-count">
                 <span>{formatCount(feed.unread)}</span>
-                <span class="rd-sr">{feed.unread} unread</span>
+                <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
               </span>
             {/if}
           </a>
@@ -302,7 +308,7 @@
 
     {#if labels.length > 0}
       <div class="rd-nav-head">
-        <h2 class="rd-nav-heading">Labels</h2>
+        <h2 class="rd-nav-heading">{t('nav.labels')}</h2>
       </div>
       <ul class="rd-tree">
         {#each labels as label (label.id)}
@@ -319,7 +325,7 @@
               {#if label.unread > 0}
                 <span class="rd-count">
                   <span>{formatCount(label.unread)}</span>
-                  <span class="rd-sr">{label.unread} unread</span>
+                  <span class="rd-sr">{tf('nav.unreadCount', { n: label.unread })}</span>
                 </span>
               {/if}
             </a>
@@ -327,5 +333,29 @@
         {/each}
       </ul>
     {/if}
+
+    <!-- The reference reader's `.rd-nav-foot`: bulk actions pinned under the tree. Export is a
+         plain anchor because the session cookie rides along on a same-origin navigation, so the
+         browser's own download handling is the whole implementation. -->
+    <div class="rd-nav-foot">
+      {#if problems > 0}
+        <button class="rd-btn rd-btn--quiet rd-nav-problems" type="button" onclick={onShowProblems}>
+          <i class="ri-error-warning-line" aria-hidden="true"></i>
+          {tf('nav.problemsButton', { n: problems })}
+        </button>
+      {/if}
+      <button class="rd-btn rd-btn--quiet" type="button" onclick={onShowPackages}>
+        <i class="ri-stack-line" aria-hidden="true"></i>
+        {t('nav.starterPacks')}
+      </button>
+      <button class="rd-btn rd-btn--quiet" type="button" onclick={onImportOpml}>
+        <i class="ri-upload-2-line" aria-hidden="true"></i>
+        {t('nav.importOpml')}
+      </button>
+      <a class="rd-btn rd-btn--quiet" href={OPML_EXPORT_URL} download>
+        <i class="ri-download-2-line" aria-hidden="true"></i>
+        {t('nav.exportOpml')}
+      </a>
+    </div>
   </div>
 </nav>

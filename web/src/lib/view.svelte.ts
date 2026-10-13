@@ -7,6 +7,8 @@
  * drive the same state the mouse does.
  */
 
+import { t, tf } from './i18n';
+
 /** A slice of the corpus, mirroring the server's listing scopes. */
 export type Scope =
   /** "All articles" — feeds at main-stream priority or above. */
@@ -62,19 +64,25 @@ export function isReading(): boolean {
   return view.selectedEntryId !== null;
 }
 
-/** The heading for `#rd-list-title`. */
+/**
+ * The heading for `#rd-list-title`.
+ *
+ * Named scopes (folder, feed, label) show the user's own name for them, which is data and never
+ * translated; the fixed scopes go through `t()`, which also makes the heading re-render when the
+ * language changes.
+ */
 export function scopeTitle(scope: Scope): string {
   switch (scope.kind) {
     case 'main':
-      return 'All articles';
+      return t('scope.allArticles');
     case 'starred':
-      return 'Starred';
+      return t('scope.starred');
     case 'category':
     case 'feed':
     case 'label':
       return scope.name;
     case 'search':
-      return `Search: ${scope.query}`;
+      return tf('scope.searchResults', { q: scope.query });
   }
 }
 

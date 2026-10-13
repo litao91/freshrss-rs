@@ -13,6 +13,8 @@ export type ThemeName = 'kagit' | 'sepya' | 'gece';
 export type ThemePref = ThemeName | 'auto';
 export type Density = 'rahat' | 'sikisik';
 export type Toggle = 'acik' | 'kapali';
+/** The UI languages `lib/i18n.ts` has a dictionary for. */
+export type Language = 'en' | 'tr';
 
 const KEYS = {
   theme: 'feeddi-theme',
@@ -20,6 +22,7 @@ const KEYS = {
   density: 'feeddi-reader-density',
   nav: 'feeddi-reader-nav',
   focus: 'feeddi-reader-focus',
+  lang: 'feeddi-lang',
 } as const;
 
 export const THEME_LABELS: Record<ThemeName, string> = {
@@ -43,6 +46,12 @@ export const prefs = $state({
   density: 'rahat' as Density,
   navOpen: true,
   focus: false,
+  /**
+   * The UI language. It lives here rather than in `i18n.ts` because this module is compiled with
+   * runes, so `t()` reading `prefs.language` is what makes every translated string re-render when
+   * the `#rd-lang` select changes; a plain `.ts` module cannot hold reactive state.
+   */
+  language: 'en' as Language,
 });
 
 function read(key: string): string | null {
@@ -103,6 +112,12 @@ function applyFocus(): void {
   document.documentElement.setAttribute('data-rd-focus', prefs.focus ? 'acik' : 'kapali');
 }
 
+function applyLanguage(): void {
+  // Keeps `lang` on <html> in step so hyphenation, screen readers and the browser's own
+  // translate offer follow the language the reader actually chose.
+  document.documentElement.setAttribute('lang', prefs.language);
+}
+
 /** Reads persisted preferences and applies them. Call once at startup, after `index.html`'s script. */
 export function initPrefs(): void {
   const storedTheme = read(KEYS.theme);
@@ -123,11 +138,15 @@ export function initPrefs(): void {
   prefs.navOpen = read(KEYS.nav) !== 'kapali';
   prefs.focus = read(KEYS.focus) === 'acik';
 
+  const storedLang = read(KEYS.lang);
+  if (storedLang === 'en' || storedLang === 'tr') prefs.language = storedLang;
+
   applyTheme();
   applySize();
   applyDensity();
   applyNav();
   applyFocus();
+  applyLanguage();
 
   // Follow the OS when the preference is `auto`, so flipping dark mode mid-session is picked up.
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -180,4 +199,12 @@ export function toggleFocus(): void {
   prefs.focus = !prefs.focus;
   applyFocus();
   write(KEYS.focus, prefs.focus ? 'acik' : 'kapali');
+}
+
+/** The `#rd-lang` select calls this; every `t()` caller re-renders because `prefs` is reactive. */
+export function setLanguage(language: Language): void {
+  if (prefs.language === language) return;
+  prefs.language = language;
+  applyLanguage();
+  write(KEYS.lang, language);
 }
