@@ -42,6 +42,9 @@ pub fn router() -> Router<AppState> {
         .route("/{id}/refresh", post(refresh_one))
         .route("/{id}/filters", get(filters).put(set_filters))
         .route("/{id}/entries", delete(truncate_entries))
+        // The handler lives in `io`, but the route has to be here: axum sends the whole `/feeds`
+        // subtree through this nest, so a `/feeds/{id}/icon` route registered elsewhere is unreachable.
+        .route("/{id}/icon", get(super::io::feed_icon))
 }
 
 #[derive(Deserialize)]
@@ -255,15 +258,15 @@ pub async fn update(
             // One transaction: this handler is up to six updates, and a failure halfway would
             // otherwise leave a feed renamed but not moved, or muted but not re-intervalled.
             let mut tx = conn.begin().await?;
-            let feed = require_feed(&mut *tx, id, id_user).await?;
+            let feed = require_feed(&mut tx, id, id_user).await?;
 
             if let Some(name) = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                feed_dao::update_name(&mut *tx, id, id_user, name).await?;
+                feed_dao::update_name(&mut tx, id, id_user, name).await?;
             }
             if let Some(raw) = req.url.as_deref() {
                 let url = normalize_url(raw)?;
                 if url != feed.url
-                    && feed_dao::find_by_url(&mut *tx, id_user, &url)
+                    && feed_dao::find_by_url(&mut tx, id_user, &url)
                         .await?
                         .is_some_and(|other| other.id != id)
                 {
@@ -271,24 +274,24 @@ pub async fn update(
                         "you are already subscribed to that address".into(),
                     ));
                 }
-                feed_dao::update_url(&mut *tx, id, id_user, &url).await?;
+                feed_dao::update_url(&mut tx, id, id_user, &url).await?;
             }
             if req.clear_category == Some(true) {
                 // `None` moves the feed out of its folder; the sidebar then lists it as an orphan.
-                feed_dao::update_category(&mut *tx, id, id_user, None).await?;
+                feed_dao::update_category(&mut tx, id, id_user, None).await?;
             } else if let Some(cat) = req.category_id {
-                let _ = cat_dao::find_by_id(&mut *tx, cat, id_user)
+                let _ = cat_dao::find_by_id(&mut tx, cat, id_user)
                     .await?
                     .ok_or_else(|| Error::NotFound(format!("folder {cat}")))?;
-                feed_dao::update_category(&mut *tx, id, id_user, Some(cat)).await?;
+                feed_dao::update_category(&mut tx, id, id_user, Some(cat)).await?;
             }
             if let Some(priority) = req.priority {
-                feed_dao::update_priority(&mut *tx, id, id_user, Priority::new(priority)).await?;
+                feed_dao::update_priority(&mut tx, id, id_user, Priority::new(priority)).await?;
             }
             if let Some(kind) = req.kind {
                 let kind = FeedKind::from_i16(kind)
                     .map_err(|e| crate::error::validation(e.to_string()))?;
-                feed_dao::update_kind(&mut *tx, id, id_user, kind).await?;
+                feed_dao::update_kind(&mut tx, id, id_user, kind).await?;
             }
             // ttl and muted interact: the mute flag is the sign of the stored value, so applying
             // one without regard to the other would silently unmute a feed.
@@ -296,7 +299,7 @@ pub async fn update(
                 let seconds = req.ttl.unwrap_or_else(|| feed.ttl.seconds());
                 let muted = req.muted.unwrap_or_else(|| feed.ttl.is_muted());
                 let ttl = requested_ttl(seconds, muted, default_ttl);
-                feed_dao::update_ttl(&mut *tx, id, id_user, ttl).await?;
+                feed_dao::update_ttl(&mut tx, id, id_user, ttl).await?;
             }
             if req.path_entries.is_some() || req.path_entries_filter.is_some() {
                 let path_entries = req
@@ -311,16 +314,16 @@ pub async fn update(
                     .or(feed.path_entries_filter.as_deref())
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                feed_dao::update_scraping(&mut *tx, id, id_user, path_entries, filter).await?;
+                feed_dao::update_scraping(&mut tx, id, id_user, path_entries, filter).await?;
             }
             if let Some(auth) = &req.http_auth {
                 let mut updated = feed.clone();
                 updated.set_http_auth(auth.username.as_deref(), auth.password.as_deref());
-                feed_dao::update_http_auth(&mut *tx, id, id_user, updated.http_auth.as_deref())
+                feed_dao::update_http_auth(&mut tx, id, id_user, updated.http_auth.as_deref())
                     .await?;
             }
 
-            let dto = FeedDto::new(&require_feed(&mut *tx, id, id_user).await?);
+            let dto = FeedDto::new(&require_feed(&mut tx, id, id_user).await?);
             tx.commit().await?;
             Ok(dto)
         })

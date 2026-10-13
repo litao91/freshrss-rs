@@ -11,7 +11,9 @@ pub mod auth;
 pub mod categories;
 pub mod entries;
 pub mod feeds;
+pub mod io;
 pub mod me;
+pub mod packages;
 pub mod queries;
 pub mod refresh;
 pub mod search;
@@ -36,4 +38,8 @@ pub fn router() -> Router<AppState> {
         .nest("/queries", queries::router())
         .nest("/refresh", refresh::router())
         .nest("/search", search::router())
+        .nest("/packages", packages::router())
+        // OPML export/import live at the top level (`/export/opml`, `/import/opml`) rather than under a
+        // prefix, so they are merged in rather than nested.
+        .merge(io::router())
 }
