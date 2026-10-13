@@ -90,10 +90,15 @@ async fn serve(config: AppConfig) -> Result<()> {
         .with_context(|| format!("could not bind to {bind}"))?;
     tracing::info!(%bind, "listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    // `ConnectInfo` is what the rate limiter keys unauthenticated requests by; without it every
+    // stranger would share one "unknown" bucket.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")?;
 
     // After the listener, so no new refresh can start once requests have stopped being accepted, and
     // before `PRAGMA optimize`, so nothing is writing while the database is being told to settle.

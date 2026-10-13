@@ -54,6 +54,9 @@ ttl_default = 3600
 max_body_bytes = 52428800
 # Entries returned by one /api/v1/entries page at most.
 max_page_size = 500
+# Per-minute ceiling on each metered class of request (login, register, anything that makes the
+# server fetch, whole-tree refreshes), counted per session, or per address when anonymous.
+rate_limit_per_minute = 30
 
 [archiving]
 # Retention defaults; per-user, per-category and per-feed `attributes.archiving` override.

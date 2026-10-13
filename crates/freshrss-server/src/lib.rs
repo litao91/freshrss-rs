@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod middleware;
 pub mod router;
 pub mod service;
 pub mod static_files;

@@ -159,6 +159,9 @@ pub struct LimitsConfig {
     pub ttl_default: i64,
     pub max_body_bytes: usize,
     pub max_page_size: usize,
+    /// Per-minute ceiling on each metered class of request (login, register, anything that makes
+    /// the server fetch, whole-tree refreshes), keyed per session or per address.
+    pub rate_limit_per_minute: u32,
 }
 
 impl Default for LimitsConfig {
@@ -173,6 +176,7 @@ impl Default for LimitsConfig {
             ttl_default: 3600,
             max_body_bytes: 50 * 1024 * 1024,
             max_page_size: 500,
+            rate_limit_per_minute: 30,
         }
     }
 }

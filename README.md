@@ -68,6 +68,14 @@ The following are deliberate ports of FreshRSS semantics rather than inventions:
 - The refresh pipeline: conditional GET, unchanged-body detection, insert/update/lastSeen
   reconciliation, retention (`keep_period`, `keep_max`, `keep_min`, `keep_favourites`,
   `keep_labels`, `keep_unreads`), and filter actions (`read`, `star`, `label`).
+- Full-text extraction: `pathEntries` and `path_entries_filter`, including the
+  `<meta http-equiv="refresh">` hop and the `content_action` prepend/append/replace modes.
+
+The API is guarded by a cross-origin check on mutations (a present `Origin` that is not the
+`Host` is refused) and a per-session, per-minute limit on the endpoints that cost money: logins,
+discovery, single-feed refreshes and whole-tree refreshes. Refreshes run as jobs — `POST
+/api/v1/refresh` answers `202` with an id the client polls — because a fetch can outlast any
+timeout a browser or proxy would tolerate.
 
 Divergences from FreshRSS, and why, are documented in the plan and in the module docs. The three
 that matter most:

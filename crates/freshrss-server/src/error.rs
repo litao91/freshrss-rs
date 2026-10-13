@@ -44,6 +44,10 @@ pub enum Error {
     Validation(String),
     #[error("registration is disabled")]
     RegistrationClosed,
+    #[error("too many requests; try again in {retry_in_secs}s")]
+    RateLimited { retry_in_secs: u64 },
+    #[error("the request's Origin is not this host")]
+    OriginMismatch,
     #[error("account disabled")]
     AccountDisabled,
     #[error("password hashing failed")]
@@ -90,6 +94,8 @@ impl Error {
                 | Error::AccountDisabled
                 | Error::NotFound(_)
                 | Error::Conflict(_)
+                | Error::RateLimited { .. }
+                | Error::OriginMismatch
                 | Error::BadUrl { .. }
                 | Error::Search(_)
         )
@@ -109,6 +115,8 @@ impl Error {
             Error::PasswordHash => "password_hash",
             Error::NotFound(_) => "not_found",
             Error::Conflict(_) => "conflict",
+            Error::RateLimited { .. } => "rate_limited",
+            Error::OriginMismatch => "origin_mismatch",
             Error::Feed(_) => "feed",
             Error::BadUrl { .. } => "bad_url",
             Error::Http { .. } => "http",

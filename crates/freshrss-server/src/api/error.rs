@@ -48,7 +48,10 @@ impl ApiError {
             Error::Validation(_) | Error::Search(_) | Error::BadUrl { .. } => {
                 StatusCode::BAD_REQUEST
             }
-            Error::RegistrationClosed | Error::AccountDisabled => StatusCode::FORBIDDEN,
+            Error::RegistrationClosed | Error::AccountDisabled | Error::OriginMismatch => {
+                StatusCode::FORBIDDEN
+            }
+            Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             // The feed server, not us, failed. 502 keeps that distinction visible to operators and

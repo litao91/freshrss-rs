@@ -15,6 +15,7 @@ use freshrss_feed::Fetcher;
 
 use crate::config::{AppConfig, HttpConfig};
 use crate::db::Db;
+use crate::middleware::Limiter;
 use crate::service::jobs::Jobs;
 
 /// Everything a handler may need. Cheap to clone.
@@ -27,6 +28,8 @@ pub struct AppState {
     pub fetcher: Arc<dyn Fetcher>,
     /// The refresh jobs `POST /refresh` starts and `GET /refresh/{id}` reports on.
     pub jobs: Arc<Jobs>,
+    /// The rate-limit windows, shared by every request.
+    pub limiter: Arc<Limiter>,
 }
 
 impl AppState {
@@ -50,6 +53,7 @@ impl AppState {
             config: Arc::new(config),
             fetcher,
             jobs: Arc::new(Jobs::default()),
+            limiter: Arc::new(Limiter::default()),
         }
     }
 }
@@ -70,10 +74,16 @@ fn guard_from(http: &HttpConfig) -> Guard {
 }
 
 pub fn router(state: AppState) -> Router {
+    // The guards wrap the API only: static assets and the two probes have no session to abuse and
+    // no outbound cost, and throttling them would turn a slow disk into a locked-out reader.
+    let api = crate::api::v1::router().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::guard,
+    ));
     Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(version))
-        .nest("/api/v1", crate::api::v1::router())
+        .nest("/api/v1", api)
         .merge(crate::static_files::router())
         .with_state(state)
 }
@@ -167,6 +177,82 @@ mod tests {
         let (status, body) = get_json(app().await, "/healthz").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
+    }
+
+    async fn post(app: Router, uri: &str, origin: Option<&str>, body: &str) -> StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("host", "reader.example")
+            .header("content-type", "application/json");
+        if let Some(origin) = origin {
+            builder = builder.header("origin", origin);
+        }
+        let res = app
+            .oneshot(builder.body(Body::from(body.to_owned())).unwrap())
+            .await
+            .expect("request");
+        res.status()
+    }
+
+    /// A body the login handler will accept, so the request reaches the credential check rather than
+    /// dying on deserialization — the limiter counts either way, but the status under test does not.
+    const LOGIN: &str = r#"{"username":"nobody","password":"wrong"}"#;
+
+    #[tokio::test]
+    async fn a_mutation_from_another_origin_is_refused() {
+        let app = app().await;
+        assert_eq!(
+            post(
+                app.clone(),
+                "/api/v1/entries/read",
+                Some("https://evil.example"),
+                "{}"
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        // Same origin passes the check (and then fails on auth, which is the handler's business).
+        assert_eq!(
+            post(
+                app.clone(),
+                "/api/v1/entries/read",
+                Some("http://reader.example"),
+                "{}"
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+        // No Origin at all is a non-browser client, which the check must not break.
+        assert_eq!(
+            post(app, "/api/v1/entries/read", None, "{}").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn metered_endpoints_are_capped_per_minute() {
+        let mut config = AppConfig::default();
+        config.limits.rate_limit_per_minute = 2;
+        let app = router(AppState::new(Db::in_memory().await.expect("db"), config));
+
+        // Login fails on credentials, but the limiter counts the attempt before the handler runs.
+        assert_eq!(
+            post(app.clone(), "/api/v1/auth/login", None, LOGIN).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post(app.clone(), "/api/v1/auth/login", None, LOGIN).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let third = post(app.clone(), "/api/v1/auth/login", None, LOGIN).await;
+        assert_eq!(third, StatusCode::TOO_MANY_REQUESTS);
+
+        // An unmetered endpoint is unaffected by the same caller's history.
+        assert_eq!(
+            post(app, "/api/v1/entries/read", None, "{}").await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
