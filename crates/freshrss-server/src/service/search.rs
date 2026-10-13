@@ -11,10 +11,12 @@ use sqlx::SqliteConnection;
 
 use freshrss_search::ast::Expr;
 use freshrss_search::expand::{expand, QueryResolver};
+use freshrss_search::matcher::SearchTarget;
 use freshrss_search::parser::parse;
 
 use crate::db::dao::user_query as query_dao;
 use crate::db::Db;
+use crate::domain::entry::Entry;
 use crate::domain::ids::now_unix;
 use crate::error::Result;
 
@@ -120,6 +122,120 @@ fn names_a_saved_query(expr: &Expr) -> bool {
     expr.preds()
         .iter()
         .any(|p| matches!(p, freshrss_search::ast::Pred::SavedQuery { .. }))
+}
+
+// ---------------------------------------------------------------------------
+// The matcher's view of an article
+// ---------------------------------------------------------------------------
+
+/// An [`Entry`] plus the two column forms the matcher has to see.
+///
+/// [`SearchTarget`] hands out `&str`, but the domain type stores authors and tags as `Vec<String>`
+/// while both backends compare against the *joined* forms — `"a; b"` and `"#a #b"`, the text SQL reads
+/// out of the column. Joining per predicate would be quadratic, so the wrapper joins once.
+///
+/// It also carries the folder and the labels, which are not columns on `entry` at all: the folder lives
+/// on the feed and the labels in `entrytag`. Whoever builds this has to resolve them, and getting that
+/// wrong makes `c:` and `labels:` answer a different question than the SQL does.
+///
+/// Generic over how the entry is held because the two callers hold it differently: the search preview
+/// owns a row it just read, while a refresh evaluating filter actions has a `&Entry` mid-batch and
+/// cloning it — content and all — per article per rule would be pure waste. One implementation for
+/// both is the point: two would mean the joined forms could drift apart, and that drift is silent.
+pub struct EntryTarget<E> {
+    pub entry: E,
+    author_column: String,
+    tags_column: String,
+    category_id: Option<i64>,
+    label_ids: Vec<i64>,
+    label_names: Vec<String>,
+}
+
+/// The owned form: an article read out of the database.
+pub type SearchableEntry = EntryTarget<Entry>;
+/// The borrowed form: an article a refresh is still holding.
+pub type EntryView<'a> = EntryTarget<&'a Entry>;
+
+impl SearchableEntry {
+    /// Builds one from a stored entry and the lookups the caller already has.
+    pub fn new(
+        entry: Entry,
+        category_id: Option<i64>,
+        labels: Vec<crate::domain::tag::Tag>,
+    ) -> Self {
+        EntryTarget::of(entry, category_id, labels)
+    }
+}
+
+impl<'a> EntryView<'a> {
+    /// Builds one over an entry the caller keeps, with no labels — which is the refresh's case,
+    /// since labels are attached after the commit and so cannot be part of the match.
+    pub fn borrowed(entry: &'a Entry, category_id: Option<i64>) -> Self {
+        EntryTarget::of(entry, category_id, Vec::new())
+    }
+}
+
+impl<E: std::borrow::Borrow<Entry>> EntryTarget<E> {
+    fn of(entry: E, category_id: Option<i64>, labels: Vec<crate::domain::tag::Tag>) -> Self {
+        let author_column = entry.borrow().author_to_db();
+        let tags_column = entry.borrow().tags_to_db();
+        let mut label_ids = Vec::with_capacity(labels.len());
+        let mut label_names = Vec::with_capacity(labels.len());
+        for tag in labels {
+            label_ids.push(tag.id);
+            label_names.push(tag.name);
+        }
+        Self {
+            entry,
+            author_column,
+            tags_column,
+            category_id,
+            label_ids,
+            label_names,
+        }
+    }
+}
+
+impl<E: std::borrow::Borrow<Entry>> SearchTarget for EntryTarget<E> {
+    fn id(&self) -> Option<i64> {
+        Some(self.entry.borrow().id.micros())
+    }
+    fn feed_id(&self) -> i64 {
+        self.entry.borrow().id_feed
+    }
+    fn category_id(&self) -> Option<i64> {
+        self.category_id
+    }
+    fn title(&self) -> &str {
+        &self.entry.borrow().title
+    }
+    fn content(&self) -> &str {
+        &self.entry.borrow().content
+    }
+    fn author(&self) -> &str {
+        &self.author_column
+    }
+    fn link(&self) -> &str {
+        &self.entry.borrow().link
+    }
+    fn tags(&self) -> &str {
+        &self.tags_column
+    }
+    fn label_ids(&self) -> &[i64] {
+        &self.label_ids
+    }
+    fn label_names(&self) -> &[String] {
+        &self.label_names
+    }
+    fn date(&self) -> i64 {
+        self.entry.borrow().date
+    }
+    fn last_modified(&self) -> Option<i64> {
+        self.entry.borrow().last_modified
+    }
+    fn last_user_modified(&self) -> Option<i64> {
+        self.entry.borrow().last_user_modified
+    }
 }
 
 #[cfg(test)]

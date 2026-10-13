@@ -152,6 +152,56 @@ pub async fn list_hashes_for_guids(
     Ok(out)
 }
 
+/// The ids of the stored articles with these guids.
+///
+/// What a refresh needs to attach labels after the commit: the filter rules are evaluated over
+/// articles that have no id yet, and the link table cannot be written until they do.
+pub async fn ids_for_guids(
+    conn: &mut SqliteConnection,
+    id_feed: i64,
+    guids: &[String],
+) -> Result<HashMap<String, i64>> {
+    let mut out = HashMap::with_capacity(guids.len());
+    for chunk in guids.chunks(MAX_BIND_PARAMS - 1) {
+        let placeholders = in_clause(2, chunk.len());
+        let mut query = sqlx::query_as::<_, (String, i64)>(sql(format!(
+            "SELECT guid, id FROM entry WHERE id_feed = ?1 AND guid IN {placeholders}"
+        )))
+        .bind(id_feed);
+        for guid in chunk {
+            query = query.bind(guid.as_str());
+        }
+        let rows = query.fetch_all(&mut *conn).await?;
+        out.extend(rows);
+    }
+    Ok(out)
+}
+
+/// Clears the read flag on the stored articles with these guids.
+///
+/// Separate from [`update_existing`] because that one can only *set* the flag through its
+/// `COALESCE`: `mark_updated_article_unread` is the one policy that clears it, and expressing
+/// "write 0" through a `COALESCE(?x, x)` that reads `None` as "leave alone" is not possible.
+pub async fn mark_unread_by_guids(
+    conn: &mut SqliteConnection,
+    id_feed: i64,
+    guids: &[String],
+) -> Result<usize> {
+    let mut total = 0;
+    for chunk in guids.chunks(MAX_BIND_PARAMS - 2) {
+        let placeholders = in_clause(2, chunk.len());
+        let mut query = sqlx::query(sql(format!(
+            "UPDATE entry SET is_read = 0 WHERE id_feed = ?1 AND guid IN {placeholders}"
+        )))
+        .bind(id_feed);
+        for guid in chunk {
+            query = query.bind(guid.as_str());
+        }
+        total += query.execute(&mut *conn).await?.rows_affected();
+    }
+    Ok(total as usize)
+}
+
 /// The most recent N titles in a feed, for `read_when_same_title_in_feed`.
 pub async fn list_recent_titles(
     conn: &mut SqliteConnection,

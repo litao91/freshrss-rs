@@ -34,6 +34,7 @@ jiff.workspace = true
 md-5.workspace = true
 mime_guess.workspace = true
 once_cell.workspace = true
+rand.workspace = true
 percent-encoding.workspace = true
 regex.workspace = true
 rust-embed.workspace = true

@@ -568,7 +568,7 @@ pub struct EntryPageDto {
 /// Entry ids exceed 2^53, the largest integer a JavaScript number represents exactly, so a numeric
 /// id would be silently rounded. Feed and category ids are small, but they are strings too so the
 /// frontend has one rule rather than two.
-fn serialize_id<S: serde::Serializer>(id: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+pub fn serialize_id<S: serde::Serializer>(id: &i64, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&id.to_string())
 }
 
@@ -898,6 +898,7 @@ mod tests {
             new_entries: 3,
             updated_entries: 1,
             unchanged: 8,
+            upstream_empty: false,
         };
         let dto = FeedRefreshDto::from(&fetched);
         assert_eq!(dto.status, "fetched");
@@ -915,6 +916,7 @@ mod tests {
             new_entries: 0,
             updated_entries: 0,
             unchanged: 0,
+            upstream_empty: false,
         };
         let dto = FeedRefreshDto::from(&failed);
         assert_eq!(dto.status, "failed");

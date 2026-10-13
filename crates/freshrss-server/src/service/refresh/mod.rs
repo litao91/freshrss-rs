@@ -15,7 +15,9 @@
 //! - **A 304 still advances `lastSeen`.** Otherwise a healthy feed that rarely publishes would have
 //!   its whole backlog age out on the retention schedule.
 
+pub mod filters;
 pub mod reconcile;
+pub mod retention;
 pub mod run;
 
 use std::collections::BTreeMap;
@@ -26,13 +28,14 @@ use freshrss_feed::{parse_feed, scrape_feed, FeedError, RawFeed};
 use tracing::{info, warn};
 
 use crate::config::AppConfig;
-use crate::db::dao::{entry as entry_dao, feed as feed_dao};
+use crate::db::dao::{entry as entry_dao, feed as feed_dao, tag as tag_dao};
 use crate::db::Db;
 use crate::domain::attributes::keys;
 use crate::domain::feed::Feed;
 use crate::domain::kind::FeedKind;
 use crate::error::Result;
 use crate::service::ingest::{self, Sanitize};
+use crate::service::search::EntryView;
 use reconcile::reconcile;
 
 /// Everything a refresh needs that is not per-feed.
@@ -126,6 +129,9 @@ pub struct Outcome {
     pub updated_entries: usize,
     /// Articles the feed published that were already stored unchanged.
     pub unchanged: usize,
+    /// Whether the feed published no articles at all. Retention reads an empty feed as "everything
+    /// is gone" rather than as "one article is gone", which is a different policy.
+    pub upstream_empty: bool,
 }
 
 impl Outcome {
@@ -135,6 +141,7 @@ impl Outcome {
             new_entries: 0,
             updated_entries: 0,
             unchanged: 0,
+            upstream_empty: false,
         }
     }
 }
@@ -156,8 +163,22 @@ pub async fn refresh_feed(
     settings: &Settings,
     now: i64,
 ) -> Result<Outcome> {
+    refresh_with_cleanup(db, fetcher, feed, settings, now, retention::Cleanup::Roll).await
+}
+
+/// [`refresh_feed`] with the retention cleanup's throttle chosen by the caller.
+///
+/// Tests force it, because a one-in-thirty-one roll is not something a test can wait for.
+pub async fn refresh_with_cleanup(
+    db: &Db,
+    fetcher: &(dyn Fetcher + '_),
+    feed: &Feed,
+    settings: &Settings,
+    now: i64,
+    cleanup: retention::Cleanup,
+) -> Result<Outcome> {
     let request = request_for(feed, settings);
-    match fetcher.fetch(&request).await {
+    let outcome = match fetcher.fetch(&request).await {
         Ok(FetchOutcome::NotModified) => {
             // Nothing came back, so `lastSeen` advances for every article seen at the previous
             // refresh rather than for a guid list this run never produced.
@@ -165,7 +186,7 @@ pub async fn refresh_feed(
         }
         Ok(FetchOutcome::Found(body)) => {
             if !body.changed_since(feed.simplepie_hash()) {
-                return touch(
+                touch(
                     db,
                     feed,
                     now,
@@ -176,12 +197,30 @@ pub async fn refresh_feed(
                     )),
                     Status::Unchanged,
                 )
-                .await;
+                .await
+            } else {
+                fetched(db, feed, settings, now, body).await
             }
-            fetched(db, feed, settings, now, body).await
         }
         Err(err) => fail(db, feed, settings, now, &err).await,
+    }?;
+
+    // Only after a successful refresh: a feed that could not be fetched has told us nothing about
+    // what it still publishes, and cleaning up on silence would empty an archive because a server
+    // had an outage.
+    if outcome.status.is_success() {
+        let retained = retention::apply(db, feed, now, outcome.upstream_empty, cleanup).await?;
+        if !retained.is_empty() {
+            info!(
+                feed = feed.id,
+                deleted = retained.deleted,
+                read_as_gone = retained.read_as_gone,
+                read_over_cap = retained.read_over_cap,
+                "retention ran"
+            );
+        }
     }
+    Ok(outcome)
 }
 
 /// The fetch request for one feed, from its own settings where it has them.
@@ -274,6 +313,10 @@ async fn fetched(
     let criteria = ingested.criteria;
     let degraded = ingested.degraded;
 
+    // The automation this refresh applies. Loaded before the write so the process-wide writer lock
+    // is held only for the writes themselves, not for parsing queries.
+    let automation = filters::Automation::load(db, feed, now).await?;
+
     let id = feed.id;
     let id_user = feed.id_user;
     let mut stored = feed.clone();
@@ -296,11 +339,52 @@ async fn fetched(
         .permanently_moved
         .then(|| body.effective_url.clone())
         .filter(|url| !url.is_empty() && url != &feed.url);
-    let (new_entries, updated_entries, unchanged) = db
+    let (new_entries, updated_entries, unchanged, labelled) = db
         .with_writer(move |mut conn| async move {
             let known = entry_dao::list_hashes_for_guids(&mut conn, id, &guids).await?;
             let plan = reconcile(entries, &known, now);
-            let (insert, update, unchanged) = (plan.insert, plan.update, plan.unchanged);
+            let (mut insert, mut update, unchanged) = (plan.insert, plan.update, plan.unchanged);
+
+            // The automation, in feed order: what counts as "already read" for one article includes
+            // the articles earlier in this same batch, which is why the sets live across the loop.
+            let mut seen = filters::Seen::load(&mut conn, feed, &automation.policies).await?;
+            let mut labels_by_guid: Vec<(String, Vec<String>)> = Vec::new();
+
+            for entry in insert.iter_mut() {
+                let target = EntryView::borrowed(entry, feed.category);
+                let applied = automation.rules.apply(&target, false);
+                entry.is_read = filters::read_flag(
+                    &automation.policies,
+                    &applied,
+                    &seen,
+                    false,
+                    &entry.title,
+                    &entry.guid,
+                );
+                entry.is_favorite = applied.star;
+                if !applied.labels.is_empty() {
+                    labels_by_guid.push((entry.guid.clone(), applied.labels));
+                }
+                seen.record(&automation.policies, &entry.title, &entry.guid);
+            }
+
+            // Updated articles: an upstream edit clears the read flag only when the policy says so,
+            // and a `read` filter action overrides that clearing, which is PHP's order. `star` and
+            // `label` are skipped for them inside `Rules::apply`.
+            let mut unread_guids: Vec<String> = Vec::new();
+            for entry in update.iter_mut() {
+                let target = EntryView::borrowed(entry, feed.category);
+                let applied = automation.rules.apply(&target, true);
+                if automation.policies.mark_updated_unread && !applied.read {
+                    unread_guids.push(entry.guid.clone());
+                }
+                entry.is_read = applied.read;
+                entry.is_favorite = applied.star;
+                if !applied.labels.is_empty() {
+                    labels_by_guid.push((entry.guid.clone(), applied.labels));
+                }
+                seen.record(&automation.policies, &entry.title, &entry.guid);
+            }
 
             let mut new_entries = 0;
             if !insert.is_empty() {
@@ -314,6 +398,9 @@ async fn fetched(
                 if entry_dao::update_existing(&mut conn, entry).await? {
                     updated_entries += 1;
                 }
+            }
+            if !unread_guids.is_empty() {
+                entry_dao::mark_unread_by_guids(&mut conn, id, &unread_guids).await?;
             }
 
             entry_dao::update_last_seen(&mut conn, id, &guids, now).await?;
@@ -336,15 +423,43 @@ async fn fetched(
                 feed_dao::update_url(&mut conn, id, id_user, url).await?;
             }
             feed_dao::update_cached_values(&mut conn, &[id]).await?;
-            Ok((new_entries, updated_entries, unchanged))
+
+            // Labels are attached last, because the link table needs the ids the commit above
+            // allocated. A name with no label behind it is dropped: rules may outlive the label
+            // they name, and recreating a deleted label from a stale rule would resurrect it.
+            let mut labelled = 0;
+            if !labels_by_guid.is_empty() {
+                let wanted: Vec<String> = labels_by_guid
+                    .iter()
+                    .map(|(guid, _)| guid.clone())
+                    .collect();
+                let ids = entry_dao::ids_for_guids(&mut conn, id, &wanted).await?;
+                for (guid, names) in &labels_by_guid {
+                    let Some(entry_id) = ids.get(guid) else {
+                        continue;
+                    };
+                    for name in names {
+                        if let Some(tag_id) = automation.rules.label_id(name) {
+                            labelled +=
+                                tag_dao::tag_entries(&mut conn, tag_id, &[*entry_id]).await?;
+                        }
+                    }
+                }
+            }
+            Ok((new_entries, updated_entries, unchanged, labelled))
         })
         .await?;
+
+    if labelled > 0 {
+        info!(feed = feed.id, labelled, "filter actions attached labels");
+    }
 
     Ok(Outcome {
         status: Status::Fetched,
         new_entries,
         updated_entries,
         unchanged,
+        upstream_empty: raw.items.is_empty(),
     })
 }
 
@@ -485,9 +600,12 @@ mod tests {
     use freshrss_feed::http::reqwest::FixtureError;
     use freshrss_feed::http::{FetchedBody, FixtureFetcher, FixtureResponse};
 
-    use crate::db::dao::{entry as entry_dao, feed as feed_dao, user as user_dao};
+    use crate::config::MarkWhen;
+    use crate::db::dao::{entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao};
     use crate::db::support::db;
+    use crate::domain::attributes::{keys, Attributes};
     use crate::domain::entry::Entry;
+    use crate::domain::filter_action::{FilterAction, FilterActionType};
 
     use super::*;
 
@@ -1138,6 +1256,467 @@ mod tests {
         assert_eq!(
             rows.iter().filter(|(_, user)| *user == bob.id_user).count(),
             EACH
+        );
+    }
+    // --- filter actions and mark-when ---------------------------------------
+
+    /// Two articles, one of which a `intitle:Release` rule matches.
+    const FILTERED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title>
+<item><title>Release 1.0</title><link>https://e.example/1</link><guid>g1</guid><description>Body</description></item>
+<item><title>Changelog</title><link>https://e.example/2</link><guid>g2</guid><description>Body</description></item>
+</channel></rss>"#;
+
+    /// `g1` edited a second time, for the updated-article policies.
+    const V3: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title><link>https://e.example/</link>
+<item><title>One, corrected twice</title><link>https://e.example/1</link><guid>g1</guid><pubDate>Thu, 01 Oct 2026 08:00:00 GMT</pubDate><description>First body</description></item>
+<item><title>Two</title><link>https://e.example/2</link><guid>g2</guid><description>Second body</description></item>
+</channel></rss>"#;
+
+    /// A new article repeating a title that is already stored.
+    const DUP_TITLE: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title>
+<item><title>One</title><link>https://e.example/9</link><guid>g9</guid><description>Another body</description></item>
+</channel></rss>"#;
+
+    fn rule(search: &str, actions: &[FilterActionType]) -> FilterAction {
+        FilterAction {
+            search: search.to_owned(),
+            actions: actions.to_vec(),
+        }
+    }
+
+    async fn set_feed_filters(db: &Db, feed: &Feed, rules: Vec<FilterAction>) {
+        let (id, id_user) = (feed.id, feed.id_user);
+        db.with(move |mut conn| async move {
+            let mut stored = feed_dao::find_by_id(&mut conn, id, id_user)
+                .await?
+                .expect("feed");
+            stored.set_filter_actions(rules);
+            feed_dao::update_attributes(&mut conn, id, id_user, &stored.attributes).await
+        })
+        .await
+        .expect("filters stored");
+    }
+
+    async fn set_mark_when(db: &Db, id_user: i64, mark_when: MarkWhen) {
+        db.with(move |mut conn| async move {
+            let mut user = user_dao::find_by_id(&mut conn, id_user)
+                .await?
+                .expect("user");
+            user.config.mark_when = mark_when;
+            user_dao::update_config(&mut conn, id_user, &user.config).await
+        })
+        .await
+        .expect("config stored");
+    }
+
+    async fn add_label(db: &Db, id_user: i64, name: &str, rules: Vec<FilterAction>) -> i64 {
+        let name = name.to_owned();
+        db.with(move |mut conn| async move {
+            let id = tag_dao::find_or_create(&mut conn, id_user, &name).await?;
+            let mut attributes = Attributes::new();
+            let _ = attributes.set_typed(keys::FILTERS, &rules);
+            tag_dao::update_attributes(&mut conn, id, id_user, &attributes).await?;
+            Ok(id)
+        })
+        .await
+        .expect("label stored")
+    }
+
+    async fn labels_of(db: &Db, feed_id: i64, guid: &str) -> Vec<String> {
+        let guid = guid.to_owned();
+        db.with(move |mut conn| async move {
+            let entry = entry_dao::find_by_guid(&mut conn, feed_id, &guid)
+                .await?
+                .expect("entry");
+            Ok(tag_dao::labels_for_entry(&mut conn, entry.id.micros())
+                .await?
+                .into_iter()
+                .map(|tag| tag.name)
+                .collect())
+        })
+        .await
+        .expect("labels read")
+    }
+
+    #[tokio::test]
+    async fn a_read_filter_marks_matching_new_articles_read() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_feed_filters(
+            &db,
+            &feed,
+            vec![rule("intitle:Release", &[FilterActionType::Read])],
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(FILTERED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        assert!(entry(&db, feed.id, "g1").await.expect("g1").is_read);
+        assert!(
+            !entry(&db, feed.id, "g2").await.expect("g2").is_read,
+            "a rule that does not match must leave the article alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_star_filter_stars_matching_articles() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_feed_filters(
+            &db,
+            &feed,
+            vec![rule("intitle:Release", &[FilterActionType::Star])],
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(FILTERED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        assert!(entry(&db, feed.id, "g1").await.expect("g1").is_favorite);
+        assert!(!entry(&db, feed.id, "g2").await.expect("g2").is_favorite);
+    }
+
+    #[tokio::test]
+    async fn a_label_filter_attaches_an_existing_label() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        add_label(
+            &db,
+            feed.id_user,
+            "releases",
+            vec![rule("intitle:Release", &[FilterActionType::Label])],
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(FILTERED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+
+        assert_eq!(
+            labels_of(&db, feed.id, "g1").await,
+            vec!["releases".to_owned()]
+        );
+        assert!(
+            labels_of(&db, feed.id, "g2").await.is_empty(),
+            "an article the rule does not match keeps no label"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_label_rule_naming_a_deleted_label_attaches_nothing() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        // A label whose row is gone: the rule survives it, and must not resurrect it.
+        let gone = add_label(
+            &db,
+            feed.id_user,
+            "gone",
+            vec![rule("intitle:Release", &[FilterActionType::Label])],
+        )
+        .await;
+        db.with(
+            move |mut conn| async move { tag_dao::delete(&mut conn, gone, feed.id_user).await },
+        )
+        .await
+        .expect("deleted");
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(FILTERED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+        assert!(labels_of(&db, feed.id, "g1").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_upon_reception_marks_every_new_article_read() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_mark_when(
+            &db,
+            feed.id_user,
+            MarkWhen {
+                reception: true,
+                ..MarkWhen::default()
+            },
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(FILTERED));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("refreshed");
+        assert!(entry(&db, feed.id, "g1").await.expect("g1").is_read);
+        assert!(entry(&db, feed.id, "g2").await.expect("g2").is_read);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_title_is_read_only_when_the_policy_is_on() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+
+        // "One" is stored now, so a new article repeating it is the duplicate the policy catches.
+        let fetcher = FixtureFetcher::new().with(URL, rss(DUP_TITLE));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW + 60)
+            .await
+            .expect("second");
+        assert!(
+            !entry(&db, feed.id, "g9").await.expect("g9").is_read,
+            "off by default"
+        );
+
+        set_mark_when(
+            &db,
+            feed.id_user,
+            MarkWhen {
+                same_title_in_feed: true,
+                ..MarkWhen::default()
+            },
+        )
+        .await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(&DUP_TITLE.replace("g9", "g10")));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW + 120)
+            .await
+            .expect("third");
+        assert!(
+            entry(&db, feed.id, "g10").await.expect("g10").is_read,
+            "the stored title makes the new article read"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edit_is_marked_unread_only_when_the_policy_says_so() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+        let g1 = entry(&db, feed.id, "g1").await.expect("g1");
+        let id_user = feed.id_user;
+        db.with(move |mut conn| async move {
+            entry_dao::mark_read(&mut conn, id_user, &[g1.id], true).await
+        })
+        .await
+        .expect("marked read");
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(V2));
+        let again = stored_feed(&db, &feed).await;
+        refresh_feed(&db, &fetcher, &again, &Settings::default(), NOW + 60)
+            .await
+            .expect("second");
+        assert!(
+            entry(&db, feed.id, "g1").await.expect("g1").is_read,
+            "an edit leaves the read flag alone by default"
+        );
+
+        set_mark_when(
+            &db,
+            id_user,
+            MarkWhen {
+                updated_unread: true,
+                ..MarkWhen::default()
+            },
+        )
+        .await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(V3));
+        let again = stored_feed(&db, &feed).await;
+        refresh_feed(&db, &fetcher, &again, &Settings::default(), NOW + 120)
+            .await
+            .expect("third");
+        assert!(
+            !entry(&db, feed.id, "g1").await.expect("g1").is_read,
+            "the policy clears the flag on an edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_filter_beats_mark_updated_unread() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_mark_when(
+            &db,
+            feed.id_user,
+            MarkWhen {
+                updated_unread: true,
+                ..MarkWhen::default()
+            },
+        )
+        .await;
+        set_feed_filters(
+            &db,
+            &feed,
+            vec![rule("intitle:One", &[FilterActionType::Read])],
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+        let fetcher = FixtureFetcher::new().with(URL, rss(V2));
+        let again = stored_feed(&db, &feed).await;
+        refresh_feed(&db, &fetcher, &again, &Settings::default(), NOW + 60)
+            .await
+            .expect("second");
+        assert!(
+            entry(&db, feed.id, "g1").await.expect("g1").is_read,
+            "PHP applies the filter after the unread mark, so the filter wins"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_star_filter_is_not_reapplied_to_an_edit() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        set_feed_filters(
+            &db,
+            &feed,
+            vec![rule("intitle:One", &[FilterActionType::Star])],
+        )
+        .await;
+        let feed = stored_feed(&db, &feed).await;
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(V1));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+        assert!(entry(&db, feed.id, "g1").await.expect("g1").is_favorite);
+
+        // The user un-stars it, then the feed edits it: the rule must not re-star it over them.
+        let g1 = entry(&db, feed.id, "g1").await.expect("g1");
+        let id_user = feed.id_user;
+        db.with(move |mut conn| async move {
+            entry_dao::mark_favorite(&mut conn, id_user, &[g1.id], false).await
+        })
+        .await
+        .expect("un-starred");
+
+        let fetcher = FixtureFetcher::new().with(URL, rss(V2));
+        let again = stored_feed(&db, &feed).await;
+        refresh_feed(&db, &fetcher, &again, &Settings::default(), NOW + 60)
+            .await
+            .expect("second");
+        assert!(
+            !entry(&db, feed.id, "g1").await.expect("g1").is_favorite,
+            "an upstream edit must not overrule a deliberate un-star"
+        );
+    }
+    /// The same feed publishing only its newest article, as a feed that truncates its window does.
+    const TRUNCATED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title><link>https://e.example/</link>
+<item><title>Three</title><link>https://e.example/3</link><guid>g3</guid><description>Third body</description></item>
+</channel></rss>"#;
+
+    #[tokio::test]
+    async fn a_refresh_retires_what_the_feed_stopped_publishing() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(V2));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+        assert_eq!(all_entries(&db, feed.id_user).await.len(), 3);
+
+        // Keep only the single most recently seen article.
+        let id_user = feed.id_user;
+        db.with(move |mut conn| async move {
+            let mut user = user_dao::find_by_id(&mut conn, id_user)
+                .await?
+                .expect("user");
+            user.config.archiving.keep_max = Some(1);
+            user.config.archiving.keep_min = None;
+            user.config.archiving.keep_period = None;
+            user_dao::update_config(&mut conn, id_user, &user.config).await
+        })
+        .await
+        .expect("config stored");
+
+        // The feed now publishes only g3, so g1 and g2 keep their old `lastSeen` — and that, not the
+        // feed dropping them, is what makes them deletable.
+        let fetcher = FixtureFetcher::new().with(URL, rss(TRUNCATED));
+        let again = stored_feed(&db, &feed).await;
+        let outcome = refresh_with_cleanup(
+            &db,
+            &fetcher,
+            &again,
+            &Settings::default(),
+            NOW + 60,
+            retention::Cleanup::Force,
+        )
+        .await
+        .expect("second");
+        assert_eq!(outcome.new_entries, 0);
+
+        let left: Vec<String> = all_entries(&db, id_user)
+            .await
+            .iter()
+            .map(|e| e.guid.clone())
+            .collect();
+        assert_eq!(
+            left,
+            vec!["g3"],
+            "the dropped articles aged out; the live one stayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_retires_nothing() {
+        let db = db().await;
+        let feed = setup(&db).await;
+        let fetcher = FixtureFetcher::new().with(URL, rss(V2));
+        refresh_feed(&db, &fetcher, &feed, &Settings::default(), NOW)
+            .await
+            .expect("first");
+
+        let id_user = feed.id_user;
+        db.with(move |mut conn| async move {
+            let mut user = user_dao::find_by_id(&mut conn, id_user)
+                .await?
+                .expect("user");
+            user.config.archiving.keep_max = Some(1);
+            user.config.archiving.keep_min = None;
+            user.config.archiving.keep_period = None;
+            user_dao::update_config(&mut conn, id_user, &user.config).await
+        })
+        .await
+        .expect("config stored");
+
+        // The feed 503s. Nothing was published, so nothing may be concluded about what is gone.
+        let fetcher =
+            FixtureFetcher::new().with(URL, FixtureResponse::Error(FixtureError::Http(503)));
+        let again = stored_feed(&db, &feed).await;
+        refresh_with_cleanup(
+            &db,
+            &fetcher,
+            &again,
+            &Settings::default(),
+            NOW + 60,
+            retention::Cleanup::Force,
+        )
+        .await
+        .expect("failed cleanly");
+        assert_eq!(
+            all_entries(&db, id_user).await.len(),
+            3,
+            "an outage deletes nothing"
         );
     }
 }

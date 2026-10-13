@@ -12,6 +12,7 @@ pub mod categories;
 pub mod entries;
 pub mod feeds;
 pub mod me;
+pub mod queries;
 pub mod refresh;
 pub mod search;
 pub mod tree;
@@ -32,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .nest("/categories", categories::router())
         .nest("/feeds", feeds::router())
         .nest("/entries", entries::router())
+        .nest("/queries", queries::router())
         .nest("/refresh", refresh::router())
         .nest("/search", search::router())
 }

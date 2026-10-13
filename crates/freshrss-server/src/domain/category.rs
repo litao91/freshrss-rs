@@ -112,6 +112,15 @@ impl Category {
         self.kind == CategoryKind::DynamicOpml
     }
 
+    /// Filter actions owned by this folder, applied to every article of every feed in it.
+    pub fn filter_actions(&self) -> Vec<crate::domain::filter_action::FilterAction> {
+        self.attributes
+            .get_typed::<Vec<crate::domain::filter_action::FilterAction>>(
+                crate::domain::attributes::keys::FILTERS,
+            )
+            .unwrap_or_default()
+    }
+
     pub fn has_error(&self) -> bool {
         self.error > 0
     }

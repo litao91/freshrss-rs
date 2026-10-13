@@ -10,13 +10,14 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::dto::{deserialize_id, CreatedFeedDto, DiscoveredDto, FeedDto, FeedRefreshDto};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extract::CurrentUser;
 use crate::db::dao::{category as cat_dao, feed as feed_dao};
 use crate::domain::feed::Feed;
+use crate::domain::filter_action::FilterAction;
 use crate::domain::ids::now_unix;
 use crate::domain::kind::FeedKind;
 use crate::domain::priority::Priority;
@@ -39,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/{id}", get(show).put(update).delete(remove))
         .route("/{id}/move", post(move_to_category))
         .route("/{id}/refresh", post(refresh_one))
+        .route("/{id}/filters", get(filters).put(set_filters))
         .route("/{id}/entries", delete(truncate_entries))
 }
 
@@ -168,7 +170,11 @@ pub async fn create(
         category: req.category_id,
         kind,
         priority: req.priority.map(Priority::new).unwrap_or_default(),
-        ttl: requested_ttl(req.ttl.unwrap_or(0), req.muted.unwrap_or(false), default_ttl),
+        ttl: requested_ttl(
+            req.ttl.unwrap_or(0),
+            req.muted.unwrap_or(false),
+            default_ttl,
+        ),
     };
 
     let added = subscription::add(
@@ -359,6 +365,69 @@ pub async fn remove(
         .await
         .map_err(ApiError)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct SetFiltersRequest {
+    pub filters: Vec<FilterAction>,
+}
+
+#[derive(Serialize)]
+pub struct FiltersDto {
+    pub filters: Vec<FilterAction>,
+}
+
+/// The feed's `{search, actions}` rules.
+pub async fn filters(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    PathParam(id): PathParam<i64>,
+) -> ApiResult<Json<FiltersDto>> {
+    let id_user = user.id;
+    let feed = state
+        .db
+        .with(move |mut conn| async move { require_feed(&mut conn, id, id_user).await })
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(FiltersDto {
+        filters: feed.filter_actions(),
+    }))
+}
+
+/// Replaces the feed's rules wholesale.
+///
+/// Each search is parsed here rather than at refresh time, so a typo is refused in the settings box
+/// that produced it instead of surfacing as a warning in the log the next time the feed refreshes.
+pub async fn set_filters(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    PathParam(id): PathParam<i64>,
+    Json(req): Json<SetFiltersRequest>,
+) -> ApiResult<Json<FiltersDto>> {
+    for rule in &req.filters {
+        if !rule.is_valid() {
+            return Err(ApiError(Error::Validation(
+                "a filter rule needs both a search and at least one action".into(),
+            )));
+        }
+        freshrss_search::parser::parse(&rule.search, now_unix())
+            .map_err(|err| Error::Validation(err.to_string()))?;
+    }
+
+    let id_user = user.id;
+    let feed = state
+        .db
+        .with(move |mut conn| async move {
+            let mut feed = require_feed(&mut conn, id, id_user).await?;
+            feed.set_filter_actions(req.filters);
+            feed_dao::update_attributes(&mut conn, id, id_user, &feed.attributes).await?;
+            require_feed(&mut conn, id, id_user).await
+        })
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(FiltersDto {
+        filters: feed.filter_actions(),
+    }))
 }
 
 /// Empties a feed's articles but keeps the subscription, and resets `lastUpdate` so the next

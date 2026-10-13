@@ -12,16 +12,16 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 
 use freshrss_search::ast::Expr;
-use freshrss_search::matcher::{matches, SearchTarget};
+use freshrss_search::matcher::matches;
 use freshrss_search::render::render;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extract::CurrentUser;
 use crate::db::dao::{entry as entry_dao, feed as feed_dao, tag as tag_dao};
-use crate::domain::entry::Entry;
 use crate::domain::ids::EntryId;
 use crate::error::Error;
 use crate::router::AppState;
+use crate::service::search::SearchableEntry;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -173,100 +173,13 @@ pub async fn preview(
     Ok(Json(response))
 }
 
-// ---------------------------------------------------------------------------
-// The matcher's view of a stored article
-// ---------------------------------------------------------------------------
-
-/// An [`Entry`] plus the two column forms the matcher has to see.
-///
-/// [`SearchTarget`] hands out `&str`, but the domain type stores authors and tags as `Vec<String>`
-/// while both backends compare against the *joined* forms — `"a; b"` and `"#a #b"`, the text SQL reads
-/// out of the column. Joining per predicate would be quadratic, so the wrapper joins once.
-///
-/// It also carries the folder and the labels, which are not columns on `entry` at all: the folder lives
-/// on the feed and the labels in `entrytag`. Whoever builds this has to resolve them, and getting that
-/// wrong makes `c:` and `labels:` answer a different question than the SQL does.
-pub struct SearchableEntry {
-    pub entry: Entry,
-    author_column: String,
-    tags_column: String,
-    category_id: Option<i64>,
-    label_ids: Vec<i64>,
-    label_names: Vec<String>,
-}
-
-impl SearchableEntry {
-    /// Builds one from a stored entry and the lookups the caller already has.
-    pub fn new(
-        entry: Entry,
-        category_id: Option<i64>,
-        labels: Vec<crate::domain::tag::Tag>,
-    ) -> Self {
-        let author_column = entry.author_to_db();
-        let tags_column = entry.tags_to_db();
-        let mut label_ids = Vec::with_capacity(labels.len());
-        let mut label_names = Vec::with_capacity(labels.len());
-        for tag in labels {
-            label_ids.push(tag.id);
-            label_names.push(tag.name);
-        }
-        Self {
-            entry,
-            author_column,
-            tags_column,
-            category_id,
-            label_ids,
-            label_names,
-        }
-    }
-}
-
-impl SearchTarget for SearchableEntry {
-    fn id(&self) -> Option<i64> {
-        Some(self.entry.id.micros())
-    }
-    fn feed_id(&self) -> i64 {
-        self.entry.id_feed
-    }
-    fn category_id(&self) -> Option<i64> {
-        self.category_id
-    }
-    fn title(&self) -> &str {
-        &self.entry.title
-    }
-    fn content(&self) -> &str {
-        &self.entry.content
-    }
-    fn author(&self) -> &str {
-        &self.author_column
-    }
-    fn link(&self) -> &str {
-        &self.entry.link
-    }
-    fn tags(&self) -> &str {
-        &self.tags_column
-    }
-    fn label_ids(&self) -> &[i64] {
-        &self.label_ids
-    }
-    fn label_names(&self) -> &[String] {
-        &self.label_names
-    }
-    fn date(&self) -> i64 {
-        self.entry.date
-    }
-    fn last_modified(&self) -> Option<i64> {
-        self.entry.last_modified
-    }
-    fn last_user_modified(&self) -> Option<i64> {
-        self.entry.last_user_modified
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use freshrss_search::matcher::SearchTarget;
+
     use super::*;
     use crate::domain::attributes::Attributes;
+    use crate::domain::entry::Entry;
     use crate::domain::ids::EntryId;
     use crate::domain::tag::Tag;
 
