@@ -215,6 +215,35 @@ try {
   await page.keyboard.press('u');
   await page.waitForTimeout(1200);
 
+  // --- text size ---------------------------------------------------------
+  // `+` is Shift+= on most layouts, which is exactly the case a blanket "no Shift" guard deletes.
+  const proseSize = () =>
+    page.evaluate(() => document.documentElement.style.getPropertyValue('--rd-prose-size').trim());
+  const sizeBefore = await proseSize();
+  await page.keyboard.press('+');
+  await page.waitForTimeout(300);
+  const sizeUp = await proseSize();
+  check('+ enlarges the prose', sizeUp !== sizeBefore && sizeUp !== '', `${sizeBefore || '(default)'} → ${sizeUp}`);
+  await page.keyboard.press('-');
+  await page.waitForTimeout(300);
+  check('- shrinks it back', (await proseSize()) === sizeBefore, `${sizeUp} → ${await proseSize()}`);
+  // The same key as a real layout produces it: Shift held, since `+` is Shift+= everywhere but the
+  // numpad. Both event shapes have to reach the binding.
+  await page.keyboard.press('Shift+Equal');
+  await page.waitForTimeout(300);
+  check('the shifted + from a real layout also enlarges', (await proseSize()) === sizeUp, `${await proseSize()}`);
+  await page.keyboard.press('-');
+  await page.waitForTimeout(300);
+
+  // Shift+A must reach the mark-all dialog: the shifted letter arrives as `A`, which an
+  // uppercase-comparing matcher silently dropped.
+  await page.keyboard.press('Shift+A');
+  await page.waitForSelector('#rd-markall-dialog[open]', { timeout: 5000 });
+  check('Shift+A opens the mark-all dialog', true);
+  await page.locator('#rd-markall-dialog .rd-dialog-actions button').first().click();
+  await page.waitForTimeout(400);
+  check('the mark-all dialog cancels', (await page.locator('#rd-markall-dialog[open]').count()) === 0);
+
   // --- sorting -----------------------------------------------------------
   await page.locator('.rd-list-head .rd-segment[aria-label="Sort"] button', { hasText: 'Title' }).click();
   await page.waitForSelector('.rd-items .rd-item', { timeout: 10000 });

@@ -43,13 +43,18 @@ export const SHORTCUTS: Shortcut[] = [
 
 /** Looks up a binding, or `undefined` when the key is not ours. */
 export function find(event: KeyboardEvent): Shortcut | undefined {
-  // A modifier other than the one the binding asks for means the browser or the OS owns the key:
-  // Cmd+R is reload, Ctrl+F is find, and swallowing either would be hostile.
-  const wantsShift = event.key === '?';
+  // A modifier other than Shift means the browser or the OS owns the key: Cmd+R is reload, Ctrl+F
+  // is find, and swallowing either would be hostile.
+  //
+  // Shift is deliberately not gated here. Holding it changes `event.key` to the shifted symbol, so
+  // a letter binding cannot be hit by accident — and the symbols that only exist through Shift
+  // (`+` as Shift+=, `?` as Shift+/) are themselves bindings, so a blanket "no Shift" rule would
+  // silently delete them from the map. Each binding states instead whether it *requires* Shift.
   if (event.metaKey || event.ctrlKey || event.altKey) return undefined;
-  if (event.shiftKey !== wantsShift && event.key !== 'A') return undefined;
   return SHORTCUTS.find((s) =>
-    s.shift ? (event.shiftKey && (event.key === s.key || event.key.toUpperCase() === s.key)) : event.key === s.key,
+    s.shift
+      ? event.shiftKey && event.key.toLowerCase() === s.key
+      : event.key === s.key,
   );
 }
 
