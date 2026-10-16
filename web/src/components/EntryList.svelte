@@ -8,7 +8,7 @@
    * same announcements here.
    */
   import { onMount, tick } from 'svelte';
-  import type { EntrySummary } from '../lib/api';
+  import { mediaUrl, type EntrySummary } from '../lib/api';
   import { entries, isEmpty, loadMore, reload, setRead, setStarred } from '../lib/entries.svelte';
   import { formatCount, formatListTime } from '../lib/format';
   import { t } from '../lib/i18n';
@@ -235,10 +235,9 @@
                   {#if entry.thumbnail}
                     <img
                       class="rd-item-media"
-                      src={entry.thumbnail}
+                      src={mediaUrl(entry.thumbnail, entry.link)}
                       alt=""
                       loading="lazy"
-                      referrerpolicy="no-referrer"
                     />
                   {:else if entry.has_media}
                     <i class="ri-play-circle-line rd-item-media" aria-hidden="true"></i>

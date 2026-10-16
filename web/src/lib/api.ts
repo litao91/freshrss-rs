@@ -457,6 +457,20 @@ function query(params: EntryListParams): string {
 
 // --- endpoints -------------------------------------------------------------
 
+/**
+ * Routes a remote image through `GET /api/v1/media`, naming the article it belongs to.
+ *
+ * Image hosts police `Referer` in both directions and a browser cannot win either way: some accept
+ * only their own site as referer, and the only referer a page served from this reader can give is
+ * the reader's own origin. The proxy replays the article's address instead. Local and data: URLs
+ * pass through untouched.
+ */
+export function mediaUrl(url: string, via: string): string {
+  if (!/^https?:/i.test(url)) return url;
+  const params = new URLSearchParams({ url, via });
+  return `/api/v1/media?${params.toString()}`;
+}
+
 export const api = {
   bootstrap: () => request<Bootstrap>('/me'),
 

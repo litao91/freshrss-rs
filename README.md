@@ -91,6 +91,18 @@ back to the body fingerprint, which is exactly what makes a second refresh of an
 free. Poll no faster than the bridge crawls: regenerating its RSS per request is its own work, not
 yours.
 
+## Article images
+
+Article bodies and list thumbnails load their images through
+`GET /api/v1/media?url=<image>&via=<article>`, not straight from the publisher's CDN. Image hosts
+police the `Referer` header in both directions — some refuse every referer but their own site's,
+others refuse foreign referers outright — and the only referer a page served from this reader can
+give is the reader's own origin, which all of them reject. The proxy replays the article's address
+as referer instead, which is what those hosts actually check, and answers with a week of cache so a
+re-read costs nothing. It needs a session (an image proxy anyone may use is an open proxy), obeys
+the same SSRF guard as feed fetches, is rate-limited like any other outbound fetch, and refuses
+anything whose answer is not an `image/*`.
+
 ## Layout
 
 ```

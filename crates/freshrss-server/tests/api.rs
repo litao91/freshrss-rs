@@ -43,6 +43,9 @@ struct Reply {
     status: StatusCode,
     body: Value,
     set_cookie: Option<String>,
+    content_type: Option<String>,
+    cache_control: Option<String>,
+    bytes: Vec<u8>,
 }
 
 async fn call(
@@ -82,14 +85,28 @@ async fn call(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.split(';').next().unwrap_or(v).to_owned());
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let cache_control = response
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("body");
+        .expect("body")
+        .to_vec();
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Reply {
         status,
         body,
         set_cookie,
+        content_type,
+        cache_control,
+        bytes,
     }
 }
 
@@ -811,4 +828,133 @@ async fn marking_articles_read_keeps_the_cached_sidebar_counters_in_step() {
     let done = get(&app, "/api/v1/counts", &cookie).await;
     assert_eq!(done.body["all"]["unread"], 0, "{:?}", done.body);
     assert_eq!(done.body["main_stream"]["unread"], 0, "{:?}", done.body);
+}
+
+#[tokio::test]
+async fn the_image_proxy_fetches_with_the_article_origin_as_referer() {
+    let (app, cookie) = signed_in().await;
+    // No fixture is registered for the image address, so the fetch fails: the endpoint must report
+    // that as 502 rather than leaking a transport error as a 500. The referer behaviour itself is
+    // pinned by the fetcher's own wire test.
+    let reply = call(
+        &app,
+        Method::GET,
+        "/api/v1/media?url=https%3A%2F%2Fe.example%2Fimg.png&via=https%3A%2F%2Fe.example%2Farticle%2F",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    // No fixture is registered for the image, so the fetch fails and the endpoint must say 502,
+    // not leak the transport error as a 500.
+    assert_eq!(reply.status, StatusCode::BAD_GATEWAY, "{:?}", reply.body);
+}
+
+#[tokio::test]
+async fn the_image_proxy_refuses_to_be_an_open_proxy() {
+    let (app, cookie) = signed_in().await;
+
+    // No session: an image proxy anyone may use is an open proxy.
+    let anonymous = call(
+        &app,
+        Method::GET,
+        "/api/v1/media?url=https%3A%2F%2Fe.example%2Fimg.png",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+
+    // A non-image answer is refused, so the endpoint cannot be pointed at arbitrary resources.
+    // `:` and `/` are legal inside a query value, so the address needs no encoding here.
+    let fed = call(
+        &app,
+        Method::GET,
+        &format!("/api/v1/media?url={FEED_URL}"),
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(fed.status, StatusCode::BAD_GATEWAY, "{:?}", fed.body);
+
+    // An internal address is the SSRF guard's job, and the proxy is a fetch like any other.
+    let internal = call(
+        &app,
+        Method::GET,
+        "/api/v1/media?url=http%3A%2F%2F127.0.0.1%3A1%2Fx.png",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        internal.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        internal.body
+    );
+
+    let scheme = call(
+        &app,
+        Method::GET,
+        "/api/v1/media?url=file%3A%2F%2F%2Fetc%2Fpasswd",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(scheme.status, StatusCode::BAD_REQUEST, "{:?}", scheme.body);
+}
+
+#[tokio::test]
+async fn the_image_proxy_serves_an_image_with_a_long_cache_life() {
+    let db = Db::in_memory().await.expect("db");
+    let fetcher: Arc<dyn Fetcher> = Arc::new(FixtureFetcher::new().with(
+        "https://e.example/img.png",
+        FixtureResponse::Body {
+            status: 200,
+            body: vec![1, 2, 3, 4],
+            etag: None,
+            last_modified: None,
+            content_type: Some("image/png; charset=binary".to_owned()),
+        },
+    ));
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
+    let registered = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(json!({"username": "alice", "password": "correct-horse-battery"})),
+    )
+    .await;
+    let cookie = registered.set_cookie.expect("a session cookie");
+
+    let reply = call(
+        &app,
+        Method::GET,
+        "/api/v1/media?url=https%3A%2F%2Fe.example%2Fimg.png&via=https%3A%2F%2Fe.example%2Fa%2F",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(reply.content_type.as_deref(), Some("image/png"));
+    assert_eq!(reply.bytes, vec![1, 2, 3, 4]);
+    assert!(
+        reply
+            .cache_control
+            .as_deref()
+            .is_some_and(|c| c.contains("max-age")),
+        "{:?}",
+        reply.cache_control
+    );
 }

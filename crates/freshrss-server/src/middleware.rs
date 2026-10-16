@@ -37,12 +37,17 @@ enum Bucket {
 }
 
 fn bucket(method: &Method, path: &str) -> Bucket {
-    if method == Method::GET || method == Method::HEAD {
-        return Bucket::Unmetered;
-    }
     // A layer on the API router sees the path with the `/api/v1` prefix stripped by `nest`, but the
     // same function is trivially reusable on the whole router, so accept both spellings.
     let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    // The image proxy makes the server fetch on behalf of whoever asks, so it is metered like any
+    // other outbound fetch even though it is a GET.
+    if method == Method::GET && path == "/media" {
+        return Bucket::Fetch;
+    }
+    if method == Method::GET || method == Method::HEAD {
+        return Bucket::Unmetered;
+    }
     // The exact `/refresh` must be tested before the `/…/refresh` suffix, or the whole-tree job
     // would be metered as a single-feed fetch.
     if method == Method::POST && (path == "/auth/login" || path == "/auth/register") {

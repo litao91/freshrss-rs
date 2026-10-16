@@ -9,7 +9,7 @@
    * feed parser is exactly the kind of code where a mistake is eventually found.
    */
   import DOMPurify from 'dompurify';
-  import { api, type EntryDetail } from '../lib/api';
+  import { api, mediaUrl, type EntryDetail } from '../lib/api';
   import { entries, setLabels, setRead, setStarred } from '../lib/entries.svelte';
   import { formatFullTime } from '../lib/format';
   import { notifyError } from '../lib/toast.svelte';
@@ -64,17 +64,37 @@
         node.dataset.src ?? node.dataset.original ?? node.dataset.lazySrc ?? node.dataset.actualsrc;
       if (lazy) node.setAttribute('src', lazy);
       if (node.dataset.srcset) node.setAttribute('srcset', node.dataset.srcset);
-      // Hotlink protection is the commonest reason an article's images 403: the CDN refuses
-      // requests whose Referer is not the site itself, so send none.
-      if (/^https?:/i.test(node.src)) node.referrerPolicy = 'no-referrer';
+      // Image hosts police Referer in both directions and a browser cannot satisfy either policy
+      // from inside the reader, so remote images are fetched by the server, which replays the
+      // article's own address. See `mediaUrl`.
+      const src = node.getAttribute('src');
+      if (src) node.setAttribute('src', mediaUrl(src, mediaVia));
+      const srcset = node.getAttribute('srcset');
+      if (srcset) {
+        node.setAttribute(
+          'srcset',
+          srcset
+            .split(',')
+            .map((part) => {
+              const [url, ...rest] = part.trim().split(/\s+/);
+              return [mediaUrl(url, mediaVia), ...rest].join(' ');
+            })
+            .join(', '),
+        );
+      }
     }
   });
 
-  const clean = (html: string): string =>
-    DOMPurify.sanitize(html, {
+  /** The article the body being sanitized belongs to; the hook above routes its images through it. */
+  let mediaVia = '';
+
+  const clean = (html: string, via: string): string => {
+    mediaVia = via;
+    return DOMPurify.sanitize(html, {
       USE_PROFILES: { html: true },
       ADD_ATTR: ['target', 'rel', 'controls', 'preload', 'sandbox', 'allowfullscreen'],
     });
+  };
 
   /**
    * The prose, sanitized. Derived so it recomputes only when the article or the mode changes.
@@ -88,6 +108,7 @@
           showFull && detail.entry.full_content
             ? detail.entry.full_content
             : detail.entry.content_html,
+          detail.entry.link,
         )
       : '',
   );

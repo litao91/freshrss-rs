@@ -30,7 +30,7 @@ const imgs = await page.evaluate(() =>
   [...document.querySelectorAll('.rd-prose img')].map((i) => ({
     w: i.naturalWidth,
     src: i.getAttribute('src') ?? '',
-    ref: i.getAttribute('referrerpolicy'),
+    proxied: (i.getAttribute('src') ?? '').startsWith('/api/v1/media?'),
     placeholder: (i.getAttribute('src') ?? '').includes('/images/v2/t.png'),
   })),
 );
@@ -39,7 +39,7 @@ console.log(`prose imgs: ${imgs.length}`, JSON.stringify(imgs.slice(0, 4)));
 // referrer-leaking image. The dedicated ithome probe covers the lazy-heal on an image-heavy page.
 ok('no scraped image is a 1x1 placeholder', imgs.every((i) => i.w > 1 && !i.placeholder));
 ok('no placeholder src survives', imgs.every((i) => !i.placeholder));
-ok('remote images send no referrer', imgs.every((i) => i.ref === 'no-referrer'));
+ok('remote images go through the reader’s own proxy', imgs.every((i) => i.proxied));
 await page.screenshot({ path: '/tmp/shots/images-healed.png' });
 await page.locator('.rd-read-bar .rd-back').click().catch(() => {});
 await page.waitForTimeout(400);

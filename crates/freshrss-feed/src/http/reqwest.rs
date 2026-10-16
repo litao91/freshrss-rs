@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, REFERER, USER_AGENT};
 use reqwest::{Client, Method, StatusCode};
 
 use super::guard::Guard;
@@ -226,6 +226,11 @@ async fn send(
 
     if let Some((user, pass)) = &request.basic_auth {
         builder = builder.basic_auth(user, Some(pass));
+    }
+    if let Some(referer) = &request.referer {
+        if let Ok(v) = HeaderValue::from_str(referer) {
+            builder = builder.header(REFERER, v);
+        }
     }
     for (name, value) in request.conditional.as_headers() {
         if let Ok(v) = HeaderValue::from_str(value) {
@@ -953,5 +958,25 @@ mod tests {
             "{err:?}"
         );
         assert!(err.is_transient(), "so the next tick tries again");
+    }
+
+    #[tokio::test]
+    async fn the_referer_reaches_the_wire_verbatim() {
+        // Image hosts that accept only their own site as referer are the reason the field exists;
+        // a header that is dropped or rewritten on the way out would look identical to a missing
+        // one from the caller's side, so the raw request is what gets asserted.
+        let (url, requests) = serve(vec![raw("200 OK", "Content-Type: image/webp", "xx")]).await;
+
+        let fetcher = ReqwestFetcher::new().expect("a client");
+        let mut request = FetchRequest::new(url.clone());
+        request.referer = Some("https://www.example/article/".to_owned());
+        fetcher.fetch(&request).await.expect("fetched");
+
+        let sent = requests.await.expect("the server reported");
+        assert!(
+            sent[0].contains("referer: https://www.example/article/"),
+            "{:?}",
+            sent[0]
+        );
     }
 }

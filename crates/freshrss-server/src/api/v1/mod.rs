@@ -13,6 +13,7 @@ pub mod entries;
 pub mod feeds;
 pub mod io;
 pub mod me;
+pub mod media;
 pub mod packages;
 pub mod queries;
 pub mod refresh;
@@ -26,6 +27,7 @@ pub mod tree;
 pub fn router() -> Router<AppState> {
     Router::new()
         .nest("/auth", auth::router())
+        .route("/media", get(media::proxy))
         .route("/me", get(me::bootstrap))
         .route("/me/sessions", get(auth::list_sessions))
         .route("/me/sessions/{id}", delete(auth::revoke_session))

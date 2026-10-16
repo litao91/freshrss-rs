@@ -68,6 +68,7 @@ pub async fn icon(
         basic_auth: None,
         ssl_verify: feed.ssl_verify(),
         proxy: None,
+        referer: None,
         conditional: Default::default(),
     };
 

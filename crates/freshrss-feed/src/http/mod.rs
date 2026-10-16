@@ -49,6 +49,10 @@ pub struct FetchRequest {
     /// Per-feed opt-out of certificate verification, for a self-signed internal feed.
     pub ssl_verify: bool,
     pub proxy: Option<String>,
+    /// Sent as `Referer`, for image hosts that accept only requests appearing to come from their
+    /// own site. The reader's image proxy passes the article's address here: a browser's referer
+    /// would be the reader's own origin, which is exactly what those hosts refuse.
+    pub referer: Option<String>,
     /// Replayed conditional-GET headers.
     pub conditional: ConditionalHeaders,
 }
@@ -65,6 +69,7 @@ impl FetchRequest {
             basic_auth: None,
             ssl_verify: true,
             proxy: None,
+            referer: None,
             conditional: ConditionalHeaders::default(),
         }
     }
