@@ -1487,7 +1487,13 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   overflow-wrap: break-word;
 }
 
-.rd-prose > * + * {
+/* Block rhythm. Deliberately not `> * + *`: the sanitizer strips class attributes, so publisher
+   wrappers arrive as anonymous divs, and a rule that only spaced top-level children left every
+   block inside them stacked with no breathing room at all — headings and images touching.
+   List items are excluded on both sides so `li + li` keeps its own tight spacing. */
+.rd-prose
+  :is(p, div, figure, pre, ul, ol, blockquote, table, h1, h2, h3, h4, img, video)
+  + :is(p, div, figure, pre, ul, ol, blockquote, table, h1, h2, h3, h4, img, video) {
   margin-top: 1.05em;
 }
 
@@ -1499,7 +1505,14 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   color: var(--fd-ink);
   line-height: 1.25;
   margin-top: 1.5em;
-  margin-bottom: -0.4em;
+  /* Zero, not negative: a negative bottom margin is swallowed by a following paragraph's own
+     top margin but applied in full to a following image, pulling it up over the heading. */
+  margin-bottom: 0;
+}
+
+/* The tightening the negative margin used to provide, kept for the case it was safe in. */
+.rd-prose :is(h1, h2, h3, h4) + p {
+  margin-top: 0.65em;
 }
 
 .rd-prose h1 {
@@ -1586,6 +1599,9 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   max-width: 100%;
   height: auto;
   border-radius: var(--rd-radius-sm);
+  /* Block, so the sibling-spacing rules apply to it: an inline image ignores vertical margins,
+     which is how one landing straight after a heading ended up sitting on top of it. */
+  display: block;
 }
 
 .rd-prose figure {
@@ -2155,7 +2171,7 @@ kbd {
     box-shadow: var(--rd-shadow-2);
   }
 
-  html[data-rd-nav='acik'] .rd-nav {
+  html[data-rd-drawer='acik'] .rd-nav {
     transform: none;
   }
 
@@ -2178,7 +2194,7 @@ kbd {
     transition: opacity var(--rd-ease);
   }
 
-  html[data-rd-nav='acik'] .rd-scrim {
+  html[data-rd-drawer='acik'] .rd-scrim {
     opacity: 1;
     pointer-events: auto;
   }

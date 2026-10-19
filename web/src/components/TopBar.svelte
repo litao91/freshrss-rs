@@ -8,8 +8,11 @@
     setDensity,
     setLanguage,
     setTheme,
+    isNarrow,
+    toggleDrawer,
     toggleFocus,
     toggleNav,
+    toggleNavForViewport,
     type Density,
     type ThemeName,
     type ThemePref,
@@ -73,10 +76,10 @@
   <button
     class="rd-icon-btn rd-nav-toggle"
     type="button"
-    aria-expanded={prefs.navOpen}
+    aria-expanded={prefs.drawerOpen}
     aria-controls="rd-nav"
     title={t('topbar.menu')}
-    onclick={() => toggleNav()}
+    onclick={() => toggleDrawer()}
   >
     <i class="ri-menu-line" aria-hidden="true"></i>
     <span class="rd-sr">{t('topbar.menu')}</span>
@@ -224,9 +227,9 @@
           <button
             class="rd-menu-item"
             type="button"
-            aria-pressed={prefs.navOpen}
+            aria-pressed={isNarrow() ? prefs.drawerOpen : prefs.navOpen}
             title="{t('topbar.subscriptionsPanel')} (b)"
-            onclick={() => toggleNav()}
+            onclick={() => toggleNavForViewport()}
           >
             <i class="ri-layout-left-2-line" aria-hidden="true"></i>
             {t('topbar.subscriptionsPanel')}

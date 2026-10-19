@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import type { CategoryNode, FeedNode } from './lib/api';
   import { t } from './lib/i18n';
-  import { initPrefs, setNavOpen, toggleFocus, toggleNav } from './lib/prefs.svelte';
+  import { initPrefs, setDrawerOpen, toggleFocus, toggleNavForViewport } from './lib/prefs.svelte';
   import { bootstrap, isSignedIn, refreshTree, session, tree } from './lib/session.svelte';
   import { notifyError } from './lib/toast.svelte';
   import { scopeTitle, selectEntry, selectScope, toggleReadFilter, view, isReading, type Scope } from './lib/view.svelte';
@@ -199,7 +199,7 @@
         toggleFocus();
         break;
       case 'b':
-        toggleNav();
+        toggleNavForViewport();
         break;
       case '+':
         nudgeSize(1);
@@ -312,7 +312,7 @@
       onImportOpml={() => (importDialogOpen = true)}
     />
 
-    <div class="rd-scrim" role="presentation" onclick={() => setNavOpen(false)}></div>
+    <div class="rd-scrim" role="presentation" onclick={() => setDrawerOpen(false)}></div>
 
     <EntryList
       bind:this={entryList}

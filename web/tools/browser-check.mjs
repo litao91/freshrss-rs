@@ -173,12 +173,14 @@ try {
 
   await page.setViewportSize({ width: 800, height: 900 });
   await page.waitForTimeout(300);
-  // At this width the sidebar is a drawer over the content, and it starts open; a real reader would
-  // have docked it. Closing it is what makes the stacked panes usable.
-  if (await page.locator('.rd-add').isVisible()) {
-    await page.keyboard.press('b');
-    await page.waitForTimeout(400);
-  }
+  // The drawer starts closed at this width; a transformed-off-screen element still has a bounding
+  // box, so "visible" is the wrong question — its position is the right one.
+  const drawerBox = await page.locator('#rd-nav').boundingBox();
+  check(
+    'the drawer stays closed until asked',
+    drawerBox === null || drawerBox.x + drawerBox.width <= 1,
+    JSON.stringify(drawerBox),
+  );
   check('the back button appears once the panes stack', await page.locator('.rd-read-bar .rd-back').isVisible());
   await page.locator('.rd-read-bar .rd-back').click();
   await page.waitForTimeout(500);
@@ -324,6 +326,74 @@ try {
   await shot(page, 'error').catch(() => {});
 } finally {
   await browser.close();
+}
+
+  // --- mobile ------------------------------------------------------------------
+// A phone gets the drawer, not the docked sidebar: it must start closed over the list, open on
+// demand, and the reading toolbar must stay pinned to the top of the pane however short the
+// article is. Its own browser, because the desktop pass closes theirs in a `finally`.
+{
+  const browser = await chromium.launch({
+    executablePath: join(homedir(), '.cache/ms-playwright/chromium-1228/chrome-linux64/chrome'),
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.on('console', (m) => {
+    if (m.type() === 'error') consoleErrors.push(m.text());
+  });
+  try {
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.locator('input[name="username"], input[type="text"]').first().fill(USER);
+    await page.locator('input[type="password"]').first().fill(PASSWORD);
+    await page.locator('button[type="submit"]').first().click();
+    await page.waitForSelector('.rd-items .rd-item', { timeout: 15000 }).catch(() => {});
+    // The desktop pass above marks everything read; the phone session inherits that state.
+    await page.locator('.rd-segment button', { hasText: 'All' }).first().click();
+    await page.waitForSelector('.rd-items .rd-item', { timeout: 15000 });
+    await page.waitForTimeout(600);
+
+const navBox = await page.locator('#rd-nav').boundingBox();
+check('the mobile drawer starts closed', navBox === null || navBox.x + navBox.width <= 1, JSON.stringify(navBox));
+await page.locator('.rd-items .rd-item').first().click({ timeout: 5000 });
+await page.waitForSelector('.rd-read .rd-article', { timeout: 10000 });
+check('the list is tappable with the drawer closed', true);
+
+const barBox = await page.locator('.rd-read-bar').boundingBox();
+check(
+  'the reading toolbar stays at the top on a phone',
+  barBox !== null && barBox.y < 140,
+  JSON.stringify(barBox),
+);
+
+await page.locator('.rd-nav-toggle').click();
+await page.waitForTimeout(500);
+const openBox = await page.locator('#rd-nav').boundingBox();
+check('the menu button opens the drawer', openBox !== null && openBox.x >= 0, JSON.stringify(openBox));
+await page.locator('.rd-tree-link').first().click();
+await page.waitForTimeout(700);
+const closedBox = await page.locator('#rd-nav').boundingBox();
+check('choosing a destination closes the drawer', closedBox === null || closedBox.x + closedBox.width <= 1, JSON.stringify(closedBox));
+
+// No heading may sit underneath the image that follows it, at any width.
+const overlaps = await page.evaluate(() => {
+  const bad = [];
+  for (const h of document.querySelectorAll('.rd-prose h1, .rd-prose h2, .rd-prose h3, .rd-prose h4')) {
+    const next = h.nextElementSibling;
+    const img = next && (next.tagName === 'IMG' ? next : next.querySelector ? next.querySelector('img') : null);
+    if (!img) continue;
+    const gap = img.getBoundingClientRect().top - h.getBoundingClientRect().bottom;
+    if (gap < 0) bad.push(`${h.textContent.slice(0, 20)}: ${Math.round(gap)}px`);
+  }
+  return bad;
+});
+check('no image overlaps the heading above it', overlaps.length === 0, overlaps.join(' | '));
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+  } catch (err) {
+    failures.push(`threw: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    await browser.close();
+  }
 }
 
 const passed = checks.filter((c) => c.ok).length;

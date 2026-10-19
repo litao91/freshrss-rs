@@ -45,6 +45,8 @@ export const prefs = $state({
   size: DEFAULT_SIZE,
   density: 'rahat' as Density,
   navOpen: true,
+  /** Mobile drawer state: session-only, closed until asked. See `applyDrawer`. */
+  drawerOpen: false,
   focus: false,
   /**
    * The UI language. It lives here rather than in `i18n.ts` because this module is compiled with
@@ -106,6 +108,40 @@ function applyDensity(): void {
 
 function applyNav(): void {
   document.documentElement.setAttribute('data-rd-nav', prefs.navOpen ? 'acik' : 'kapali');
+}
+
+/**
+ * The mobile drawer is deliberately not the docked-sidebar preference.
+ *
+ * On a wide screen `navOpen` means "the sidebar is docked", which is what a reader expects to
+ * survive a reload. On a narrow screen the same element is an overlay drawer, and a preference
+ * saying "docked" would open it over the list on every visit — including over the very list the
+ * reader tapped to get here. The drawer is therefore session state, closed until asked, and the
+ * two stop sharing a value at the 900px breakpoint.
+ */
+function applyDrawer(): void {
+  document.documentElement.setAttribute('data-rd-drawer', prefs.drawerOpen ? 'acik' : 'kapali');
+}
+
+const NARROW = '(max-width: 900px)';
+
+export function isNarrow(): boolean {
+  return window.matchMedia(NARROW).matches;
+}
+
+/** The nav button means "drawer" on a phone and "dock" everywhere else. */
+export function toggleNavForViewport(): void {
+  if (isNarrow()) toggleDrawer();
+  else toggleNav();
+}
+
+export function setDrawerOpen(open: boolean): void {
+  prefs.drawerOpen = open;
+  applyDrawer();
+}
+
+export function toggleDrawer(): void {
+  setDrawerOpen(!prefs.drawerOpen);
 }
 
 function applyFocus(): void {

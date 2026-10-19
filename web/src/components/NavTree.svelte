@@ -3,6 +3,7 @@
   import { OPML_EXPORT_URL } from '../lib/api';
   import { formatCount } from '../lib/format';
   import { t, tf } from '../lib/i18n';
+  import { setDrawerOpen } from '../lib/prefs.svelte';
   import { tree } from '../lib/session.svelte';
   import { isActive, selectScope, view, type Scope } from '../lib/view.svelte';
 
@@ -81,6 +82,8 @@
     event.preventDefault();
     selectScope(scope);
     window.history.pushState({}, '', scopeHref(scope));
+    // Choosing a destination from the drawer dismisses it; on a wide screen this is a no-op.
+    setDrawerOpen(false);
   }
 
   function toggleFolder(id: string): void {
