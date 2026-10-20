@@ -60,6 +60,61 @@
     if (accountMenu) accountMenu.open = false;
   }
 
+  /** Mirrors the browser-owned `open` of the two `<details>`, so the effect below can key on it. */
+  let anyMenuOpen = $state(false);
+
+  function syncMenuOpen(event?: Event): void {
+    const opened = event?.currentTarget as HTMLDetailsElement | undefined;
+    // Opening one menu closes the other. The pointer path already behaves this way — the press
+    // away dismisses the open menu before the other toggle lands — so the keyboard path matches.
+    if (opened?.open) {
+      if (opened !== displayMenu && displayMenu) displayMenu.open = false;
+      if (opened !== accountMenu && accountMenu) accountMenu.open = false;
+    }
+    anyMenuOpen = !!(displayMenu?.open || accountMenu?.open);
+  }
+
+  function isInsideMenu(node: Node | null): boolean {
+    if (!node) return false;
+    return !!displayMenu?.contains(node) || !!accountMenu?.contains(node);
+  }
+
+  function onAwayPointerDown(event: PointerEvent): void {
+    // Containment is the whole trick: a press on either summary, or anywhere inside a panel, is
+    // left to the native toggle. Closing on those too would race the activation behaviour and
+    // reopen the very menu the press was meant to close. `pointerdown` rather than `click`
+    // because real menus dismiss on press, before focus moves — and a scroll gesture starting
+    // outside the panel dismisses it exactly as the OS would.
+    if (isInsideMenu(event.target as Node)) return;
+    closeMenus();
+  }
+
+  function onMenuEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape') return;
+    // stopPropagation without preventDefault, and the split matters twice over: this listener sits
+    // on `document` while App's keydown sits on `window`, so stopping propagation is what gives
+    // the Escape to the menu instead of to the open article; NOT preventing the default is what
+    // still lets a modal <dialog> close on its own Escape in the rare case both are up at once.
+    event.stopPropagation();
+    const focused = document.activeElement;
+    const origin = isInsideMenu(focused) ? focused?.closest('details') : undefined;
+    closeMenus();
+    // Closing a <details> under its own focused control drops focus to <body>; menus put it back.
+    origin?.querySelector<HTMLElement>('summary')?.focus();
+  }
+
+  // One pair of document listeners while any menu is open and none at all the rest of the time:
+  // the reader's global keyboard handler must not have to know that menus exist.
+  $effect(() => {
+    if (!anyMenuOpen) return;
+    document.addEventListener('pointerdown', onAwayPointerDown);
+    document.addEventListener('keydown', onMenuEscape);
+    return () => {
+      document.removeEventListener('pointerdown', onAwayPointerDown);
+      document.removeEventListener('keydown', onMenuEscape);
+    };
+  });
+
   function submitSearch(event: Event): void {
     event.preventDefault();
     onSearch(search.trim());
@@ -141,7 +196,7 @@
       <span class="rd-sr">{t('topbar.refresh')}</span>
     </button>
 
-    <details class="rd-menu" bind:this={displayMenu}>
+    <details class="rd-menu" bind:this={displayMenu} ontoggle={syncMenuOpen}>
       <summary class="rd-icon-btn" title={t('topbar.display')}>
         <i class="ri-font-size-2" aria-hidden="true"></i>
         <span class="rd-sr">{t('topbar.display')}</span>
@@ -257,7 +312,7 @@
     </button>
 
     {#if session.user}
-      <details class="rd-menu rd-menu--end" bind:this={accountMenu}>
+      <details class="rd-menu rd-menu--end" bind:this={accountMenu} ontoggle={syncMenuOpen}>
         <summary class="rd-avatar" title={t('topbar.accountMenu')}>
           <span aria-hidden="true">{session.user.initial}</span>
           <span class="rd-sr">{t('topbar.accountMenu')}</span>
