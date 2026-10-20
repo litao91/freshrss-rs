@@ -14,6 +14,7 @@
   import { formatFullTime } from '../lib/format';
   import { notifyError } from '../lib/toast.svelte';
   import { prefs, toggleFocus } from '../lib/prefs.svelte';
+  import { resetScroll } from '../lib/scroll';
   import { view } from '../lib/view.svelte';
 
   let {
@@ -161,7 +162,9 @@
       // Reading an article marks it read, the same as clicking it in the list. Doing it here too covers
       // arriving by a keyboard shortcut or a deep link.
       if (!detail.entry.is_read) void setRead([detail.entry.id], true);
-      scrollEl?.scrollTo({ top: 0 });
+      // The new article starts at the top, and instantly: gliding up through the tail of the
+      // previous one would be motion with nothing to say.
+      if (scrollEl) resetScroll(scrollEl);
     } catch (err) {
       if (mine.aborted) return;
       error = err instanceof Error ? err.message : 'Could not load the article';

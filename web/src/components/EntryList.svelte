@@ -12,6 +12,7 @@
   import { entries, isEmpty, loadMore, reload, setRead, setStarred } from '../lib/entries.svelte';
   import { formatCount, formatListTime } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { resetScroll, revealRow } from '../lib/scroll';
   import {
     SORT_LABELS,
     scopeTitle,
@@ -83,6 +84,12 @@
     void view.readFilter;
     void view.sort;
     void view.order;
+    // A restarted listing starts at the top: keeping the old offset drops the reader into the
+    // middle of a feed they just chose, at a row nobody selected. Keyed to the same four fields as
+    // the restart — and deliberately not to `entries.items`, or an infinite-scroll append would
+    // yank them back up mid-read. Before the fetch, while the old rows still give the container
+    // its height; content rendered below the viewport never moves `scrollTop` afterwards.
+    if (scrollEl) resetScroll(scrollEl);
     void reload();
   });
 
@@ -120,7 +127,7 @@
     await tick();
     if (!selectedId || !scrollEl) return;
     const row = scrollEl.querySelector<HTMLElement>(`#rd-item-${CSS.escape(selectedId)}`);
-    row?.scrollIntoView({ block: 'nearest' });
+    if (row) revealRow(row);
   }
 </script>
 
