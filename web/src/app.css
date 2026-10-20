@@ -113,6 +113,14 @@ html[data-theme='gece'],
   --rd-ring: 0 0 0 3px color-mix(in srgb, var(--fd-focus) 45%, transparent);
 
   --rd-ease: 140ms cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* The theme cross-fade, as a list rather than a rule: two places have to fade with the theme —
+     the surfaces in section 4 and the narrow-screen drawer, whose own `transition` replaces
+     theirs wholesale — and a shared list is how the two stay in step. */
+  --rd-theme-fade:
+    background-color var(--rd-ease),
+    border-color var(--rd-ease),
+    color var(--rd-ease);
 }
 
 /* ==========================================================================
@@ -227,6 +235,96 @@ video {
   display: inline-flex;
 }
 
+/* --- scrollbars --- */
+
+/* The native scrollbar is OS chrome: grey plastic against warm paper. Every scrolling region gets
+   the same thin theme-aware pair instead. The standard properties are what every current engine
+   honours; the webkit pseudo-elements further down exist only for engines older than those, gated
+   behind @supports so the two spellings can never disagree — an engine that understands
+   `scrollbar-width` stops reading ::-webkit-scrollbar the moment it is set, and two silent sources
+   of truth is how a scrollbar drifts away from the theme. */
+.rd-list-body,
+.rd-read-scroll,
+.rd-nav-inner,
+.rd-dialog-body,
+.rd-keys,
+.rd-problems,
+.rd-packs,
+.rd-prose pre {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fd-field) 42%, transparent) transparent;
+  transition: scrollbar-color var(--rd-ease);
+}
+
+/* A thumb that darkens under the pointer is also the affordance that the region scrolls at all. */
+.rd-list-body:hover,
+.rd-read-scroll:hover,
+.rd-dialog-body:hover,
+.rd-keys:hover,
+.rd-problems:hover,
+.rd-packs:hover,
+.rd-prose pre:hover {
+  scrollbar-color: color-mix(in srgb, var(--fd-field) 72%, transparent) transparent;
+}
+
+/* The sidebar is peripheral chrome: its thumb stays out of sight until the pointer is actually
+   there. Gated on hover-capable pointers — on touch the thumb IS the scroll flash, and a
+   transparent base would hide the only feedback a flick gets. */
+@media (hover: hover) {
+  .rd-nav-inner {
+    scrollbar-color: transparent transparent;
+  }
+
+  .rd-nav-inner:hover {
+    scrollbar-color: color-mix(in srgb, var(--fd-field) 55%, transparent) transparent;
+  }
+}
+
+@supports not (scrollbar-width: thin) {
+  /* One grouped rule per pseudo-element: an unknown pseudo-element invalidates a whole selector
+     list in engines that do not know it, so these never share a list with real selectors. */
+  .rd-list-body::-webkit-scrollbar,
+  .rd-read-scroll::-webkit-scrollbar,
+  .rd-nav-inner::-webkit-scrollbar,
+  .rd-dialog-body::-webkit-scrollbar,
+  .rd-keys::-webkit-scrollbar,
+  .rd-problems::-webkit-scrollbar,
+  .rd-packs::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .rd-prose pre::-webkit-scrollbar {
+    height: 10px;
+  }
+
+  /* A transparent border clipped to the padding box is the floating pill `thin` gives elsewhere. */
+  .rd-list-body::-webkit-scrollbar-thumb,
+  .rd-read-scroll::-webkit-scrollbar-thumb,
+  .rd-nav-inner::-webkit-scrollbar-thumb,
+  .rd-dialog-body::-webkit-scrollbar-thumb,
+  .rd-keys::-webkit-scrollbar-thumb,
+  .rd-problems::-webkit-scrollbar-thumb,
+  .rd-packs::-webkit-scrollbar-thumb,
+  .rd-prose pre::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--fd-field) 42%, transparent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: var(--rd-radius-pill);
+  }
+
+  .rd-list-body::-webkit-scrollbar-track,
+  .rd-read-scroll::-webkit-scrollbar-track,
+  .rd-nav-inner::-webkit-scrollbar-track,
+  .rd-dialog-body::-webkit-scrollbar-track,
+  .rd-keys::-webkit-scrollbar-track,
+  .rd-problems::-webkit-scrollbar-track,
+  .rd-packs::-webkit-scrollbar-track,
+  .rd-prose pre::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
 /* ==========================================================================
    4. App layout
    ========================================================================== */
@@ -288,6 +386,29 @@ html[data-rd-focus='acik'] .rd-app.is-reading .rd-list {
 
 .rd-scrim {
   display: none;
+}
+
+/* Flipping data-theme swaps every token in one frame; unfaded, the page cuts between two palettes
+   and reads as a flash. These are the surfaces that carry a theme background — the chrome around
+   the content — and fading just them is enough at this duration. Deliberately not `*`: a blanket
+   transition would also slow every hover state, and the controls that do change under the pointer
+   carry their own --rd-ease transitions already. The toast and the narrow-screen drawer are absent
+   for the opposite reason: each owns a `transition` of its own, which a rule here would replace
+   wholesale, so the drawer repeats the list in section 13 instead. */
+body,
+.rd-top,
+.rd-nav,
+.rd-list,
+.rd-list-head,
+.rd-read,
+.rd-read-bar,
+.rd-article-head,
+.rd-prose,
+.rd-menu-panel,
+.rd-dialog,
+.rd-auth,
+.rd-auth-card {
+  transition: var(--rd-theme-fade);
 }
 
 /* ==========================================================================
@@ -515,6 +636,15 @@ select.rd-input {
   opacity: 1;
 }
 
+/* Touch has no hover to reveal the row's star and read-toggle, and an invisible button is a
+   button nobody finds. Opacity, not display: a phone gets the mouse layout minus the reveal
+   trick, and the muted --fd-field colour keeps forty rows of permanent chrome quiet. */
+@media (hover: none) {
+  .rd-star {
+    opacity: 1;
+  }
+}
+
 .rd-star:hover {
   color: var(--fd-accent);
 }
@@ -703,6 +833,20 @@ i.is-spinning {
 .rd-menu--end > .rd-menu-panel {
   right: 0;
   left: auto;
+}
+
+/* The panel arrives the way dialogs do — a short drop-and-fade, not a pop — so every overlay in
+   the reader speaks the same motion. A closed <details> hides its content, so each open restarts
+   the animation; the reduced-motion block in section 14 shortens it to nothing. */
+.rd-menu[open] > .rd-menu-panel {
+  animation: rd-menu-in 140ms ease-out;
+}
+
+@keyframes rd-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.3rem) scale(0.99);
+  }
 }
 
 .rd-menu-label {
@@ -921,6 +1065,7 @@ i.is-spinning {
   gap: 0.5rem;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .rd-add {
@@ -1170,6 +1315,10 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   gap: 0.1rem;
   padding: var(--rd-item-py) 0.4rem var(--rd-item-py) var(--rd-item-px);
   border-bottom: 1px solid var(--fd-line);
+  /* Every control beside the rows already fades; the rows snapping is the inconsistency a reader
+     notices. Background only: nothing that triggers layout may animate inside a scrolling list,
+     and only the hovered or selected row ever transitions, so the scroll cost is zero. */
+  transition: background var(--rd-ease);
 }
 
 .rd-item::before {
@@ -1180,6 +1329,7 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   bottom: 0;
   width: 3px;
   background: transparent;
+  transition: background var(--rd-ease);
 }
 
 .rd-item:hover {
@@ -2167,7 +2317,11 @@ kbd {
     width: min(19rem, 85vw);
     display: flex;
     transform: translateX(-102%);
-    transition: transform var(--rd-ease);
+    /* Repeats the fade list from section 4: this rule comes later in the source and `transition`
+       replaces wholesale, so without it the drawer would slide but never fade with the theme. */
+    transition:
+      transform var(--rd-ease),
+      var(--rd-theme-fade);
     box-shadow: var(--rd-shadow-2);
   }
 
