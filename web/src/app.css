@@ -1522,6 +1522,43 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   scrollbar-gutter: stable;
 }
 
+/* --- reading progress --- */
+
+/* Two pixels of accent tracking the article's scroll, pinned to the top of the scroll area so it
+   reads as an underline of the toolbar. Engines without scroll timelines never see it: a bar
+   frozen at zero is a stray rule, not a feature. */
+.rd-read-progress {
+  display: none;
+}
+
+@supports (animation-timeline: scroll()) {
+  .rd-read-progress {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    height: 2px;
+    /* Sticky reserves layout space; the negative margin gives it back, so the article starts
+       exactly where it started before the bar existed and the scroller's height is unchanged. */
+    margin-bottom: -2px;
+    background: var(--fd-accent);
+    transform: scaleX(0);
+    transform-origin: 0 50%;
+    /* No duration to shorten: the timeline drives progress directly, off the main thread. */
+    animation: rd-progress-grow linear both;
+    animation-timeline: scroll(nearest block);
+  }
+
+  @keyframes rd-progress-grow {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+}
+
 .rd-article {
   max-width: var(--rd-read-max);
   margin: 0 auto;
@@ -2407,6 +2444,12 @@ kbd {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+
+  /* A scroll-driven animation has no duration to shorten — the timeline IS the clock — so the
+     progress bar has to be hidden outright rather than stilled. */
+  .rd-read-progress {
+    display: none;
+  }
 }
 
 @media print {
@@ -2414,6 +2457,7 @@ kbd {
   .rd-nav,
   .rd-list,
   .rd-read-bar,
+  .rd-read-progress,
   .rd-player,
   .rd-toast,
   .rd-scrim {

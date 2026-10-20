@@ -379,6 +379,7 @@
   </div>
 
   <div id="rd-read-scroll" class="rd-read-scroll" bind:this={scrollEl}>
+    <div class="rd-read-progress" aria-hidden="true"></div>
     {#if error}
       <div class="rd-list-empty">
         <i class="ri-error-warning-line" aria-hidden="true"></i>
