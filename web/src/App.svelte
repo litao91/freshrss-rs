@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { hotkey } from 'svelte-widgets/attachments';
   import type { CategoryNode, Direction, FeedNode } from './lib/api';
   import { t } from './lib/i18n';
   import { initPrefs, setDrawerOpen, toggleFocus, toggleNavForViewport } from './lib/prefs.svelte';
@@ -23,7 +24,7 @@
   import ProblemsDialog from './components/dialogs/ProblemsDialog.svelte';
 
   import { entries, loadMore, markReadFrom, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
-  import { find as findShortcut } from './lib/keys';
+  import { combo, SHORTCUTS, type Shortcut } from './lib/keys';
   import { nudgeSize } from './lib/prefs.svelte';
   import { refreshJob, resumeRefresh, startRefresh, stopPolling } from './lib/refresh.svelte';
 
@@ -143,39 +144,24 @@
     void markReadFrom(anchorId, direction);
   }
 
-  function onKeydown(event: KeyboardEvent): void {
-    const target = event.target as HTMLElement | null;
-    const typing =
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      target?.isContentEditable === true;
-
-    // Escape closes whatever is on top. An open <dialog> handles its own, so this covers the rest.
-    if (event.key === 'Escape' && !typing) {
-      if (isReading()) {
-        event.preventDefault();
-        selectEntry(null);
-        highlighted = null;
-      }
-      return;
-    }
-    if (typing) return;
-
-    const shortcut = findShortcut(event);
-    if (!shortcut) return;
-
+  /**
+   * The whole keyboard map's dispatcher.
+   *
+   * Matching the chord, ignoring keystrokes that belong to a text field and preventing the default
+   * all belong to the `hotkey` attachment now; what stays here is the part only the app knows —
+   * which half of the map applies to the state the reader is in, and what each binding does.
+   */
+  function run(shortcut: Shortcut): void {
     const reading = isReading();
     if (reading && !shortcut.reading) return;
     if (!reading && !shortcut.list) return;
-    event.preventDefault();
 
     const ids = (): string[] => (anchorId ? [anchorId] : []);
 
     switch (shortcut.key) {
       case 'j':
-        // `j` and `Shift+J` arrive here as two different bindings that share a key, so the modifier
-        // decides between moving one row and marking every row below it.
+        // `j` and `Shift+J` are two bindings that share a key, so the modifier decides between
+        // moving one row and marking every row below it.
         if (shortcut.shift) markFrom('below');
         else if (reading) readingPane?.goNext();
         else move(1);
@@ -187,6 +173,12 @@
         break;
       case 'Enter':
         if (highlighted) selectEntry(highlighted);
+        break;
+      case 'Escape':
+        // Back to the list. An open menu or panel claims the key first and stops it propagating,
+        // so this only ever sees an Escape nothing above it wanted.
+        selectEntry(null);
+        highlighted = null;
         break;
       case 's': {
         const list = ids();
@@ -239,9 +231,23 @@
     }
   }
 
+  /**
+   * `SHORTCUTS` as library bindings, built once.
+   *
+   * The table stays the single source of truth — the help dialog reads the same rows — and `combo`
+   * is the one place a binding's table spelling and its parsed spelling meet.
+   */
+  const bindings = SHORTCUTS.map((shortcut) => ({
+    keys: combo(shortcut),
+    handler: () => run(shortcut),
+    // Escape is the one binding that must not prevent the default: the default is a native
+    // `<dialog>` closing itself, and swallowing the key would leave an open panel stranded until
+    // a second press. The dispatcher no-ops on Escape outside reading mode anyway.
+    prevent_default: shortcut.key !== 'Escape',
+  }));
+
   onMount(() => {
     initPrefs();
-    window.addEventListener('keydown', onKeydown);
     window.addEventListener('popstate', syncScopeFromUrl);
 
     void bootstrap().then(() => {
@@ -253,7 +259,6 @@
     });
 
     return () => {
-      window.removeEventListener('keydown', onKeydown);
       window.removeEventListener('popstate', syncScopeFromUrl);
     };
   });
@@ -314,7 +319,7 @@
 {:else if !isSignedIn()}
   <Auth />
 {:else}
-  <div class="rd-app" class:is-reading={isReading()}>
+  <div class="rd-app" class:is-reading={isReading()} {@attach hotkey({ bindings, global: true })}>
     <TopBar
       bind:this={topBar}
       bind:search

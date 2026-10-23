@@ -43,21 +43,17 @@ export const SHORTCUTS: Shortcut[] = [
   { key: '?', description: 'This list', shift: true, list: true, reading: true },
 ];
 
-/** Looks up a binding, or `undefined` when the key is not ours. */
-export function find(event: KeyboardEvent): Shortcut | undefined {
-  // A modifier other than Shift means the browser or the OS owns the key: Cmd+R is reload, Ctrl+F
-  // is find, and swallowing either would be hostile.
-  //
-  // Shift is deliberately not gated here. Holding it changes `event.key` to the shifted symbol, so
-  // a letter binding cannot be hit by accident — and the symbols that only exist through Shift
-  // (`+` as Shift+=, `?` as Shift+/) are themselves bindings, so a blanket "no Shift" rule would
-  // silently delete them from the map. Each binding states instead whether it *requires* Shift.
-  if (event.metaKey || event.ctrlKey || event.altKey) return undefined;
-  return SHORTCUTS.find((s) =>
-    s.shift
-      ? event.shiftKey && event.key.toLowerCase() === s.key
-      : event.key === s.key,
-  );
+/**
+ * A binding as a `svelte-widgets` combo string, e.g. `shift+k`.
+ *
+ * Kept here, beside the table it describes, so the spelling the library parses and the spelling
+ * the table shows the reader cannot drift apart. Two rules the hand-rolled matcher used to carry
+ * are the library's now: a combo without `ctrl`/`alt`/`mod` requires those keys to be up, so Cmd+R
+ * stays the browser's, and `+` needs no `shift+` prefix because the matcher accepts it shifted,
+ * which is the only way most layouts type it.
+ */
+export function combo(shortcut: Shortcut): string {
+  return shortcut.shift ? `shift+${shortcut.key}` : shortcut.key;
 }
 
 /**
