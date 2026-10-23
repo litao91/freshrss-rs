@@ -1554,6 +1554,14 @@ html[data-rd-density='sikisik'] .rd-item-summary {
   visibility: hidden;
 }
 
+/* The import drop zone. The dashed box, the drag highlight and the picked-file list are
+   FileInput's own, drawn in `currentColor`; the colour and the type are all this reader says
+   about it. */
+.rd-file-input {
+  color: var(--fd-ink-2);
+  font-size: 0.875rem;
+}
+
 /* ==========================================================================
    9. Reading pane
    ========================================================================== */
@@ -1583,14 +1591,13 @@ html[data-rd-density='sikisik'] .rd-item-summary {
   display: none;
 }
 
-.rd-share-btn .ri-check-line,
-.rd-share-btn.is-copied .ri-share-line,
 .rd-focus-btn .ri-fullscreen-exit-line {
   display: none;
 }
 
-.rd-share-btn.is-copied .ri-check-line {
-  display: inline;
+/* `CopyButton` swaps the glyph itself through its snippet, so unlike the old two-icon button
+   nothing here has to hide the other state; the check only gets its success colour. */
+.rd-share-btn .ri-check-line {
   color: var(--fd-success);
 }
 

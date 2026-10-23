@@ -8,7 +8,7 @@
    *
    * The body is the file's raw bytes, not a multipart form — that is the endpoint's contract.
    */
-  import { Dialog } from 'svelte-widgets';
+  import { Dialog, FileInput } from 'svelte-widgets';
   import { api, ApiError, type ImportReport } from '../../lib/api';
   import { t, tf } from '../../lib/i18n';
   import { tree } from '../../lib/session.svelte';
@@ -29,7 +29,8 @@
 
   /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
   let shown = $state(false);
-  let fileInput: HTMLInputElement | undefined = $state();
+  /** What `FileInput` holds; the dialog only ever reads the first entry. */
+  let picked = $state<File[]>([]);
   let file = $state<File | null>(null);
   /** `''` keeps the file's own folders; an id files everything under one category. */
   let forceCategory = $state('');
@@ -51,18 +52,8 @@
     busy = 'idle';
     formError = null;
     preview = null;
-    if (fileInput) fileInput.value = '';
-  }
-
-  function onFilePicked(): void {
-    const picked = fileInput?.files?.[0] ?? null;
-    file = picked;
-    preview = null;
-    formError = null;
-    if (picked && picked.size > MAX_BYTES) {
-      formError = t('import.tooBig');
-      file = null;
-    }
+    picked = [];
+    file = null;
   }
 
   async function send(dryRun: boolean): Promise<void> {
@@ -120,14 +111,30 @@
     <h2 id="rd-import-title">{t('import.title')}</h2>
     <p class="rd-dialog-lead">{t('import.lead')}</p>
 
-    <label class="rd-label" for="rd-import-file">{t('import.file')}</label>
-    <input
-      id="rd-import-file"
-      class="rd-input"
-      type="file"
+    <!-- Drag-and-drop, the picked-file list and the refusal of an over-large file come with the
+         widget; `max_size` is the same ceiling the hand-rolled check enforced, now refused before
+         the reader waits for a preview that cannot succeed. -->
+    <FileInput
+      class="rd-file-input"
       accept=".opml,.xml,text/x-opml,text/xml,application/xml"
-      bind:this={fileInput}
-      onchange={onFilePicked}
+      max_size={MAX_BYTES}
+      label={t('import.file')}
+      remove_label={t('common.cancel')}
+      bind:files={picked}
+      on_files={(files) => {
+        file = files[0] ?? null;
+        preview = null;
+        formError = null;
+      }}
+      on_reject={(rejections) => {
+        // The widget names the refused file and why in its own words; the dialog's error slot says
+        // the same thing in the reader's language, which is what the rest of the flow speaks.
+        file = null;
+        preview = null;
+        formError = rejections.some((r) => r.reason === 'size')
+          ? t('import.tooBig')
+          : t('import.error');
+      }}
     />
 
     <label class="rd-label" for="rd-import-folder">{t('import.folder')}</label>

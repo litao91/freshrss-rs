@@ -9,7 +9,7 @@
    * feed parser is exactly the kind of code where a mistake is eventually found.
    */
   import DOMPurify from 'dompurify';
-  import { ActionButton } from 'svelte-widgets';
+  import { ActionButton, CopyButton } from 'svelte-widgets';
   import { api, mediaUrl, type EntryDetail } from '../lib/api';
   import { entries, markReadFrom, setLabels, setRead, setStarred } from '../lib/entries.svelte';
   import { formatFullTime } from '../lib/format';
@@ -32,7 +32,6 @@
   let detail = $state<EntryDetail | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  let copied = $state(false);
   /** Whether the pane shows the scraped full article rather than the feed's own body. */
   let showFull = $state(false);
   let fetchingFull = $state(false);
@@ -223,18 +222,14 @@
     void setRead([detail.entry.id], !read);
   }
 
-  async function share(): Promise<void> {
-    if (!detail) return;
-    const { title, link } = detail.entry;
-    // The clipboard API needs a secure context; a plain `http://` deployment has to fall back.
-    try {
-      await navigator.clipboard.writeText(link ? `${title} — ${link}` : title);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch {
-      notifyError('The browser would not let us copy the link');
-    }
-  }
+  /**
+   * What the copy button puts on the clipboard: the article's address with its title, so a paste
+   * into a message carries both. `CopyButton` owns the clipboard write, the secure-context
+   * failure and the two-second "copied" flash that the hand-rolled version did by hand.
+   */
+  const shareText = $derived(
+    detail ? (detail.entry.link ? `${detail.entry.title} — ${detail.entry.link}` : detail.entry.title) : '',
+  );
 
   async function addLabel(): Promise<void> {
     if (!detail) return;
@@ -408,10 +403,17 @@
         <span class="rd-sr">{showFull ? 'Show the feed’s version' : 'Show the full article'}</span>
       </button>
     {/if}
-    <button class="rd-icon-btn rd-share-btn" type="button" title="Share" onclick={() => void share()}>
-      <i class={copied ? 'ri-check-line' : 'ri-share-line'} aria-hidden="true"></i>
-      <span class="rd-sr rd-copy-label">{copied ? 'Copied' : 'Share'}</span>
-    </button>
+    <CopyButton
+      class="rd-icon-btn rd-share-btn"
+      title="Share"
+      content={shareText}
+      on_copy_error={() => notifyError('The browser would not let us copy the link')}
+    >
+      {#snippet children({ state })}
+        <i class={state === 'success' ? 'ri-check-line' : 'ri-share-line'} aria-hidden="true"></i>
+        <span class="rd-sr">{state === 'success' ? 'Copied' : 'Share'}</span>
+      {/snippet}
+    </CopyButton>
     <button class="rd-icon-btn rd-focus-btn" type="button" title="Focus mode (f)" onclick={toggleFocus}>
       <i class={prefs.focus ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'} aria-hidden="true"></i>
       <span class="rd-sr">Focus mode</span>
