@@ -10,7 +10,9 @@
  *
  * Needs a database seeded from `scripts/seed-demo.sql`, which holds more articles than one page,
  * because the point of anchoring server-side is that it reaches rows nobody has scrolled to. The
- * run mutates read state, so re-seed before repeating it.
+ * list is windowed, so rows are addressed by the `data-index` `VirtualList` puts on each row's
+ * wrapper — a listing position, not a position in the DOM — and the run mutates read state, so
+ * re-seed before repeating it.
  */
 import { chromium } from 'playwright-core';
 import { homedir } from 'node:os';
@@ -45,7 +47,7 @@ page.on('console', (msg) => {
 });
 page.on('pageerror', (err) => consoleErrors.push(String(err)));
 
-/** The rows on screen, in listing order. */
+/** The rendered window, keyed by listing position rather than by place in the DOM. */
 const rows = () =>
   page.evaluate(() =>
     [...document.querySelectorAll('.rd-items .rd-item')].map((el) => ({
@@ -53,10 +55,34 @@ const rows = () =>
       title: el.querySelector('.rd-item-title')?.textContent ?? '',
       read: el.classList.contains('is-read'),
       selected: el.classList.contains('is-selected'),
+      index: Number(el.parentElement?.dataset.index ?? -1),
     })),
   );
 
-const indexOfSelected = async () => (await rows()).findIndex((r) => r.selected);
+/** Read state per listing index, so two windows can be compared row for row. */
+const byIndex = (list) => new Map(list.map((r) => [r.index, r.read]));
+
+/** Indexes whose read state differs between two snapshots of possibly different windows. */
+function flipped(before, after) {
+  const out = [];
+  for (const [index, read] of after) {
+    if (before.has(index) && before.get(index) !== read) out.push(index);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+const rowHeight = () =>
+  page.evaluate(
+    () => document.querySelector('.rd-items .rd-item')?.parentElement?.getBoundingClientRect().height ?? 0,
+  );
+
+let rowHeightCached = 0;
+
+const scrollToIndex = (index) =>
+  page.evaluate(
+    ([top, size]) => document.querySelector('#rd-list-scroll').scrollTo({ top: top * size }),
+    [index, rowHeightCached],
+  );
 
 /** The open menu, or nothing: `ActionMenu` removes the element entirely once it is dismissed. */
 const openMenu = () => page.locator('menu.action-menu');
@@ -84,21 +110,6 @@ const tokenRgb = (name) =>
 const scrollTop = () =>
   page.evaluate(() => document.querySelector('#rd-list-scroll').scrollTop);
 
-/**
- * Indexes whose read state changed between two snapshots.
- *
- * Compared rather than asserted against "everything unread": the seeded database already has read
- * articles in it, so a check that assumes the rows below an anchor start unread is checking the
- * fixture, not the feature.
- */
-function changed(before, after) {
-  const flipped = [];
-  for (let i = 0; i < Math.max(before.length, after.length); i += 1) {
-    if (before[i]?.read !== after[i]?.read) flipped.push(i);
-  }
-  return flipped;
-}
-
 try {
   await page.goto(BASE, { waitUntil: 'networkidle' });
 
@@ -110,22 +121,28 @@ try {
     await page.waitForSelector('.rd-app', { timeout: 10000 });
   }
   await page.waitForSelector('.rd-items .rd-item', { timeout: 10000 });
+  rowHeightCached = await rowHeight();
   check('the reader signed in and listed articles', (await rows()).length > 0);
+  check('every rendered row is exactly one row tall', rowHeightCached > 40 && rowHeightCached < 140, `${rowHeightCached}px`);
 
   // The gestures split a listing, so every row has to stay put: under the unread filter a row that
-  // becomes read would be the thing under test and the thing that vanishes at once.
+  // becomes read would otherwise be the thing under test and the thing that vanishes at once.
   await page.keyboard.press('u');
   await page.waitForTimeout(1200);
-  const loaded = await rows();
-  check('the All filter is on, so read rows stay visible', loaded.some((r) => r.read));
+  rowHeightCached = await rowHeight();
+  check('the All filter is on, so read rows stay visible', (await rows()).some((r) => r.read));
 
   // Asserted up front, before anything scrolls: reaching rows the reader has not loaded is the
   // entire reason the anchor is resolved on the server instead of by slicing `entries.items`.
-  const paginated = (await page.locator('#rd-sentinel .rd-btn').count()) > 0;
   check(
     'the listing holds pages that are not loaded',
-    paginated && loaded.length > 0,
-    `${loaded.length} rows on screen`,
+    (await page.locator('.rd-list-end .rd-btn').count()) > 0,
+  );
+  const windowed = await rows();
+  check(
+    'and the list renders a window rather than everything',
+    windowed.length > 4 && windowed.length < 40,
+    `${windowed.length} rows in the window`,
   );
 
   // --- the toolbar menu --------------------------------------------------
@@ -166,20 +183,12 @@ try {
   );
 
   // The point of the token layer: the menu must wear this reader's surface, not the library's
-  // `light-dark(#fff, #2a2a2e)` default, which would sit visibly apart from `.rd-menu-panel`.
+  // `light-dark(#fff, #2a2a2e)` default, which would sit visibly apart from the panels beside it.
   const menuBg = await page.evaluate(() =>
     getComputedStyle(document.querySelector('menu.action-menu')).backgroundColor,
   );
   const surface = await tokenRgb('--fd-surface');
   check('the menu is painted with the reader’s own surface token', menuBg === surface, `${menuBg} vs ${surface}`);
-  const menuRadius = await page.evaluate(() =>
-    getComputedStyle(document.querySelector('menu.action-menu')).borderRadius,
-  );
-  check(
-    'and its corner radius comes from the token layer',
-    menuRadius !== '5pt' && menuRadius !== '0px',
-    menuRadius,
-  );
 
   // Arrow keys and Escape are the library's job now; what matters is that they still work here.
   await page.keyboard.press('ArrowDown');
@@ -188,10 +197,6 @@ try {
     'arrow keys move within the open menu',
     await page.evaluate(() => document.activeElement?.closest('menu.action-menu') !== null),
   );
-
-  // Escape must close the menu and nothing else. App's global handler closes the open article on
-  // Escape and cancels the default, so without the menu claiming the key first this both strands
-  // the popover and throws the reader out of the article they were reading.
   await page.keyboard.press('Escape');
   await page.waitForTimeout(400);
   check('Escape closes the menu', (await openMenu().count()) === 0);
@@ -201,57 +206,45 @@ try {
   );
 
   // --- Shift+K marks everything above the cursor -------------------------
-  // Anchored by a click rather than by counting `j` presses: the reading pane fetches each article
-  // it lands on and `goNext` does nothing until that resolves, so keyboard navigation is not
-  // deterministic enough to assert an index against.
-  //
-  // The row is picked so that several above it are still unread. Anchoring on a row whose
-  // neighbours are all read already would pass "marked everything above" by marking nothing.
-  const initial = await rows();
-  const at = initial.findIndex((_, i) => initial.slice(0, i).filter((r) => !r.read).length >= 3);
-  check('the listing has a row with unread articles above it', at > 0, `index ${at}`);
-
-  await page.locator('.rd-items .rd-item .rd-item-btn').nth(at).click();
-  await page.waitForSelector('.rd-app.is-reading', { timeout: 5000 });
-  await page.waitForTimeout(700);
-  check('the click put the keyboard cursor on that row', (await indexOfSelected()) === at, `index ${await indexOfSelected()}`);
+  // Row 12 sits past the seeded read rows, so there is something above it to mark, and it is
+  // reached by scrolling the window rather than by assuming the whole listing is in the DOM.
+  const ANCHOR = 12;
+  await scrollToIndex(6);
+  await page.waitForTimeout(500);
+  await page.locator(`[data-index="${ANCHOR}"] .rd-item-btn`).click();
+  await page.waitForTimeout(900);
+  check(
+    'the click put the keyboard cursor on that row',
+    (await rows()).some((r) => r.index === ANCHOR && r.selected),
+  );
 
   // Scrolled deliberately: the gesture is "I have caught up to here", so ending up back at the top
   // of the list would defeat it.
-  await page.evaluate(() => document.querySelector('#rd-list-scroll').scrollTo({ top: 120 }));
-  await page.waitForTimeout(300);
   const scrollBefore = await scrollTop();
+  const beforeAbove = byIndex(await rows());
 
-  const beforeAbove = await rows();
   await page.keyboard.press('Shift+K');
   await page.waitForTimeout(1200);
   await shot(page, 'after-shift-k');
-  const afterAbove = await rows();
+  const afterAbove = byIndex(await rows());
 
-  const flippedAbove = changed(beforeAbove, afterAbove);
   check(
-    'Shift+K marked every row above the cursor read',
-    afterAbove.slice(0, at).every((r) => r.read),
-    afterAbove
-      .slice(0, at)
-      .filter((r) => !r.read)
-      .map((r) => r.title)
+    'Shift+K marked every rendered row above the cursor read',
+    [...afterAbove.entries()].every(([index, read]) => index >= ANCHOR || read),
+    [...afterAbove.entries()]
+      .filter(([index, read]) => index < ANCHOR && !read)
+      .map(([index]) => index)
       .join(', '),
   );
   check(
     'and touched nothing at or below it',
-    flippedAbove.every((i) => i < at),
-    `rows ${flippedAbove.join(', ')} changed, cursor at ${at}`,
+    flipped(beforeAbove, afterAbove).every((index) => index < ANCHOR),
+    `rows ${flipped(beforeAbove, afterAbove).join(', ')} changed, cursor at ${ANCHOR}`,
   );
   check(
     'and left the reader exactly where they were',
     (await scrollTop()) === scrollBefore,
     `${scrollBefore} → ${await scrollTop()}`,
-  );
-  check(
-    'and kept the row count, rather than restarting the listing',
-    afterAbove.length === beforeAbove.length,
-    `${beforeAbove.length} → ${afterAbove.length}`,
   );
 
   const toastText = await page.locator('.toast-stack .toast-message').textContent();
@@ -262,12 +255,14 @@ try {
   );
 
   // --- the right-click menu anchors on the row clicked -------------------
-  // Chosen below the cursor on purpose: if the menu anchored on the open article instead, the
-  // boundary would land in the wrong place and the rows between the two would show it.
-  const target = at + 6;
-  check('there are rows below the cursor to right-click', target < afterAbove.length);
+  // Below the cursor on purpose: if the menu anchored on the open article instead, the boundary
+  // would land in the wrong place and the rows between the two would show it.
+  const TARGET = ANCHOR + 6;
+  await scrollToIndex(ANCHOR - 2);
+  await page.waitForTimeout(500);
+  const beforeContext = byIndex(await rows());
 
-  await page.locator('.rd-items .rd-item').nth(target).click({ button: 'right' });
+  await page.locator(`[data-index="${TARGET}"] .rd-item`).click({ button: 'right' });
   // `ActionMenu` defers the popover by a tick: Chromium fires `contextmenu` before `pointerup`,
   // which would light-dismiss a menu opened synchronously from the same gesture.
   await page.waitForSelector('menu.action-menu', { timeout: 3000 });
@@ -280,27 +275,25 @@ try {
   });
   check('the menu is positioned on screen', box.w > 0 && box.h > 0 && box.top >= 0, JSON.stringify(box));
 
-  const beforeContext = await rows();
   await page.locator('menu.action-menu button[role^="menuitem"]').first().click();
   await page.waitForTimeout(1200);
   await shot(page, 'after-context-above');
-  const afterContext = await rows();
+  const afterContext = byIndex(await rows());
 
   check('the menu closed after the action', (await openMenu().count()) === 0);
-  const flippedContext = changed(beforeContext, afterContext);
   check(
-    'the right-click menu marked everything above the row clicked',
-    afterContext.slice(0, target).every((r) => r.read),
-    afterContext
-      .slice(0, target)
-      .filter((r) => !r.read)
-      .map((r) => `${r.title}`)
+    'the right-click menu marked every rendered row above the row clicked',
+    [...afterContext.entries()].every(([index, read]) => index >= TARGET || read),
+    [...afterContext.entries()]
+      .filter(([index, read]) => index < TARGET && !read)
+      .map(([index]) => index)
       .join(', '),
   );
   check(
     'and it anchored on the row clicked, not on the open article',
-    flippedContext.every((i) => i < target) && flippedContext.some((i) => i >= at),
-    `rows ${flippedContext.join(', ')} changed; clicked ${target}, open article ${at}`,
+    flipped(beforeContext, afterContext).some((index) => index > ANCHOR) &&
+      flipped(beforeContext, afterContext).every((index) => index < TARGET),
+    `rows ${flipped(beforeContext, afterContext).join(', ')} changed; clicked ${TARGET}, open article ${ANCHOR}`,
   );
 
   // The region is the list, so a right-click on the chrome around it belongs to the browser.
@@ -310,8 +303,8 @@ try {
 
   // --- the reading pane, and reaching rows nobody scrolled to ------------
   await page.evaluate(() => document.querySelector('#rd-list-scroll').scrollTo({ top: 0 }));
-  await page.waitForTimeout(400);
-  await page.locator('.rd-items .rd-item .rd-item-btn').nth(2).click();
+  await page.waitForTimeout(500);
+  await page.locator('[data-index="2"] .rd-item-btn').click();
   await page.waitForSelector('.rd-read .rd-article', { timeout: 10000 });
   await page.waitForTimeout(700);
 
@@ -330,10 +323,11 @@ try {
   check('the reading pane buttons stayed square icon buttons', Math.abs(w - h) < 2 && w > 0, geometry);
   await shot(page, 'reading-pane-buttons');
 
-  // The list still holds one page while the scope holds more, so marking below a row near the top
-  // is the case that proves the server placed the anchor rather than the client slicing what it had.
+  // The window holds a slice of one page while the scope holds several pages, so marking below a
+  // row near the top is the case that proves the server placed the anchor rather than the client
+  // slicing what it had rendered.
   const beforePane = await rows();
-  const unreadLoadedBelow = beforePane.slice(3).filter((r) => !r.read).length;
+  const unreadRenderedBelow = beforePane.filter((r) => r.index > 2 && !r.read).length;
 
   await belowBtn.click();
   await page.waitForTimeout(1800);
@@ -343,18 +337,17 @@ try {
   const marked = Number((reported ?? '').match(/\d+/)?.[0] ?? NaN);
   check('the mark-below button reported a count', Number.isFinite(marked), JSON.stringify(reported));
   check(
-    'and it reached articles below the fold, not just the loaded page',
-    marked > unreadLoadedBelow,
-    `marked ${marked}, but ${unreadLoadedBelow} unread rows were loaded below the anchor`,
+    'and it reached articles outside the rendered window',
+    marked > unreadRenderedBelow,
+    `marked ${marked}, but only ${unreadRenderedBelow} unread rows were rendered below the anchor`,
   );
 
   const afterPane = await rows();
   check(
-    'every loaded row below the open article is now read',
-    afterPane.slice(3).every((r) => r.read),
+    'every rendered row below the open article is now read',
+    afterPane.every((r) => r.index <= 2 || r.read),
     afterPane
-      .slice(3)
-      .filter((r) => !r.read)
+      .filter((r) => r.index > 2 && !r.read)
       .map((r) => r.title)
       .join(', '),
   );

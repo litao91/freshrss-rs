@@ -7,8 +7,8 @@
    * is authored against those hooks and because a screen reader user of the original should find the
    * same announcements here.
    */
-  import { onMount, tick } from 'svelte';
-  import { ActionMenu, type CmdAction } from 'svelte-widgets';
+  import { tick } from 'svelte';
+  import { ActionMenu, VirtualList, type CmdAction } from 'svelte-widgets';
   import { format_shortcut } from 'svelte-widgets/utils';
   import { mediaUrl, type EntrySummary } from '../lib/api';
   import {
@@ -22,7 +22,8 @@
   } from '../lib/entries.svelte';
   import { formatCount, formatListTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import { resetScroll, revealRow } from '../lib/scroll';
+  import { prefs } from '../lib/prefs.svelte';
+  import { resetScroll, revealWindow } from '../lib/scroll';
   import {
     SORT_LABELS,
     scopeTitle,
@@ -47,16 +48,7 @@
     onMarkAll: () => void;
   } = $props();
 
-  let scrollEl: HTMLElement | undefined = $state();
-  let sentinel: HTMLElement | undefined = $state();
-  /**
-   * Deliberately not `$state`.
-   *
-   * The effect below reads it (to disconnect the previous one) and writes it, and a reactive variable
-   * that an effect both reads and writes re-runs itself until Svelte gives up with
-   * `effect_update_depth_exceeded`. Nothing renders it, so it does not need to be tracked.
-   */
-  let observer: IntersectionObserver | undefined;
+  let scrollEl: HTMLDivElement | undefined = $state();
 
   const title = $derived(scopeTitle(view.scope));
   const unreadLabel = $derived(formatCount(entries.unreadInScope));
@@ -70,24 +62,39 @@
   }
 
   /**
-   * Loads the next page when the sentinel scrolls into view.
+   * One row's height in pixels, which `VirtualList` needs as a number.
    *
-   * An observer rather than a scroll handler: the handler would fire on every pixel of movement and
-   * re-check a condition that only changes near the end, and it would need the container's scroll
-   * geometry, which the observer already knows.
+   * Read back off a probe rather than restated here: the CSS owns what a row is — the padding, the
+   * three fixed line boxes and the hairline between rows, all of it in terms of the density tokens
+   * — and a second copy in TypeScript would be a second thing to keep in step. The probe resolves
+   * the `calc()` the way only the engine can, because custom properties substitute rather than
+   * compute.
    */
-  function observe(): void {
-    observer?.disconnect();
-    if (!sentinel || !scrollEl) return;
-    observer = new IntersectionObserver(
-      (hits) => {
-        // `rootMargin` would start the fetch earlier, but then a fast scroll could queue several pages
-        // before the first lands; `loadMore` guards against that, and one page of lookahead is enough.
-        if (hits.some((h) => h.isIntersecting)) void loadMore();
-      },
-      { root: scrollEl, rootMargin: '400px 0px', threshold: 0 },
-    );
-    observer.observe(sentinel);
+  let itemSize = $state(72);
+
+  $effect(() => {
+    void prefs.density;
+    const probe = document.createElement('div');
+    probe.style.height = 'var(--rd-item-h)';
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    document.body.append(probe);
+    const measured = probe.getBoundingClientRect().height;
+    probe.remove();
+    if (measured > 0) itemSize = measured;
+  });
+
+  /**
+   * Loads the next page as the windowed rows approach the end of what is loaded.
+   *
+   * The sentinel and its IntersectionObserver went with the `<ul>`: inside a virtual list there is
+   * no element at the end of the data to observe, only a spacer as tall as everything. A scroll
+   * handler on the list's own container is the same 400px of lookahead the observer had, and
+   * `loadMore` still guards against queueing pages faster than they land.
+   */
+  function onListScroll(event: Event): void {
+    const el = event.currentTarget as HTMLElement;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) void loadMore();
   }
 
   // Restart the listing whenever the slice of the corpus or the way it is ordered changes.
@@ -99,23 +106,10 @@
     void view.order;
     // A restarted listing starts at the top: keeping the old offset drops the reader into the
     // middle of a feed they just chose, at a row nobody selected. Keyed to the same four fields as
-    // the restart — and deliberately not to `entries.items`, or an infinite-scroll append would
-    // yank them back up mid-read. Before the fetch, while the old rows still give the container
-    // its height; content rendered below the viewport never moves `scrollTop` afterwards.
+    // the restart — and deliberately not to `entries.items`, or an appended page would yank them
+    // back up mid-read.
     if (scrollEl) resetScroll(scrollEl);
     void reload();
-  });
-
-  $effect(() => {
-    void entries.items.length;
-    void sentinel;
-    void scrollEl;
-    observe();
-  });
-
-  onMount(() => {
-    observe();
-    return () => observer?.disconnect();
   });
 
   function open(entry: EntrySummary): void {
@@ -198,8 +192,11 @@
   export async function revealSelected(): Promise<void> {
     await tick();
     if (!selectedId || !scrollEl) return;
-    const row = scrollEl.querySelector<HTMLElement>(`#rd-item-${CSS.escape(selectedId)}`);
-    if (row) revealRow(row);
+    const index = entries.items.findIndex((e) => e.id === selectedId);
+    if (index < 0) return;
+    // By index rather than by element: under windowing the row may not be rendered at all, and its
+    // position is arithmetic either way.
+    revealWindow(scrollEl, index * itemSize, itemSize);
   }
 </script>
 
@@ -316,7 +313,18 @@
     </div>
   </div>
 
-  <div id="rd-list-scroll" class="rd-list-body" bind:this={scrollEl}>
+  <!-- The region a right-click applies to. `ActionMenu` wraps this in a `display: contents` div
+       of its own, so the list's layout is untouched, and it owns the popover, the deferral that
+       stops Chromium light-dismissing it within the same gesture, and the arrow-key and focus
+       handling. Empty `rowActions` — a right-click that landed on no row — makes it fall
+       through to the browser's own menu. -->
+  <ActionMenu
+    trigger="region"
+    bind:at={rowMenu}
+    actions={rowActions}
+    dismiss={{ dismiss_on: 'press' }}
+    item={markItem}
+  >
     {#if entries.error}
       <div class="rd-list-empty">
         <i class="ri-error-warning-line" aria-hidden="true"></i>
@@ -339,87 +347,91 @@
         {/if}
       </div>
     {:else}
-      <!-- The region a right-click applies to. `ActionMenu` wraps this in a `display: contents` div
-           of its own, so the list's layout is untouched, and it owns the popover, the deferral that
-           stops Chromium light-dismissing it within the same gesture, and the arrow-key and focus
-           handling. Empty `rowActions` — a right-click that landed on no row — makes it fall
-           through to the browser's own menu. -->
-      <ActionMenu
-        trigger="region"
-        bind:at={rowMenu}
-        actions={rowActions}
-        dismiss={{ dismiss_on: 'press' }}
-        item={markItem}
+      <!-- `VirtualList` renders only the rows beside the scroll position, inside a spacer as tall
+           as the whole listing, so a few thousand articles cost a few dozen elements. Every row is
+           exactly `itemSize` tall — see the probe above and `--rd-item-h` in app.css — because
+           that is the one thing windowing has to know to place its window. -->
+      <VirtualList
+        id="rd-list-scroll"
+        class="rd-list-body rd-items"
+        bind:element={scrollEl}
+        items={entries.items}
+        item_size={itemSize}
+        overscan={6}
+        key={(entry) => entry.id}
+        onscroll={onListScroll}
+        oncontextmenu={onListContextMenu}
       >
-        <ul class="rd-items" oncontextmenu={onListContextMenu}>
-          {#each entries.items as entry (entry.id)}
-            <li
-              id="rd-item-{entry.id}"
-              class="rd-item"
-              class:is-read={entry.is_read}
-              class:is-unread={!entry.is_read}
-              class:is-selected={entry.id === selectedId}
-            >
-              <button class="rd-item-btn" type="button" onclick={() => open(entry)}>
-                <span class="rd-item-meta">
-                  {#if !entry.is_read}
-                    <span class="rd-dot" aria-hidden="true"></span>
-                    <span class="rd-sr">{t('list.unreadSr')}</span>
-                  {/if}
-                  <span class="rd-item-feed">
-                    {#if entry.thumbnail}
-                      <img
-                        class="rd-item-media"
-                        src={mediaUrl(entry.thumbnail, entry.link)}
-                        alt=""
-                        loading="lazy"
-                      />
-                    {:else if entry.has_media}
-                      <i class="ri-play-circle-line rd-item-media" aria-hidden="true"></i>
-                    {/if}
-                    {entry.feed_name}
-                    {#if entry.is_updated}
-                      <i class="ri-pencil-line" title={t('list.updatedUpstream')} aria-hidden="true"></i>
-                    {/if}
-                  </span>
-                  <time datetime={new Date(entry.date * 1000).toISOString()} title={new Date(entry.date * 1000).toLocaleString()}>
-                    {formatListTime(entry.date)}
-                  </time>
-                </span>
-                <span class="rd-item-title">{entry.title}</span>
-                {#if entry.summary}
-                  <span class="rd-item-summary">{entry.summary}</span>
+        {#snippet children(entry)}
+          <div
+            id="rd-item-{entry.id}"
+            class="rd-item"
+            class:is-read={entry.is_read}
+            class:is-unread={!entry.is_read}
+            class:is-selected={entry.id === selectedId}
+          >
+            <button class="rd-item-btn" type="button" onclick={() => open(entry)}>
+              <span class="rd-item-meta">
+                {#if !entry.is_read}
+                  <span class="rd-dot" aria-hidden="true"></span>
+                  <span class="rd-sr">{t('list.unreadSr')}</span>
                 {/if}
-              </button>
+                <span class="rd-item-feed">
+                  {#if entry.thumbnail}
+                    <img
+                      class="rd-item-media"
+                      src={mediaUrl(entry.thumbnail, entry.link)}
+                      alt=""
+                      loading="lazy"
+                    />
+                  {:else if entry.has_media}
+                    <i class="ri-play-circle-line rd-item-media" aria-hidden="true"></i>
+                  {/if}
+                  {entry.feed_name}
+                  {#if entry.is_updated}
+                    <i class="ri-pencil-line" title={t('list.updatedUpstream')} aria-hidden="true"></i>
+                  {/if}
+                </span>
+                <time datetime={new Date(entry.date * 1000).toISOString()} title={new Date(entry.date * 1000).toLocaleString()}>
+                  {formatListTime(entry.date)}
+                </time>
+              </span>
+              <span class="rd-item-title">{entry.title}</span>
+              <!-- Always present, empty or not: a row whose summary line collapsed away would be
+                   a different height from its neighbours, and a windowed list cannot place a
+                   window of rows it cannot measure. -->
+              <span class="rd-item-summary">{entry.summary ?? ''}</span>
+            </button>
 
-              <button
-                class="rd-star"
-                class:is-starred={entry.is_favorite}
-                type="button"
-                title={entry.is_favorite ? t('list.unstarTitle') : t('list.starTitle')}
-                aria-pressed={entry.is_favorite}
-                onclick={(event) => void toggleStar(entry, event)}
-              >
-                <i class={entry.is_favorite ? 'ri-star-fill' : 'ri-star-line'} aria-hidden="true"></i>
-                <span class="rd-sr">{t('list.starSr')}</span>
-              </button>
+            <button
+              class="rd-star"
+              class:is-starred={entry.is_favorite}
+              type="button"
+              title={entry.is_favorite ? t('list.unstarTitle') : t('list.starTitle')}
+              aria-pressed={entry.is_favorite}
+              onclick={(event) => void toggleStar(entry, event)}
+            >
+              <i class={entry.is_favorite ? 'ri-star-fill' : 'ri-star-line'} aria-hidden="true"></i>
+              <span class="rd-sr">{t('list.starSr')}</span>
+            </button>
 
-              <button
-                class="rd-star rd-read-toggle"
-                type="button"
-                title={entry.is_read ? t('list.markUnreadTitle') : t('list.markReadTitle')}
-                onclick={() => void toggleRead(entry)}
-              >
-                <i class={entry.is_read ? 'ri-mail-line' : 'ri-mail-unread-line'} aria-hidden="true"></i>
-                <span class="rd-sr">{entry.is_read ? t('list.markUnreadSr') : t('list.markReadSr')}</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      </ActionMenu>
+            <button
+              class="rd-star rd-read-toggle"
+              type="button"
+              title={entry.is_read ? t('list.markUnreadTitle') : t('list.markReadTitle')}
+              onclick={() => void toggleRead(entry)}
+            >
+              <i class={entry.is_read ? 'ri-mail-line' : 'ri-mail-unread-line'} aria-hidden="true"></i>
+              <span class="rd-sr">{entry.is_read ? t('list.markUnreadSr') : t('list.markReadSr')}</span>
+            </button>
+          </div>
+        {/snippet}
+      </VirtualList>
     {/if}
+  </ActionMenu>
 
-    <div id="rd-sentinel" class="rd-list-end" bind:this={sentinel}>
+  {#if entries.items.length > 0 || entries.loadingMore}
+    <div class="rd-list-end">
       {#if entries.loadingMore}
         <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
         {t('list.loadingMore')}
@@ -427,9 +439,9 @@
         <button class="rd-btn rd-btn--quiet" type="button" onclick={() => void loadMore()}>
           {t('list.loadMore')}
         </button>
-      {:else if entries.items.length > 0}
+      {:else}
         <span class="rd-hint">{t('list.endOfList')}</span>
       {/if}
     </div>
-  </div>
+  {/if}
 </section>

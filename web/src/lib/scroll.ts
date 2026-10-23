@@ -20,9 +20,17 @@ function behavior(): ScrollBehavior {
   return window.matchMedia(REDUCED).matches ? 'auto' : 'smooth';
 }
 
-/** Scrolls a keyboard-selected row into view; `block: 'nearest'` still means "don't move if visible". */
-export function revealRow(row: HTMLElement): void {
-  row.scrollIntoView({ block: 'nearest', behavior: behavior() });
+/**
+ * Scrolls a windowed list to bring one fixed-height row into view, moving as little as possible:
+ * a row already on screen moves nothing at all, which is what keeps `j` and `k` from yanking the
+ * list out from under the reader.
+ *
+ * The arithmetic is the same nearest-reveal `VirtualList` uses internally; what this adds is the
+ * glide, which the library's instant `scroll_to_index` would drop.
+ */
+export function revealWindow(el: HTMLElement, top: number, size: number): void {
+  const target = Math.min(top, Math.max(el.scrollTop, top + size - el.clientHeight));
+  el.scrollTo({ top: target, behavior: behavior() });
 }
 
 /** Returns a container to the top instantly, for when its contents have been replaced. */

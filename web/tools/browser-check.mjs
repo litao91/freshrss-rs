@@ -58,7 +58,9 @@ try {
   await page.waitForSelector('.rd-items .rd-item', { timeout: 10000 });
   const firstPage = await page.locator('.rd-items .rd-item').count();
   check('the first page of articles renders', firstPage > 0, `${firstPage} rows`);
-  check('a page is a sane size', firstPage >= 20 && firstPage <= 60, `${firstPage} rows`);
+  // The list is windowed, so the DOM holds the rows beside the scroll position plus overscan
+  // rather than a whole page: a handful means the window collapsed, sixty means it did not.
+  check('the window is a sane slice of the listing', firstPage >= 8 && firstPage <= 60, `${firstPage} rows`);
 
   const title = await page.locator('#rd-list-title').textContent();
   check('the list has a heading', (title ?? '').trim().length > 0, JSON.stringify(title));
@@ -83,15 +85,25 @@ try {
   );
 
   // --- infinite scroll ---------------------------------------------------
-  const beforeScroll = await page.locator('.rd-items .rd-item').count();
+  // Windowing means the DOM never holds two pages at once, so "the next page loaded" is observed
+  // as the rows at the bottom being rows that were not in the window at the top.
+  const topWindow = await page.locator('.rd-items .rd-item').evaluateAll((els) => els.map((e) => e.id));
   await page.locator('#rd-list-scroll').evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
   await page.waitForTimeout(1200);
-  const afterScroll = await page.locator('.rd-items .rd-item').count();
-  check('scrolling to the end loads the next page', afterScroll > beforeScroll, `${beforeScroll} -> ${afterScroll}`);
+  const bottomWindow = await page.locator('.rd-items .rd-item').evaluateAll((els) => els.map((e) => e.id));
+  check(
+    'scrolling to the end loads the next page',
+    bottomWindow.length > 0 && bottomWindow.every((id) => !topWindow.includes(id)),
+    `${topWindow.length} rows at the top, ${bottomWindow.length} at the bottom`,
+  );
 
-  // No row may appear twice: that is the keyset-pagination guarantee, observed through the DOM.
-  const ids = await page.locator('.rd-items .rd-item').evaluateAll((els) => els.map((e) => e.id));
-  check('no article appears on two pages', new Set(ids).size === ids.length, `${ids.length} rows, ${new Set(ids).size} unique`);
+  // No row may appear twice in a window: the keyset cursor is strict, and a repeat would also
+  // break the keyed each that renders the window.
+  check(
+    'no article appears twice in the window',
+    new Set(bottomWindow).size === bottomWindow.length,
+    `${bottomWindow.length} rows, ${new Set(bottomWindow).size} unique`,
+  );
 
   // --- opening an article ------------------------------------------------
   await page.locator('#rd-list-scroll').evaluate((el) => el.scrollTo({ top: 0 }));

@@ -108,6 +108,14 @@ html[data-theme='gece'],
   --rd-item-gap: 0.3rem;
   --rd-tree-py: 0.34rem;
 
+  /* One row, exactly: the vertical padding, the three fixed line boxes (meta, title, summary) and
+     the hairline under it. `VirtualList` needs a row height as a number and reads this back off a
+     probe element, so the CSS stays the one place that says what a row is; compact density shrinks
+     it through the padding and gap above. */
+  --rd-item-h: calc(
+    2 * var(--rd-item-py) + 1.05rem + 1.35rem + 1.15rem + 2 * var(--rd-item-gap) + 1px
+  );
+
   --rd-shadow-1: 0 1px 2px rgb(0 0 0 / 0.06);
   --rd-shadow-2: 0 6px 24px rgb(0 0 0 / 0.14);
   --rd-ring: 0 0 0 3px color-mix(in srgb, var(--fd-focus) 45%, transparent);
@@ -1368,9 +1376,13 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   scrollbar-gutter: stable;
 }
 
-.rd-items {
-  display: flex;
-  flex-direction: column;
+/* The class names the windowed scroller now rather than a `<ul>`, purely so the harnesses'
+   `.rd-items .rd-item` keeps matching; the library owns the layout inside it. Its own
+   `max-height: 20rem` is a demo default and has to go, or the list is a letterbox. The library's
+   rule is `.virtual-list.svelte-<hash>` — (0,2,0), the same as any two-class selector of ours —
+   so the id, which the scroller already carries for the harnesses, is what outranks it. */
+#rd-list-scroll {
+  max-height: none;
 }
 
 .rd-item {
@@ -1378,6 +1390,11 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   display: flex;
   align-items: flex-start;
   gap: 0.1rem;
+  box-sizing: border-box;
+  /* `VirtualList` wraps every row in a box exactly `item_size` tall; filling it is what makes the
+     arithmetic true, and clipping is what stops an over-long title from spilling into the next. */
+  height: 100%;
+  overflow: hidden;
   padding: var(--rd-item-py) 0.4rem var(--rd-item-py) var(--rd-item-px);
   border-bottom: 1px solid var(--fd-line);
   /* Every control beside the rows already fades; the rows snapping is the inconsistency a reader
@@ -1427,6 +1444,7 @@ li.rd-folder:not(.is-open) > .rd-tree--nested {
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
+  height: 1.05rem;
   color: var(--fd-muted);
   font-size: 0.75rem;
 }
@@ -1470,12 +1488,13 @@ img.rd-item-media {
   color: var(--fd-ink);
   font-size: 0.925rem;
   font-weight: 600;
-  line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
+  /* One line, always. Two was the first casualty of windowing: a row that grows to fit its title
+     is a row whose position the list cannot compute. */
+  height: 1.35rem;
+  line-height: 1.35rem;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .rd-item.is-read .rd-item-title {
@@ -1486,19 +1505,25 @@ img.rd-item-media {
 .rd-item-summary {
   color: var(--fd-muted);
   font-size: 0.8125rem;
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
+  /* Present on every row, empty or not, at exactly one line: see the note in `EntryList`. */
+  height: 1.15rem;
+  line-height: 1.15rem;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* The end-of-list state moved out of the scroller when the scroller became a window: there is no
+   bottom of the content to sit at any more, only a spacer as tall as everything. */
 .rd-list-end {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  gap: 0.4rem;
+  padding: 0.45rem;
+  border-top: 1px solid var(--fd-line);
+  color: var(--fd-muted);
+  font-size: 0.8rem;
 }
 
 .rd-list-empty {
@@ -1522,13 +1547,10 @@ html[data-rd-density='sikisik'] {
   --rd-tree-py: 0.22rem;
 }
 
+/* Compact hides the summary's text but keeps its line box: the row height is arithmetic now, and
+   a row that shrank when its summary vanished would put every row below it in the wrong place. */
 html[data-rd-density='sikisik'] .rd-item-summary {
-  display: none;
-}
-
-html[data-rd-density='sikisik'] .rd-item-title {
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
+  visibility: hidden;
 }
 
 /* ==========================================================================
