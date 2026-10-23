@@ -110,7 +110,7 @@ crates/
   freshrss-search/   BooleanSearch query language: lexer → parser → AST → {SQL, matcher}
   freshrss-feed/     RSS/Atom/JSON Feed parsing, sanitization, GUID/hash identity, discovery, OPML
   freshrss-server/   domain types, SQLite DAOs, services, axum API, CLI, refresh scheduler
-web/                 Svelte 5 + TypeScript SPA (Vite → ../static)
+web/                 Svelte 5 + TypeScript SPA (Vite → ../static), overlays from svelte-widgets
 fixtures/            offline feed/HTML/OPML samples used by the tests
 tools/               maintenance scripts
 ```
@@ -169,15 +169,20 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm --prefix web run check
 node web/tools/browser-check.mjs http://127.0.0.1:8080 <user> <password>
+node web/tools/mark-from-check.mjs http://127.0.0.1:8080 <user> <password>
 ```
 
 Tests are offline: feed parsing runs against `fixtures/`, and HTTP behaviour is exercised through
 the `Fetcher` trait rather than the network.
 
-The last command drives the built reader in a real Chromium: sign-in, the first page, infinite
-scroll with a no-duplicate-rows assertion, opening an article, `j k s m u b / Escape`, sorting,
-searching, mark-all-read and all three themes — 52 checks, and it fails on any console error. It
-needs a running server with a user that has some articles.
+The first browser command drives the built reader in a real Chromium: sign-in, the first page,
+windowed scrolling with a no-duplicate-rows assertion, opening an article, `j k s m u b / Escape`,
+sorting, searching, mark-all-read and all three themes — 67 checks, and it fails on any console
+error. It needs a running server with a user that has some articles; `scripts/seed-demo.sql`
+produces one against a scratch database. The second points the same browser at the anchored
+mark-read gestures — the two shortcuts, the toolbar and right-click menus and the reading pane's
+buttons — including that a mark reaches articles outside the rendered window, which is the whole
+reason the anchor is resolved server-side: 35 checks.
 
 ## License
 
@@ -186,3 +191,13 @@ AGPL-3.0-or-later, matching FreshRSS, from which this is derived. See [LICENSE](
 The reader UI's colour tokens, typography and markup conventions are reproduced from Feeddi.
 The bundled fonts are Literata and Atkinson Hyperlegible Next; icons are
 [Remixicon](https://remixicon.com) 4.5.0 (Apache-2.0).
+
+Overlays and chores come from [svelte-widgets](https://github.com/janosh/svelte-widgets) (MIT):
+the menus, popovers, dialogs, toast queue, windowed list, segmented controls, keyboard map, copy
+button and import drop zone. The library themes itself through CSS custom properties read inside
+its own scoped styles, so `web/src/app.css` maps them onto the tokens above at `:root` instead of
+adopting the library's theme or icon set — and a handful of its defaults are overridden at higher
+specificity, because a scoped `tag.svelte-<hash>` rule outranks any single class of ours. What
+stays hand-rolled is what the library's primitives would make worse: the sidebar is real
+`<a href>` rows, so middle-click, open-in-new-tab and the status bar keep working, and search stays
+a box in the top bar rather than a command palette.
