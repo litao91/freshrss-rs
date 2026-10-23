@@ -29,6 +29,9 @@ enum Bucket {
     Auth,
     /// Anything that makes the server open outbound connections on the caller's behalf.
     Fetch,
+    /// The image proxy, which is an outbound fetch like any other but arrives a page at a time
+    /// rather than a click at a time. See [`Bucket::ceiling`].
+    Media,
     /// Whole-tree refreshes, which fan out into one fetch per due feed.
     Refresh,
     /// Everything else: unlimited, because limiting ordinary reads would punish a reader that
@@ -36,14 +39,34 @@ enum Bucket {
     Unmetered,
 }
 
+/// How many images one page-sized budget buys, as a multiple of the operator's per-minute limit.
+const MEDIA_MULTIPLIER: u32 = 20;
+
+impl Bucket {
+    /// The per-minute ceiling for this class of request.
+    ///
+    /// Images get a page-sized budget instead of a request-sized one. One article can carry dozens
+    /// of `<img>`s and a list of them dozens of thumbnails, and a browser asks for all of them at
+    /// once, so a limit that suits `POST /feeds/{id}/refresh` blanks the thirty-first picture on an
+    /// ordinary read — which arrives as a broken image with nothing on the page to explain it. The
+    /// ceiling stays a multiple of the configured limit rather than a number of its own so that an
+    /// operator who tightens or loosens the meter moves both together.
+    fn ceiling(self, per_minute: u32) -> u32 {
+        match self {
+            Bucket::Media => per_minute.saturating_mul(MEDIA_MULTIPLIER),
+            Bucket::Auth | Bucket::Fetch | Bucket::Refresh | Bucket::Unmetered => per_minute,
+        }
+    }
+}
+
 fn bucket(method: &Method, path: &str) -> Bucket {
     // A layer on the API router sees the path with the `/api/v1` prefix stripped by `nest`, but the
     // same function is trivially reusable on the whole router, so accept both spellings.
     let path = path.strip_prefix("/api/v1").unwrap_or(path);
-    // The image proxy makes the server fetch on behalf of whoever asks, so it is metered like any
-    // other outbound fetch even though it is a GET.
+    // The image proxy makes the server fetch on behalf of whoever asks, so it is metered even
+    // though it is a GET.
     if method == Method::GET && path == "/media" {
-        return Bucket::Fetch;
+        return Bucket::Media;
     }
     if method == Method::GET || method == Method::HEAD {
         return Bucket::Unmetered;
@@ -111,7 +134,7 @@ pub async fn guard(State(state): State<AppState>, req: Request<Body>, next: Next
 
     let bucket = bucket(req.method(), req.uri().path());
     if bucket != Bucket::Unmetered {
-        let per_minute = state.config.limits.rate_limit_per_minute.max(1);
+        let per_minute = bucket.ceiling(state.config.limits.rate_limit_per_minute.max(1));
         // The session cookie when there is one, else the peer address: an authenticated caller is
         // limited per account so two users behind one NAT do not share a budget, and an
         // unauthenticated one per address because that is all there is to key on.
@@ -248,6 +271,22 @@ mod tests {
             bucket(&Method::DELETE, "/api/v1/feeds/7"),
             Bucket::Unmetered
         );
+    }
+
+    #[test]
+    fn the_image_proxy_is_metered_on_a_budget_of_its_own() {
+        assert_eq!(bucket(&Method::GET, "/api/v1/media"), Bucket::Media);
+        assert_eq!(
+            bucket(&Method::GET, "/media"),
+            Bucket::Media,
+            "the prefix-stripped spelling too"
+        );
+        // A page of images is not a click, so the proxy's ceiling is sized for a page while every
+        // other metered class stays at the operator's number.
+        assert_eq!(Bucket::Media.ceiling(30), 30 * MEDIA_MULTIPLIER);
+        assert_eq!(Bucket::Fetch.ceiling(30), 30);
+        assert_eq!(Bucket::Auth.ceiling(30), 30);
+        assert_eq!(Bucket::Refresh.ceiling(30), 30);
     }
 
     fn request_with(origin: &str, host: &str) -> Request<Body> {

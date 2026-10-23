@@ -60,6 +60,8 @@ max_body_bytes = 52428800
 max_page_size = 500
 # Per-minute ceiling on each metered class of request (login, register, anything that makes the
 # server fetch, whole-tree refreshes), counted per session, or per address when anonymous.
+# The image proxy gets twenty times this: a page of article images arrives all at once, and a
+# ceiling that suits one refresh at a time blanks the thirty-first picture of an ordinary read.
 rate_limit_per_minute = 30
 
 [archiving]
@@ -78,6 +80,14 @@ user_agent = "freshrss-rs/0.1 (+https://github.com/example/freshrss-rs)"
 block_private_networks = true
 # Comma-separated `host`, `host:port` or CIDR entries exempt from the block above.
 internal_host_allowlist = []
+
+[media]
+# Where images fetched by `GET /api/v1/media` are kept. A copy fetched once is served from here
+# forever: article images do not change in place, and a local copy is what keeps a slow,
+# rate-limiting or briefly unreachable host from blanking a picture the reader has already seen.
+cache_dir = "data/media-cache"
+# Ceiling on that directory. Pruned oldest-first, so the images most recently read survive.
+max_mb = 512
 
 [log]
 # tracing-subscriber EnvFilter directive.

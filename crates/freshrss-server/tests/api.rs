@@ -6,7 +6,10 @@
 //! A browser found the 405 that motivated this file — `POST /feeds/discover` falling through to
 //! `/feeds/{id}` — and no amount of service-level testing would have.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -14,7 +17,10 @@ use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use freshrss_feed::http::{FixtureFetcher, FixtureResponse};
+use freshrss_feed::error::FeedError;
+use freshrss_feed::http::{
+    FetchOutcome, FetchRequest, FetchedBody, FixtureFetcher, FixtureResponse,
+};
 use freshrss_feed::Fetcher;
 use freshrss_server::config::{AppConfig, RegistrationConfig, RegistrationMode};
 use freshrss_server::db::Db;
@@ -683,8 +689,205 @@ fn registration(mode: RegistrationMode) -> AppConfig {
             mode,
             ..Default::default()
         },
+        media: freshrss_server::config::MediaConfig {
+            cache_dir: scratch_cache(),
+            ..Default::default()
+        },
         ..Default::default()
     }
+}
+
+/// A media cache directory of its own for every server a test builds, outside the repository.
+///
+/// Unique, and emptied in case the name was drawn before: an image left behind by an earlier run
+/// would turn the first fetch into a cache hit, and a test asserting that the host was asked would
+/// then pass without anybody having asked.
+fn scratch_cache() -> PathBuf {
+    static SERVERS: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "frss-test-media-{}-{}",
+        std::process::id(),
+        SERVERS.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// A few bytes that are enough of a PNG for the proxy's content-type check and nothing more.
+const PNG: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
+
+fn png_body() -> FetchedBody {
+    FetchedBody {
+        body: PNG.to_vec(),
+        status: 200,
+        etag: None,
+        last_modified: None,
+        content_type: Some("image/png".to_owned()),
+        effective_url: String::new(),
+        hash: String::new(),
+        permanently_moved: false,
+    }
+}
+
+/// Refuses `fail` times, then answers a PNG `ok` times, then refuses again — counting every
+/// question, which is how a test tells a cache hit from a fetch.
+struct CountingFetcher {
+    credits: Mutex<Credits>,
+    calls: AtomicUsize,
+}
+
+struct Credits {
+    fail: usize,
+    ok: usize,
+}
+
+impl CountingFetcher {
+    fn new(fail: usize, ok: usize) -> Self {
+        Self {
+            credits: Mutex::new(Credits { fail, ok }),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl Fetcher for CountingFetcher {
+    async fn fetch(&self, _request: &FetchRequest) -> Result<FetchOutcome, FeedError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut credits = self.credits.lock().expect("unpoisoned");
+        if credits.fail > 0 {
+            credits.fail -= 1;
+            return Err(FeedError::Timeout { secs: 1 });
+        }
+        if credits.ok > 0 {
+            credits.ok -= 1;
+            return Ok(FetchOutcome::Found(png_body()));
+        }
+        Err(FeedError::Timeout { secs: 1 })
+    }
+}
+
+/// A server on the counting fetcher, plus a session and a media cache of its own.
+async fn signed_in_with_fetcher(fetcher: Arc<dyn Fetcher>) -> (Router, String) {
+    let db = Db::in_memory().await.expect("db");
+    let app = router(AppState::with_fetcher(
+        db,
+        registration(RegistrationMode::Open),
+        fetcher,
+    ));
+    let registered = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(json!({"username": "alice", "password": "correct-horse-battery"})),
+    )
+    .await;
+    assert_eq!(registered.status, StatusCode::CREATED);
+    (app, registered.set_cookie.expect("a session cookie"))
+}
+
+fn media_uri(url: &str) -> String {
+    format!(
+        "/api/v1/media?url={}&via=https%3A%2F%2Fe.example%2Farticle%2F",
+        url::form_urlencoded::byte_serialize(url.as_bytes()).collect::<String>()
+    )
+}
+
+#[tokio::test]
+async fn the_media_proxy_serves_a_cached_image_without_asking_the_host_again() {
+    let fetcher = Arc::new(CountingFetcher::new(0, 1));
+    let (app, cookie) = signed_in_with_fetcher(fetcher.clone()).await;
+
+    let first = get(&app, &media_uri("https://e.example/once.png"), &cookie).await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(first.bytes, PNG);
+
+    // The host has nothing left to give: a second upstream request would be a 502, so a 200 here
+    // can only have come from the cache.
+    let second = get(&app, &media_uri("https://e.example/once.png"), &cookie).await;
+    assert_eq!(second.status, StatusCode::OK, "{:?}", second.body);
+    assert_eq!(second.bytes, PNG);
+    assert_eq!(fetcher.calls(), 1, "the second read must not refetch");
+}
+
+#[tokio::test]
+async fn the_media_proxy_retries_a_refusal_once() {
+    let fetcher = Arc::new(CountingFetcher::new(1, 1));
+    let (app, cookie) = signed_in_with_fetcher(fetcher.clone()).await;
+
+    let reply = get(&app, &media_uri("https://e.example/flaky.png"), &cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(fetcher.calls(), 2, "one refusal, one retry, one image");
+}
+
+#[tokio::test]
+async fn an_image_the_host_keeps_refusing_is_reported_not_cached() {
+    let fetcher = Arc::new(CountingFetcher::new(2, 0));
+    let (app, cookie) = signed_in_with_fetcher(fetcher.clone()).await;
+
+    let reply = get(&app, &media_uri("https://e.example/gone.png"), &cookie).await;
+    assert_eq!(reply.status, StatusCode::BAD_GATEWAY, "{:?}", reply.body);
+    assert_eq!(
+        fetcher.calls(),
+        2,
+        "the retry is one extra attempt, not a loop"
+    );
+
+    // And nothing was cached on the way: the next read asks again rather than serving a hole.
+    let again = get(&app, &media_uri("https://e.example/gone.png"), &cookie).await;
+    assert_eq!(again.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(fetcher.calls(), 4);
+}
+
+#[tokio::test]
+async fn an_allowlisted_address_is_proxied_rather_than_refused() {
+    let db = Db::in_memory().await.expect("db");
+    // The guard keeps a bare address as a host entry, so a URL whose host is written as that
+    // literal is exempt by name: an operator who allowlists a NAS or a LAN image host expects its
+    // pictures to load, and the resolver that would otherwise catch the address is never consulted
+    // for a literal.
+    let config = AppConfig {
+        http: freshrss_server::config::HttpConfig {
+            internal_host_allowlist: vec!["127.0.0.1".to_owned()],
+            ..Default::default()
+        },
+        ..registration(RegistrationMode::Open)
+    };
+    let app = router(AppState::with_fetcher(
+        db,
+        config,
+        Arc::new(CountingFetcher::new(0, 1)),
+    ));
+    let registered = call(
+        &app,
+        Method::POST,
+        "/api/v1/auth/register",
+        None,
+        None,
+        Some(json!({"username": "alice", "password": "correct-horse-battery"})),
+    )
+    .await;
+    let cookie = registered.set_cookie.expect("a session cookie");
+
+    let reply = get(&app, &media_uri("http://127.0.0.1:9/x.png"), &cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(reply.bytes, PNG);
+
+    // The exemption is the entry, not the loopback prefix: the address next door is still refused,
+    // and refused before any fetch is attempted.
+    let neighbour = get(&app, &media_uri("http://127.0.0.2:9/x.png"), &cookie).await;
+    assert_eq!(
+        neighbour.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        neighbour.body
+    );
 }
 
 fn register_body(username: &str) -> Value {
@@ -900,7 +1103,10 @@ async fn an_anchor_marks_one_side_of_the_row_the_reader_is_on() {
     .await;
     assert_eq!(above.status, StatusCode::OK, "{:?}", above.body);
     assert_eq!(above.body["marked"], 2, "{:?}", above.body);
-    assert_eq!(unread(&app, &cookie, params).await, ["Three", "Four", "Five"]);
+    assert_eq!(
+        unread(&app, &cookie, params).await,
+        ["Three", "Four", "Five"]
+    );
 
     // The anchor is the row the reader is on, not one they have finished, so it survives both
     // halves of the gesture and is the only article left unread at the end.

@@ -200,6 +200,25 @@ pub struct HttpConfig {
     pub internal_host_allowlist: Vec<String>,
 }
 
+/// Where and how big the image proxy's disk cache is. See [`crate::service::media`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    /// Directory holding one file per cached image, keyed by a hash of its URL.
+    pub cache_dir: PathBuf,
+    /// Ceiling for that cache in megabytes; the oldest images go first when it is crossed.
+    pub max_mb: u64,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            cache_dir: PathBuf::from("data/media-cache"),
+            max_mb: 512,
+        }
+    }
+}
+
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
@@ -246,6 +265,7 @@ pub struct AppConfig {
     pub archiving: ArchivingOptions,
     pub mark_when: MarkWhen,
     pub http: HttpConfig,
+    pub media: MediaConfig,
     pub log: LogConfig,
 }
 
@@ -265,6 +285,7 @@ impl Default for AppConfig {
             archiving: ArchivingOptions::default(),
             mark_when: MarkWhen::default(),
             http: HttpConfig::default(),
+            media: MediaConfig::default(),
             log: LogConfig::default(),
         }
     }

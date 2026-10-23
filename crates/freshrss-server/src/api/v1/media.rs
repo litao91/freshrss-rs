@@ -22,7 +22,7 @@ use crate::api::extract::CurrentUser;
 use crate::error::Error;
 use crate::router::AppState;
 use crate::service::refresh::Settings;
-use freshrss_feed::http::{FetchOutcome, FetchRequest};
+use freshrss_feed::http::{FetchOutcome, FetchRequest, FetchedBody};
 
 /// A week: article images do not change, and re-fetching them on every read would turn the reader
 /// into a mirror that hammers the hosts it mirrors.
@@ -56,16 +56,27 @@ pub async fn proxy(
     }
     // An address written as a literal is checked here, because there is no resolution step left to
     // catch it; a name is checked where every other fetch is checked, in the guarded resolver.
-    if let Some(ip) = parsed
-        .as_ref()
-        .and_then(|u| u.host_str())
-        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
-    {
-        if !guard.allows_addr(&ip) {
+    // `allows_host` first: the guard keeps a bare-address allowlist entry as a host entry, so
+    // `internal_host_allowlist = ["192.168.1.50"]` exempts the literal by name and an image on a
+    // LAN host the operator allowlisted is not refused here while its feed is fetched happily.
+    let literal_host = parsed.as_ref().and_then(|u| u.host_str());
+    if let Some(ip) = literal_host.and_then(|h| h.parse::<std::net::IpAddr>().ok()) {
+        let allowlisted = literal_host.is_some_and(|h| guard.allows_host(h));
+        if !allowlisted && !guard.allows_addr(&ip) {
             return Err(ApiError(Error::Validation(format!(
                 "{ip} is not an address this server is configured to contact"
             ))));
         }
+    }
+
+    let cache_root = state.config.media.cache_dir.clone();
+    let max_bytes = state.config.media.max_mb.saturating_mul(1024 * 1024);
+
+    // A copy fetched once is served forever: article images do not change in place, and serving
+    // the local copy is what keeps a slow, rate-limiting or briefly down host from blanking a
+    // picture the reader has already seen.
+    if let Some(cached) = crate::service::media::get(&cache_root, &url) {
+        return Ok(serve(cached.mime, cached.body));
     }
 
     let settings = Settings::from_config(&state.config);
@@ -76,22 +87,7 @@ pub async fn proxy(
     request.accept = "image/*,*/*;q=0.8".to_owned();
     request.referer = query.via.as_deref().and_then(article_origin);
 
-    let body = match state.fetcher.fetch(&request).await {
-        Ok(FetchOutcome::Found(body)) => body,
-        // A conditional request is never made here, so a 304 means the host misbehaved.
-        Ok(FetchOutcome::NotModified) => {
-            return Err(ApiError(Error::Http {
-                status: 502,
-                message: "the image host answered 304 to an unconditional request".into(),
-            }))
-        }
-        Err(err) => {
-            return Err(ApiError(Error::Http {
-                status: 502,
-                message: format!("the image host refused: {err}"),
-            }))
-        }
-    };
+    let body = fetch_with_retry(&state, &request).await.map_err(ApiError)?;
 
     let mime = body
         .content_type
@@ -108,14 +104,51 @@ pub async fn proxy(
         }));
     }
 
-    Ok((
+    crate::service::media::put(&cache_root, &url, &body.body, &mime, max_bytes);
+    Ok(serve(mime, body.body))
+}
+
+/// The two headers an image is served with, cached copy or fresh fetch alike.
+fn serve(mime: String, body: Vec<u8>) -> Response {
+    (
         [
             (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, CACHE_CONTROL.to_owned()),
         ],
-        body.body,
+        body,
     )
-        .into_response())
+        .into_response()
+}
+
+/// Fetches once, and once more when the first attempt fails.
+///
+/// Image hosts blip — a timeout, a 502 of their own, a rate limiter having a moment — and on a
+/// cache miss there is no older copy to fall back on, so the reader's image is whatever this
+/// returns. One extra request buys a lot of blank-image avoidance; a host that is really gone
+/// costs one redundant refusal.
+async fn fetch_with_retry(state: &AppState, request: &FetchRequest) -> Result<FetchedBody, Error> {
+    let mut last = None;
+    for _ in 0..2 {
+        match state.fetcher.fetch(request).await {
+            Ok(FetchOutcome::Found(body)) => return Ok(body),
+            // A conditional request is never made here, so a 304 means the host misbehaved, and a
+            // second attempt is not going to teach it better manners.
+            Ok(FetchOutcome::NotModified) => {
+                return Err(Error::Http {
+                    status: 502,
+                    message: "the image host answered 304 to an unconditional request".into(),
+                })
+            }
+            Err(err) => last = Some(err),
+        }
+    }
+    Err(Error::Http {
+        status: 502,
+        message: format!(
+            "the image host refused: {}",
+            last.expect("two attempts, both of them failures")
+        ),
+    })
 }
 
 /// The origin of the article an image was found in, for use as `Referer`.

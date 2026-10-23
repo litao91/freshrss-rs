@@ -100,8 +100,20 @@ others refuse foreign referers outright — and the only referer a page served f
 give is the reader's own origin, which all of them reject. The proxy replays the article's address
 as referer instead, which is what those hosts actually check, and answers with a week of cache so a
 re-read costs nothing. It needs a session (an image proxy anyone may use is an open proxy), obeys
-the same SSRF guard as feed fetches, is rate-limited like any other outbound fetch, and refuses
-anything whose answer is not an `image/*`.
+the same SSRF guard as feed fetches, refuses anything whose answer is not an `image/*`, and is
+metered at twenty times the ceiling the other outbound fetches get: a page of article images arrives
+all at once, so a limit that suits one refresh at a time blanks the thirty-first picture of an
+ordinary read.
+
+An image fetched once is kept on the server — `[media] cache_dir`, pruned oldest-first at
+`[media] max_mb` — and served from there from then on. That week of browser cache is otherwise the
+only copy standing between the reader and a third-party host, and when it is gone (a new profile, an
+eviction, a hard reload) a host that is slow, rate-limiting or briefly down becomes a broken image
+on an article that displayed fine last week. Article images do not change in place: a publisher who
+edits an article replaces its body, not the bytes behind an old `<img>`, so a copy fetched once
+stays correct. A first fetch that is refused is retried once before it is reported, and only an
+answer that passed the `image/*` check is stored — a refusal is never cached, so a host that comes
+back is asked again.
 
 ## Layout
 
@@ -138,9 +150,10 @@ The following are deliberate ports of FreshRSS semantics rather than inventions:
 
 The API is guarded by a cross-origin check on mutations (a present `Origin` that is not the
 `Host` is refused) and a per-session, per-minute limit on the endpoints that cost money: logins,
-discovery, single-feed refreshes and whole-tree refreshes. Refreshes run as jobs — `POST
-/api/v1/refresh` answers `202` with an id the client polls — because a fetch can outlast any
-timeout a browser or proxy would tolerate.
+discovery, single-feed refreshes, whole-tree refreshes and the image proxy — the last at twenty
+times the others' ceiling, since one page of articles asks for its images all at once. Refreshes run
+as jobs — `POST /api/v1/refresh` answers `202` with an id the client polls — because a fetch can
+outlast any timeout a browser or proxy would tolerate.
 
 Divergences from FreshRSS, and why, are documented in the plan and in the module docs. The three
 that matter most:

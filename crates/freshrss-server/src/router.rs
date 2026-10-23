@@ -262,6 +262,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_image_proxy_outlasts_the_limit_that_stops_a_feed_fetch() {
+        let mut config = AppConfig::default();
+        config.limits.rate_limit_per_minute = 1;
+        let app = router(AppState::new(Db::in_memory().await.expect("db"), config));
+
+        // The requests never reach a fetch — there is no session, so the handler refuses them — but
+        // the limiter counts them first, which is what is under test. One per minute is the whole
+        // budget of a fetch class; the proxy gets twenty times that, because an article's images
+        // all arrive at once and a refused one looks like a broken image rather than like a limit.
+        let image = "/api/v1/media?url=https%3A%2F%2Fe.example%2Fa.png";
+        for _ in 0..20 {
+            let (status, _) = get_json(app.clone(), image).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "inside the image budget");
+        }
+        let (over, body) = get_json(app.clone(), image).await;
+        assert_eq!(over, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert_eq!(body["error"]["code"], "rate_limited");
+    }
+
+    #[tokio::test]
     async fn responses_are_compressed_when_the_client_asks() {
         use axum::http::header;
         let res = app()

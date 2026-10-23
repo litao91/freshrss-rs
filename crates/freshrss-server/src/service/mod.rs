@@ -11,6 +11,7 @@ pub mod favicon;
 pub mod import;
 pub mod ingest;
 pub mod jobs;
+pub mod media;
 pub mod packages;
 pub mod refresh;
 pub mod scheduler;

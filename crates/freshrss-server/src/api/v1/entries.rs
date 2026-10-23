@@ -591,7 +591,9 @@ pub async fn mark_all_read(
                     entry_dao::find_by_id(&mut conn, id, id_user)
                         .await?
                         .ok_or_else(|| Error::NotFound(format!("entry {id:?}")))?;
-                    let values = entry_query::cursor_after(&mut conn, &query, id).await?.values;
+                    let values = entry_query::cursor_after(&mut conn, &query, id)
+                        .await?
+                        .values;
                     if direction == Direction::Above {
                         // Reversing every level of the ladder is what "the rows before this one"
                         // means, and `Order::sign` flips the strict comparison along with it.
