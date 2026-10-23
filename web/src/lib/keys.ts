@@ -31,6 +31,8 @@ export const SHORTCUTS: Shortcut[] = [
   { key: 'v', description: 'Open the original in a new tab', reading: true },
   { key: 'u', description: 'Unread or all', list: true },
   { key: 'a', description: 'Mark everything in this view read', shift: true, list: true },
+  { key: 'k', description: 'Mark everything above read', shift: true, list: true, reading: true },
+  { key: 'j', description: 'Mark everything below read', shift: true, list: true, reading: true },
   { key: 'r', description: 'Refresh the feeds', list: true, reading: true },
   { key: 'f', description: 'Focus mode', list: true, reading: true },
   { key: 'b', description: 'Show or hide the sidebar', list: true, reading: true },
@@ -56,6 +58,17 @@ export function find(event: KeyboardEvent): Shortcut | undefined {
       ? event.shiftKey && event.key.toLowerCase() === s.key
       : event.key === s.key,
   );
+}
+
+/**
+ * A binding's identity, which has to carry the modifier.
+ *
+ * `j` and `Shift+J` are two bindings that share a `key`, and two things need to tell them apart:
+ * `HelpDialog`'s keyed `{#each}`, which Svelte rejects duplicate keys in, and its `shortcut.*`
+ * translation lookup, where one dictionary entry cannot describe both.
+ */
+export function id(shortcut: Shortcut): string {
+  return shortcut.shift ? `shift+${shortcut.key}` : shortcut.key;
 }
 
 /** Groups the bindings for the dialog, which shows list and reading shortcuts in two columns. */

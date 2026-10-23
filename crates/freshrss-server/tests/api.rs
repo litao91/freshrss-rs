@@ -38,6 +38,20 @@ fn rss(body: &str) -> FixtureResponse {
     }
 }
 
+/// Five articles, so that both sides of an anchor are non-empty.
+///
+/// The titles are chosen to sort into a different order than the ids — alphabetically `Five, Four,
+/// One, Three, Two` — so a test that anchors by title cannot pass by accidentally reading the id
+/// ordering instead.
+const WIDE_FEED_BODY: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Example</title><link>https://e.example/</link>
+<item><title>One</title><link>https://e.example/1</link><guid>g1</guid><description>Body</description></item>
+<item><title>Two</title><link>https://e.example/2</link><guid>g2</guid><description>Body</description></item>
+<item><title>Three</title><link>https://e.example/3</link><guid>g3</guid><description>Body</description></item>
+<item><title>Four</title><link>https://e.example/4</link><guid>g4</guid><description>Body</description></item>
+<item><title>Five</title><link>https://e.example/5</link><guid>g5</guid><description>Body</description></item>
+</channel></rss>"#;
+
 /// One response, reduced to what these tests assert on.
 struct Reply {
     status: StatusCode,
@@ -120,8 +134,13 @@ async fn post(app: &Router, uri: &str, cookie: &str, body: Value) -> Reply {
 
 /// A server on an in-memory database with a fixture fetcher, plus a signed-in session.
 async fn signed_in() -> (Router, String) {
+    signed_in_with(FEED_BODY).await
+}
+
+/// As [`signed_in`], but subscribing to a caller's feed body instead of the two-article default.
+async fn signed_in_with(feed_body: &str) -> (Router, String) {
     let db = Db::in_memory().await.expect("db");
-    let fetcher: Arc<dyn Fetcher> = Arc::new(FixtureFetcher::new().with(FEED_URL, rss(FEED_BODY)));
+    let fetcher: Arc<dyn Fetcher> = Arc::new(FixtureFetcher::new().with(FEED_URL, rss(feed_body)));
     let app = router(AppState::with_fetcher(
         db,
         registration(RegistrationMode::Open),
@@ -828,6 +847,185 @@ async fn marking_articles_read_keeps_the_cached_sidebar_counters_in_step() {
     let done = get(&app, "/api/v1/counts", &cookie).await;
     assert_eq!(done.body["all"]["unread"], 0, "{:?}", done.body);
     assert_eq!(done.body["main_stream"]["unread"], 0, "{:?}", done.body);
+}
+
+/// The rows a listing shows, as `(title, id)` in the order the reader sees them.
+async fn listing(app: &Router, cookie: &str, params: &str) -> Vec<(String, String)> {
+    let reply = get(app, &format!("/api/v1/entries?{params}"), cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    reply.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| {
+            (
+                item["title"].as_str().expect("title").to_owned(),
+                item["id"].as_str().expect("id").to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn titles(rows: &[(String, String)]) -> Vec<&str> {
+    rows.iter().map(|(title, _)| title.as_str()).collect()
+}
+
+/// What is still unread, which is how a test reads back what an update actually touched.
+async fn unread(app: &Router, cookie: &str, params: &str) -> Vec<String> {
+    listing(app, cookie, &format!("{params}&read=unread"))
+        .await
+        .into_iter()
+        .map(|(title, _)| title)
+        .collect()
+}
+
+#[tokio::test]
+async fn an_anchor_marks_one_side_of_the_row_the_reader_is_on() {
+    let (app, cookie) = signed_in_with(WIDE_FEED_BODY).await;
+    post(&app, "/api/v1/feeds", &cookie, json!({"url": FEED_URL})).await;
+
+    let params = "scope=all&sort=id&order=asc";
+    let rows = listing(&app, &cookie, params).await;
+    assert_eq!(titles(&rows), ["One", "Two", "Three", "Four", "Five"]);
+
+    let above = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({
+            "scope": "all", "sort": "id", "order": "asc",
+            "anchor": rows[2].1, "direction": "above",
+        }),
+    )
+    .await;
+    assert_eq!(above.status, StatusCode::OK, "{:?}", above.body);
+    assert_eq!(above.body["marked"], 2, "{:?}", above.body);
+    assert_eq!(unread(&app, &cookie, params).await, ["Three", "Four", "Five"]);
+
+    // The anchor is the row the reader is on, not one they have finished, so it survives both
+    // halves of the gesture and is the only article left unread at the end.
+    let below = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({
+            "scope": "all", "sort": "id", "order": "asc",
+            "anchor": rows[2].1, "direction": "below",
+        }),
+    )
+    .await;
+    assert_eq!(below.status, StatusCode::OK, "{:?}", below.body);
+    assert_eq!(below.body["marked"], 2, "{:?}", below.body);
+    assert_eq!(unread(&app, &cookie, params).await, ["Three"]);
+
+    // The sidebar's cached counters followed, which is the point of updating them in the same
+    // transaction as the entries.
+    let counts = get(&app, "/api/v1/counts", &cookie).await;
+    assert_eq!(counts.body["all"]["unread"], 1, "{:?}", counts.body);
+}
+
+#[tokio::test]
+async fn the_anchor_follows_the_listing_order_rather_than_the_ids() {
+    let (app, cookie) = signed_in_with(WIDE_FEED_BODY).await;
+    post(&app, "/api/v1/feeds", &cookie, json!({"url": FEED_URL})).await;
+
+    let params = "scope=all&sort=title&order=asc";
+    let rows = listing(&app, &cookie, params).await;
+    assert_eq!(titles(&rows), ["Five", "Four", "One", "Three", "Two"]);
+
+    // Alphabetically "above Three" is a different three articles than it was under the id sort.
+    // A title sort also carries real cursor boundary values — the id sort is the keyset itself and
+    // short-circuits to none — so this is the case that exercises the continuation ladder.
+    let above = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({
+            "scope": "all", "sort": "title", "order": "asc",
+            "anchor": rows[3].1, "direction": "above",
+        }),
+    )
+    .await;
+    assert_eq!(above.status, StatusCode::OK, "{:?}", above.body);
+    assert_eq!(above.body["marked"], 3, "{:?}", above.body);
+    assert_eq!(unread(&app, &cookie, params).await, ["Three", "Two"]);
+}
+
+#[tokio::test]
+async fn reversing_the_listing_reverses_which_side_above_means() {
+    let (app, cookie) = signed_in_with(WIDE_FEED_BODY).await;
+    post(&app, "/api/v1/feeds", &cookie, json!({"url": FEED_URL})).await;
+
+    let params = "scope=all&sort=id&order=desc";
+    let rows = listing(&app, &cookie, params).await;
+    assert_eq!(titles(&rows), ["Five", "Four", "Three", "Two", "One"]);
+
+    // The same anchor article as the ascending case, with the opposite meaning: newest first, so
+    // "above" is the two newer articles rather than the two older ones.
+    let above = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({
+            "scope": "all", "sort": "id", "order": "desc",
+            "anchor": rows[2].1, "direction": "above",
+        }),
+    )
+    .await;
+    assert_eq!(above.status, StatusCode::OK, "{:?}", above.body);
+    assert_eq!(above.body["marked"], 2, "{:?}", above.body);
+    assert_eq!(unread(&app, &cookie, params).await, ["Three", "Two", "One"]);
+}
+
+#[tokio::test]
+async fn an_anchor_and_a_direction_are_each_others_prerequisite() {
+    let (app, cookie) = signed_in_with(WIDE_FEED_BODY).await;
+    post(&app, "/api/v1/feeds", &cookie, json!({"url": FEED_URL})).await;
+    let params = "scope=all&sort=id&order=asc";
+    let rows = listing(&app, &cookie, params).await;
+
+    // Guessing at either half would mark the wrong half of somebody's reading list.
+    let no_direction = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({"scope": "all", "anchor": rows[0].1}),
+    )
+    .await;
+    assert_eq!(
+        no_direction.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        no_direction.body
+    );
+
+    let no_anchor = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({"scope": "all", "direction": "above"}),
+    )
+    .await;
+    assert_eq!(
+        no_anchor.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        no_anchor.body
+    );
+    assert_eq!(unread(&app, &cookie, params).await.len(), 5);
+
+    // An id that is not one of this reader's entries is a 404. Anything else would be a 500 out of
+    // the bare row lookup, and would let one user probe for the existence of another's entry ids.
+    let unknown = post(
+        &app,
+        "/api/v1/entries/mark-all-read",
+        &cookie,
+        json!({"scope": "all", "anchor": "1", "direction": "above"}),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{:?}", unknown.body);
+    assert_eq!(unknown.body["error"]["code"], "not_found");
+    assert_eq!(unread(&app, &cookie, params).await.len(), 5);
 }
 
 #[tokio::test]

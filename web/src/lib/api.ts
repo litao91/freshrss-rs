@@ -444,6 +444,9 @@ export interface EntryListParams {
   limit?: number;
 }
 
+/** Which side of an anchor row a bulk mark-read covers. */
+export type Direction = 'above' | 'below';
+
 /** Builds a query string, dropping anything undefined so absent parameters stay absent. */
 function query(params: EntryListParams): string {
   const out = new URLSearchParams();
@@ -605,8 +608,16 @@ export const api = {
   unstar: (ids: string[]) =>
     request<{ marked: number }>('/entries/unstar', { method: 'POST', body: { ids } }),
 
-  markAllRead: (body: EntryListParams & { star?: boolean }) =>
-    request<{ marked: number }>('/entries/mark-all-read', { method: 'POST', body }),
+  /**
+   * Marks read either everything the filters select, or everything on one side of `anchor`.
+   *
+   * The filters travel with the request because the server rebuilds the same listing to decide what
+   * "all" means — and, given an anchor, which rows sit above it. A `sort=title` listing and a
+   * `sort=id` one disagree about both.
+   */
+  markAllRead: (
+    body: EntryListParams & { star?: boolean; anchor?: string; direction?: Direction },
+  ) => request<{ marked: number }>('/entries/mark-all-read', { method: 'POST', body }),
 
   addLabels: (id: string, names: string[]) =>
     request<LabelRef[]>(`/entries/${encodeURIComponent(id)}/labels`, {

@@ -91,6 +91,10 @@ const en: Record<string, string> = {
   'sort.title': 'Title',
   'sort.feed': 'Feed',
   'list.markAll': 'Mark all as read',
+  'list.markAbove': 'Mark all above as read',
+  'list.markBelow': 'Mark all below as read',
+  'list.markMenu': 'Mark from here',
+  'list.needAnchor': 'Select an article first',
   'list.loadingMore': 'Loading more…',
   'list.loadMore': 'Load more',
   'list.endOfList': 'End of list',
@@ -118,6 +122,7 @@ const en: Record<string, string> = {
   'markall.title': 'Mark {n} articles as read?',
   'markall.confirm': 'Mark all as read',
   'markall.done': 'All marked as read.',
+  'markall.doneCount': 'Marked {n} articles as read.',
 
   'feed.title': 'Feed settings',
   'feed.name': 'Name',
@@ -277,6 +282,10 @@ const tr: Record<string, string> = {
   'sort.title': 'Başlık',
   'sort.feed': 'Besleme',
   'list.markAll': 'Tümünü okundu işaretle',
+  'list.markAbove': 'Üsttekilerin tümünü okundu işaretle',
+  'list.markBelow': 'Alttakilerin tümünü okundu işaretle',
+  'list.markMenu': 'Buradan işaretle',
+  'list.needAnchor': 'Önce bir makale seçin',
   'list.loadingMore': 'Daha fazlası yükleniyor…',
   'list.loadMore': 'Daha fazla yükle',
   'list.endOfList': 'Liste sonu',
@@ -304,14 +313,19 @@ const tr: Record<string, string> = {
   // The English side has no `shortcut.*` entries on purpose: `HelpDialog` passes each binding's
   // `description` from `keys.ts` as the fallback, so the map there stays the single source of
   // truth and a new binding shows up in English without touching this file.
+  //
+  // The keys are `shortcut.` + `id(binding)`, which carries the `shift+` prefix: `j` and `Shift+J`
+  // are two different bindings and one dictionary entry cannot describe both.
   'shortcut.j': 'Sonraki makale',
   'shortcut.k': 'Önceki makale',
+  'shortcut.shift+j': 'Alttakilerin tümünü okundu işaretle',
+  'shortcut.shift+k': 'Üsttekilerin tümünü okundu işaretle',
   'shortcut.Enter': 'Seçili makaleyi aç',
   'shortcut.s': 'Yıldız ekle veya kaldır',
   'shortcut.m': 'Okundu veya okunmadı işaretle',
   'shortcut.v': 'Orijinali yeni sekmede aç',
   'shortcut.u': 'Okunmamışlar ile tümü arasında geç',
-  'shortcut.a': 'Bu görünümdeki her şeyi okundu işaretle',
+  'shortcut.shift+a': 'Bu görünümdeki her şeyi okundu işaretle',
   'shortcut.r': 'Beslemeleri yenile',
   'shortcut.f': 'Odak modu',
   'shortcut.b': 'Kenar çubuğunu göster veya gizle',
@@ -319,11 +333,12 @@ const tr: Record<string, string> = {
   'shortcut.-': 'Yazıyı küçült',
   'shortcut./': 'Ara',
   'shortcut.Escape': 'Listeye geri dön',
-  'shortcut.?': 'Bu listeyi göster',
+  'shortcut.shift+?': 'Bu listeyi göster',
 
   'markall.title': '{n} makale okundu olarak işaretlensin mi?',
   'markall.confirm': 'Tümünü okundu işaretle',
   'markall.done': 'Tümü okundu olarak işaretlendi.',
+  'markall.doneCount': '{n} makale okundu olarak işaretlendi.',
 
   'feed.title': 'Besleme ayarları',
   'feed.name': 'Ad',

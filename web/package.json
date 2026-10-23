@@ -11,7 +11,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json --threshold warning && tsc -p tsconfig.node.json"
   },
   "dependencies": {
-    "dompurify": "^3.4.16"
+    "dompurify": "^3.4.16",
+    "svelte-widgets": "^1.10.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

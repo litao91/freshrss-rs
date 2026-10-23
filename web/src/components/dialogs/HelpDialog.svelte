@@ -7,7 +7,7 @@
    * the handler and this table. English descriptions are those from `keys.ts` (passed as the `t()`
    * fallback); the dictionary only carries translations.
    */
-  import { SHORTCUTS, type Shortcut } from '../../lib/keys';
+  import { SHORTCUTS, id as shortcutId, type Shortcut } from '../../lib/keys';
   import { t } from '../../lib/i18n';
 
   interface Props {
@@ -45,7 +45,7 @@
   }
 
   function description(shortcut: Shortcut): string {
-    return t(`shortcut.${shortcut.key}`, shortcut.description);
+    return t(`shortcut.${shortcutId(shortcut)}`, shortcut.description);
   }
 
   function handleCancel(): void {
@@ -73,7 +73,7 @@
       {#if group.shortcuts.length > 0}
         <p class="rd-menu-label">{group.label}</p>
         <dl class="rd-keys">
-          {#each group.shortcuts as shortcut (shortcut.key)}
+          {#each group.shortcuts as shortcut (shortcutId(shortcut))}
             <dt>
               {#if shortcut.shift}
                 <kbd>⇧</kbd>

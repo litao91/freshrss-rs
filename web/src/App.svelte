@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { CategoryNode, FeedNode } from './lib/api';
+  import type { CategoryNode, Direction, FeedNode } from './lib/api';
   import { t } from './lib/i18n';
   import { initPrefs, setDrawerOpen, toggleFocus, toggleNavForViewport } from './lib/prefs.svelte';
   import { bootstrap, isSignedIn, refreshTree, session, tree } from './lib/session.svelte';
@@ -22,7 +22,7 @@
   import PackagesDialog from './components/dialogs/PackagesDialog.svelte';
   import ProblemsDialog from './components/dialogs/ProblemsDialog.svelte';
 
-  import { entries, loadMore, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
+  import { entries, loadMore, markReadFrom, reload as reloadEntries, setRead, setStarred } from './lib/entries.svelte';
   import { find as findShortcut } from './lib/keys';
   import { nudgeSize } from './lib/prefs.svelte';
   import { refreshJob, resumeRefresh, startRefresh, stopPolling } from './lib/refresh.svelte';
@@ -46,6 +46,15 @@
 
   /** The row the keyboard is on, which is not necessarily the one that is open. */
   let highlighted = $state<string | null>(null);
+
+  /**
+   * The row the "mark above/below" gestures work from.
+   *
+   * Computed here rather than in each of the four places that need it — the two shortcuts, the list
+   * toolbar menu, the row menu and the reading pane — so they cannot disagree about which row the
+   * reader means.
+   */
+  const anchorId = $derived(view.selectedEntryId ?? highlighted);
 
   /**
    * Reads the query string into a scope.
@@ -123,6 +132,17 @@
     void entryList?.revealSelected();
   }
 
+  /**
+   * Marks read everything on one side of the row the keyboard is on.
+   *
+   * A no-op with no anchor rather than a complaint: `m` and `s` are silent in the same situation,
+   * and a binding that scolds the reader for not having moved yet is one they stop pressing.
+   */
+  function markFrom(direction: Direction): void {
+    if (anchorId === null) return;
+    void markReadFrom(anchorId, direction);
+  }
+
   function onKeydown(event: KeyboardEvent): void {
     const target = event.target as HTMLElement | null;
     const typing =
@@ -150,18 +170,19 @@
     if (!reading && !shortcut.list) return;
     event.preventDefault();
 
-    const ids = (): string[] => {
-      const id = view.selectedEntryId ?? highlighted;
-      return id ? [id] : [];
-    };
+    const ids = (): string[] => (anchorId ? [anchorId] : []);
 
     switch (shortcut.key) {
       case 'j':
-        if (reading) readingPane?.goNext();
+        // `j` and `Shift+J` arrive here as two different bindings that share a key, so the modifier
+        // decides between moving one row and marking every row below it.
+        if (shortcut.shift) markFrom('below');
+        else if (reading) readingPane?.goNext();
         else move(1);
         break;
       case 'k':
-        if (reading) readingPane?.goPrev();
+        if (shortcut.shift) markFrom('above');
+        else if (reading) readingPane?.goPrev();
         else move(-1);
         break;
       case 'Enter':
@@ -317,6 +338,7 @@
     <EntryList
       bind:this={entryList}
       selectedId={view.selectedEntryId}
+      anchorId={anchorId}
       onOpen={(id) => {
         highlighted = id;
         selectEntry(id);

@@ -18,11 +18,13 @@
 
 import {
   api,
+  type Direction,
   type EntryListParams,
   type EntrySummary,
   type EntryPage,
 } from './api';
-import { notifyError } from './toast.svelte';
+import { tf } from './i18n';
+import { notify, notifyError } from './toast.svelte';
 import { scheduleTreeSync } from './session.svelte';
 import { scopeId, scopeParam, view } from './view.svelte';
 
@@ -187,6 +189,56 @@ export async function markAllRead(): Promise<number> {
     scheduleTreeSync();
     // An unread-filtered list must also drop the rows that just became read.
     if (view.readFilter === 'unread') await reload();
+    return marked;
+  } catch (err) {
+    notifyError(message(err));
+    return 0;
+  }
+}
+
+/**
+ * Marks read everything the current filters select on one side of `anchor`.
+ *
+ * The server places the anchor, not the client, for the reason `markAllRead` gives: the rows a
+ * reader has not scrolled to are exactly the ones a slice of `items` would miss. The sort and order
+ * travel with the request because they are what place it — "above" in a `sort=title` listing is a
+ * different set of articles than "above" in a `sort=id` one.
+ *
+ * Deliberately no `reload()` on the way out, unlike `markAllRead`. Restarting the listing scrolls
+ * the reader back to the top, which is the one thing this gesture must not do: they anchored
+ * themselves at a row and expect to still be there. Rows that became read stay visible under the
+ * unread filter, exactly as they do after the row-level toggle.
+ */
+export async function markReadFrom(anchor: string, direction: Direction): Promise<number> {
+  const params = listParams();
+  // Paging is irrelevant to an update; the sort is not, so only the page size goes.
+  delete params.limit;
+  try {
+    const { marked } = await api.markAllRead({
+      ...params,
+      id_max: entries.idMax ?? undefined,
+      anchor,
+      direction,
+    });
+    const at = entries.items.findIndex((e) => e.id === anchor);
+    if (at < 0) {
+      // A deep link into the reading pane can anchor on an article this listing never loaded, and
+      // then there is no local way to tell which side of it a row falls. The server has just
+      // answered, so ask it again rather than leave rows claiming to be unread that are not.
+      await reload();
+    } else {
+      const side =
+        direction === 'above' ? entries.items.slice(0, at) : entries.items.slice(at + 1);
+      for (const entry of side) entry.is_read = true;
+    }
+    // `marked` counts rows that actually flipped, so it is the right thing to take off the scope's
+    // unread total — and the right number to report.
+    entries.unreadInScope = Math.max(0, entries.unreadInScope - marked);
+    scheduleTreeSync();
+    // Reported here rather than by the caller because there are four callers — the two shortcuts,
+    // the toolbar menu, the row menu and the reading pane. `markAllRead` leaves it to its dialog
+    // only because a dialog is already the thing giving the reader feedback.
+    if (marked > 0) notify(tf('markall.doneCount', { n: marked }));
     return marked;
   } catch (err) {
     notifyError(message(err));

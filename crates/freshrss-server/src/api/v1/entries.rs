@@ -478,6 +478,10 @@ pub async fn unstar(
 /// ids from the client. A reader who has scrolled through nine pages has only loaded nine pages; marking
 /// "all read" from the client's side would leave everything below the fold unread, which is not what the
 /// button says.
+///
+/// An `anchor` narrows that to one side of a row — "everything above this" or "everything below it" —
+/// and is resolved here for the same reason: the rows a reader has not scrolled to are exactly the ones
+/// a client-side slice would miss.
 #[derive(Debug, Deserialize)]
 pub struct MarkAllReadRequest {
     pub scope: Option<String>,
@@ -491,6 +495,29 @@ pub struct MarkAllReadRequest {
     pub id_min: Option<String>,
     /// Also star them. The reader's "mark all read" does not, but a filter action does.
     pub star: Option<bool>,
+    /// The row to mark from, and which side of it. Both or neither.
+    pub anchor: Option<String>,
+    pub direction: Option<Direction>,
+    /// The listing's ordering.
+    ///
+    /// An unanchored update selects a set and so does not care what order it came back in, but an
+    /// anchor is *placed* by the sort: "above" in a `sort=title` listing and in a `sort=date` one
+    /// are different rows. Leaving these out would silently anchor against the default sort
+    /// instead of the one on screen.
+    pub sort: Option<String>,
+    pub order: Option<String>,
+    pub secondary_sort: Option<String>,
+    pub secondary_order: Option<String>,
+}
+
+/// Which side of [`MarkAllReadRequest::anchor`] to mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// The rows the listing shows before the anchor.
+    Above,
+    /// The rows the listing shows after it.
+    Below,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -506,6 +533,23 @@ pub async fn mark_all_read(
     let id_user = user.id;
     let now = now_micros();
 
+    // A direction with no anchor has nothing to be relative to, and an anchor with no direction is
+    // ambiguous. Guessing either would mark the wrong half of somebody's reading list.
+    let anchor = match (body.anchor, body.direction) {
+        (Some(raw), Some(direction)) => Some((entry_id(raw).map_err(ApiError)?, direction)),
+        (Some(_), None) => {
+            return Err(ApiError(Error::Validation(
+                "an anchor needs a direction: above or below".into(),
+            )))
+        }
+        (None, Some(_)) => {
+            return Err(ApiError(Error::Validation(
+                "a direction needs an anchor entry id".into(),
+            )))
+        }
+        (None, None) => None,
+    };
+
     let parsed = compile_search(body.search.as_deref(), id_user, &state).await?;
     let params = ListParams {
         scope: body.scope,
@@ -515,15 +559,15 @@ pub async fn mark_all_read(
         or_unread: body.or_unread,
         or_starred: body.or_starred,
         search: None,
-        sort: None,
-        order: None,
-        secondary_sort: None,
-        secondary_order: None,
+        sort: body.sort,
+        order: body.order,
+        secondary_sort: body.secondary_sort,
+        secondary_order: body.secondary_order,
         id_max: body.id_max,
         id_min: body.id_min,
         cursor: None,
-        // The sort and the page size are irrelevant to an update, and asking for one row would mark one
-        // row; the limit is lifted below.
+        // The page size is irrelevant to an update, and asking for one row would mark one row; the
+        // limit is lifted below. The sort is not — it is what places the anchor.
         limit: None,
     };
     let query = params.into_query(id_user, parsed, now).map_err(ApiError)?;
@@ -538,7 +582,26 @@ pub async fn mark_all_read(
             // part that benefits from the narrow columns anyway.
             let mut select = query.clone();
             select.limit = usize::MAX;
-            select.cursor = None;
+            match anchor {
+                Some((id, direction)) => {
+                    // `cursor_after` looks the boundary row up by primary key alone, so an anchor
+                    // that is not this reader's would surface as a `RowNotFound` 500 — and, worse,
+                    // would let one user probe for the existence of another's entry ids. `show`
+                    // establishes ownership the same way before it computes neighbours.
+                    entry_dao::find_by_id(&mut conn, id, id_user)
+                        .await?
+                        .ok_or_else(|| Error::NotFound(format!("entry {id:?}")))?;
+                    let values = entry_query::cursor_after(&mut conn, &query, id).await?.values;
+                    if direction == Direction::Above {
+                        // Reversing every level of the ladder is what "the rows before this one"
+                        // means, and `Order::sign` flips the strict comparison along with it.
+                        select.order = query.order.reverse();
+                        select.secondary_order = query.secondary_order.reverse();
+                    }
+                    select.cursor = Some(Cursor { id, values });
+                }
+                None => select.cursor = None,
+            }
             let rows = list(&mut conn, &select).await?;
             if rows.is_empty() {
                 return Ok(0);

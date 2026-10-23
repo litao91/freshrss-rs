@@ -123,6 +123,35 @@ html[data-theme='gece'],
     color var(--rd-ease);
 }
 
+/* --- svelte-widgets tokens ---
+ *
+ * The reader's menus and buttons are svelte-widgets components, which are themed entirely through
+ * custom properties read as `var(--x, <fallback>)` inside their own scoped styles. Those styles
+ * select `tag.svelte-<hash>` — specificity (0,1,1) — so no class of ours can override them;
+ * setting the property is the only lever that works, and the one the library intends.
+ *
+ * On `:root` rather than on `.rd-app` because some surfaces escape the app wrapper: the `tooltip`
+ * attachment appends its element to `document.body`, and `MultiSelect` can portal there too.
+ *
+ * Only what the components actually in use read is mapped — the library has some 530 properties in
+ * total — so this list stays honest about what is themed. No `light-dark()` bridging is needed:
+ * section 1 already sets `color-scheme` per theme, and that is what the fallbacks resolve against.
+ */
+:root {
+  /* ActionMenu: the mark-above/below menu in the list toolbar, and the one a right-click opens.
+     Sized to match `.rd-menu-panel`, which is the menu this reader already had. */
+  --action-menu-bg: var(--fd-surface);
+  --action-menu-border: 1px solid var(--fd-line);
+  --action-menu-radius: var(--rd-radius);
+  --action-menu-shadow: var(--rd-shadow-2);
+  --action-menu-padding: 0.5rem;
+  --action-menu-min-width: 15rem;
+  --action-menu-item-padding: 0.42rem 0.5rem;
+  --action-menu-item-hover-bg: var(--fd-hover);
+  --action-menu-item-checked-bg: var(--fd-soft);
+  --action-menu-section-border: 1px solid var(--fd-line);
+}
+
 /* ==========================================================================
    3. Reset & base
    ========================================================================== */
@@ -500,6 +529,15 @@ body,
 .rd-icon-btn:hover {
   background: var(--fd-hover);
   color: var(--fd-ink);
+}
+
+/* `ActionButton` lays itself out as an inline grid sized to a hidden width sizer. Its own rule is
+   `[data-sms-action].svelte-<hash>` — specificity (0,2,0) and bundled after this file — so naming
+   the class alone only ties with it and loses on source order. The extra ancestor is what keeps
+   these square and icon-sized rather than as wide as a label they do not show. */
+.rd-app .rd-icon-btn[data-sms-action] {
+  display: inline-grid;
+  width: 2.15rem;
 }
 
 .rd-icon-btn[disabled] {
@@ -883,6 +921,32 @@ i.is-spinning {
 .rd-menu-item i {
   color: var(--fd-muted);
   font-size: 1rem;
+}
+
+/* The mark-above/below menu rows. `ActionMenu` renders each item's own button and the snippet here
+   supplies its contents, so this is a Remixicon glyph, the label, and the `<kbd>` hint the library
+   formats from the action's `shortcut`. Laid out to match `.rd-menu-item`, the row it sits beside;
+   the key caps themselves come from the global `kbd` rule, the same one `HelpDialog` uses. */
+.rd-mark-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.rd-mark-item > i {
+  color: var(--fd-muted);
+  font-size: 1rem;
+}
+
+.rd-mark-item-label {
+  flex: 1 1 auto;
+}
+
+.rd-kbd {
+  display: inline-flex;
+  gap: 0.2rem;
+  opacity: 0.85;
 }
 
 /* Focus-mode and sidebar toggles in the display panel: stacked menu rows with a pressed state,

@@ -9,8 +9,9 @@
    * feed parser is exactly the kind of code where a mistake is eventually found.
    */
   import DOMPurify from 'dompurify';
+  import { ActionButton } from 'svelte-widgets';
   import { api, mediaUrl, type EntryDetail } from '../lib/api';
-  import { entries, setLabels, setRead, setStarred } from '../lib/entries.svelte';
+  import { entries, markReadFrom, setLabels, setRead, setStarred } from '../lib/entries.svelte';
   import { formatFullTime } from '../lib/format';
   import { notifyError } from '../lib/toast.svelte';
   import { prefs, toggleFocus } from '../lib/prefs.svelte';
@@ -37,6 +38,14 @@
   let fetchingFull = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
   let controller: AbortController | null = null;
+
+  /**
+   * `ActionButton` keeps a hidden sizer holding the width of every state's label, so the button
+   * cannot resize mid-flight. These two are icon-only and draw their own glyph from the `children`
+   * snippet, so the labels are emptied — otherwise the sizer would reserve the width of the word
+   * "Working…" inside a square 2.15rem button.
+   */
+  const NO_LABELS = { ready: '', pending: '', success: '', error: '' };
 
   /**
    * Configured once rather than per render.
@@ -344,6 +353,37 @@
       <i class="ri-mail-unread-line" aria-hidden="true"></i>
       <span class="rd-sr">Mark as unread</span>
     </button>
+    <!-- Anchored at the open article rather than at the keyboard cursor: in the reading pane the
+         article on screen is unambiguously the one the reader means. `ActionButton` keeps the pair
+         inert while the request is in flight, which matters because it can touch thousands of rows. -->
+    <ActionButton
+      class="rd-icon-btn"
+      title="Mark all above as read (⇧K)"
+      labels={NO_LABELS}
+      action={() => markReadFrom(entryId, 'above')}
+    >
+      {#snippet children({ state })}
+        <i
+          class={state === 'pending' ? 'ri-loader-4-line is-spinning' : 'ri-arrow-up-double-line'}
+          aria-hidden="true"
+        ></i>
+        <span class="rd-sr">Mark all above as read</span>
+      {/snippet}
+    </ActionButton>
+    <ActionButton
+      class="rd-icon-btn"
+      title="Mark all below as read (⇧J)"
+      labels={NO_LABELS}
+      action={() => markReadFrom(entryId, 'below')}
+    >
+      {#snippet children({ state })}
+        <i
+          class={state === 'pending' ? 'ri-loader-4-line is-spinning' : 'ri-arrow-down-double-line'}
+          aria-hidden="true"
+        ></i>
+        <span class="rd-sr">Mark all below as read</span>
+      {/snippet}
+    </ActionButton>
     <button class="rd-icon-btn" type="button" title="Add a label" onclick={() => void addLabel()}>
       <i class="ri-price-tag-3-line" aria-hidden="true"></i>
       <span class="rd-sr">Add a label</span>
