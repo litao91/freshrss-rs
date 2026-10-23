@@ -77,7 +77,7 @@ try {
   const unreadDot = await page.locator('.rd-item.is-unread .rd-dot').count();
   check('unread rows carry the dot', unreadDot > 0, `${unreadDot} dotted`);
 
-  const segmentCount = await page.locator('.rd-list-head .rd-segment').count();
+  const segmentCount = await page.locator('.rd-list-head .rd-segments').count();
   check('the list head has its segment controls', segmentCount >= 2, `${segmentCount} segments`);
   check(
     'the unread badge shows a number',
@@ -259,7 +259,7 @@ try {
   check('the mark-all dialog cancels', (await page.locator('#rd-markall-dialog[open]').count()) === 0);
 
   // --- sorting -----------------------------------------------------------
-  await page.locator('.rd-list-head .rd-segment[aria-label="Sort"] button', { hasText: 'Title' }).click();
+  await page.locator('.rd-list-head .rd-segments [aria-label="Sort"] button', { hasText: 'Title' }).click();
   await page.waitForSelector('.rd-items .rd-item', { timeout: 10000 });
   await page.waitForTimeout(600);
   const titles = await page.locator('.rd-items .rd-item .rd-item-title').evaluateAll((els) =>
@@ -272,7 +272,7 @@ try {
   const sorted = [...titles].sort();
   check('sorting by title actually sorts', JSON.stringify(titles) === JSON.stringify(sorted), titles.slice(0, 3).join(' | '));
 
-  await page.locator('.rd-list-head .rd-segment[aria-label="Sort"] button', { hasText: 'Newest' }).click();
+  await page.locator('.rd-list-head .rd-segments [aria-label="Sort"] button', { hasText: 'Newest' }).click();
   await page.waitForTimeout(900);
 
   // --- search ------------------------------------------------------------
@@ -360,7 +360,7 @@ try {
     await page.locator('button[type="submit"]').first().click();
     await page.waitForSelector('.rd-items .rd-item', { timeout: 15000 }).catch(() => {});
     // The desktop pass above marks everything read; the phone session inherits that state.
-    await page.locator('.rd-segment button', { hasText: 'All' }).first().click();
+    await page.locator('.rd-segments button', { hasText: 'All' }).first().click();
     await page.waitForSelector('.rd-items .rd-item', { timeout: 15000 });
     await page.waitForTimeout(600);
 

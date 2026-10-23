@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Popover } from 'svelte-widgets';
+  import { ButtonGroup, Popover } from 'svelte-widgets';
   import { LANGUAGES, t } from '../lib/i18n';
   import {
     MAX_SIZE,
@@ -243,18 +243,15 @@
       </div>
 
       <p class="rd-menu-label" id="rd-density-label">{t('topbar.density')}</p>
-      <div class="rd-segment" role="group" aria-labelledby="rd-density-label">
-        {#each densities as option (option.value)}
-          <button
-            type="button"
-            data-rd-density={option.value}
-            aria-pressed={prefs.density === option.value}
-            onclick={() => setDensity(option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
+      <ButtonGroup
+        class="rd-segments"
+        label={t('topbar.density')}
+        options={densities}
+        value={prefs.density}
+        on_change={(value: Density | null) => {
+          if (value) setDensity(value);
+        }}
+      />
 
       <p class="rd-menu-label" id="rd-view-label">{t('topbar.focusMode')}</p>
       <div class="rd-view-toggles" role="group" aria-labelledby="rd-view-label">

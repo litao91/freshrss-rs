@@ -180,6 +180,30 @@ html[data-theme='gece'],
   --dialog-backdrop: rgb(0 0 0 / 0.42);
   --dialog-content-padding: 1.15rem 1.25rem 1.25rem;
 
+  /* ButtonGroup: the segmented controls — show, sort, order in the list head and density in the
+     display panel. The box and the chips are the old `.rd-segment` exactly. The lifted active
+     chip's shadow has no token; see `.rd-segments` below. */
+  --btn-group-display: inline-flex;
+  --btn-group-gap: 2px;
+  --btn-group-padding: 2px;
+  --btn-group-radius: var(--rd-radius-sm);
+  --btn-group-bg: var(--fd-side);
+  --btn-group-border: 1px solid var(--fd-line);
+  --btn-group-btn-bg: transparent;
+  --btn-group-btn-border: 0;
+  --btn-group-btn-radius: calc(var(--rd-radius-sm) - 2px);
+  --btn-group-btn-color: var(--fd-muted);
+  --btn-group-btn-hover-bg: transparent;
+  --btn-group-btn-hover-color: var(--fd-ink);
+  --btn-group-btn-active-bg: var(--fd-surface);
+  --btn-group-btn-active-color: var(--fd-ink);
+  --btn-group-btn-padding: 0.26rem 0.6rem;
+  --btn-group-btn-font-size: 0.8125rem;
+  --btn-group-btn-gap: 0.3rem;
+  --btn-group-btn-transition:
+    background var(--rd-ease),
+    color var(--rd-ease);
+
   /* Toast: same card as the menus, in the place the reader's confirmations have always sat. The
      priority stripe is the one deliberate difference from the hand-rolled toast, which recoloured
      its whole border and text for errors. The dismiss button draws no background of its own, so
@@ -639,40 +663,17 @@ select.rd-input {
   font-size: 0.8125rem;
 }
 
-/* Segmented control (Unread/All, sort order, density). */
-.rd-segment {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  border: 1px solid var(--fd-line);
-  border-radius: var(--rd-radius-sm);
-  background: var(--fd-side);
-}
-
-.rd-segment > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.26rem 0.6rem;
-  border: 0;
-  border-radius: calc(var(--rd-radius-sm) - 2px);
-  background: transparent;
-  color: var(--fd-muted);
-  font-size: 0.8125rem;
+/* Segmented controls are ButtonGroups now; the `--btn-group-*` tokens in section 2 give them the
+   box the hand-rolled `.rd-segment` used to draw. Two things have no token: the type weight, and
+   the shadow that lifts the active chip. The selectors for the shadow are long on purpose — the
+   library's checked rule is `.button-group.svelte-<hash> button:not(...):is([aria-checked=...])`,
+   four classes and two elements deep, and only outranking it gets the chip its lift back. */
+.rd-segments button {
   font-weight: 500;
-  cursor: pointer;
-  transition:
-    background var(--rd-ease),
-    color var(--rd-ease);
 }
 
-.rd-segment > button:hover {
-  color: var(--fd-ink);
-}
-
-.rd-segment > button[aria-pressed='true'] {
-  background: var(--fd-surface);
-  color: var(--fd-ink);
+.rd-app .rd-list-head .rd-segments.button-group button[aria-checked='true'],
+.rd-app .rd-display .rd-segments.button-group button[aria-checked='true'] {
   box-shadow: var(--rd-shadow-1);
 }
 
@@ -1107,12 +1108,12 @@ i.is-spinning {
   font-size: 1rem;
 }
 
-.rd-display .rd-segment {
+.rd-display .rd-segments {
   margin: 0 0.25rem 0.5rem;
   width: calc(100% - 0.5rem);
 }
 
-.rd-display .rd-segment > button {
+.rd-display .rd-segments button {
   flex: 1;
   justify-content: center;
 }

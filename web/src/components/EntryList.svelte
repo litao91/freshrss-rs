@@ -8,7 +8,7 @@
    * same announcements here.
    */
   import { tick } from 'svelte';
-  import { ActionMenu, VirtualList, type CmdAction } from 'svelte-widgets';
+  import { ActionMenu, ButtonGroup, VirtualList, type CmdAction } from 'svelte-widgets';
   import { format_shortcut } from 'svelte-widgets/utils';
   import { mediaUrl, type EntrySummary } from '../lib/api';
   import {
@@ -31,6 +31,8 @@
     toggleOrder,
     toggleReadFilter,
     view,
+    type Order,
+    type ReadFilter,
     type SortKey,
   } from '../lib/view.svelte';
 
@@ -60,6 +62,11 @@
   function sortLabel(sort: SortKey): string {
     return t(`sort.${sort}`, SORT_LABELS[sort]);
   }
+
+  /** Option lists for the three `ButtonGroup`s. Values only where the snippet supplies the face. */
+  const showOptions: { value: ReadFilter }[] = [{ value: 'unread' }, { value: 'all' }];
+  const orderOptions: { value: Order }[] = [{ value: 'desc' }, { value: 'asc' }];
+  const sortOptions = $derived(sorts.map((value) => ({ value, label: sortLabel(value) })));
 
   /**
    * One row's height in pixels, which `VirtualList` needs as a number.
@@ -201,6 +208,20 @@
 </script>
 
 <section id="icerik" class="rd-list">
+  {#snippet showOption({ option }: { option: { value: ReadFilter } })}
+    {#if option.value === 'unread'}
+      {t('list.unread')}
+      <span class="rd-segment-count">{unreadLabel}</span>
+    {:else}
+      {t('list.all')}
+    {/if}
+  {/snippet}
+
+  {#snippet orderOption({ option }: { option: { value: Order } })}
+    <i class={option.value === 'desc' ? 'ri-sort-desc' : 'ri-sort-asc'} aria-hidden="true"></i>
+    <span class="rd-sr">{option.value === 'desc' ? t('list.newestFirst') : t('list.oldestFirst')}</span>
+  {/snippet}
+
   {#snippet markItem({ action }: { action: MarkAction })}
     <span class="rd-mark-item">
       <i class={action.icon} aria-hidden="true"></i>
@@ -221,60 +242,37 @@
     </div>
 
     <div class="rd-list-tools">
-      <div class="rd-segment" aria-label={t('list.showAria')} role="group">
-        <button
-          type="button"
-          class:is-active={view.readFilter === 'unread'}
-          aria-pressed={view.readFilter === 'unread'}
-          onclick={toggleReadFilter}
-        >
-          {t('list.unread')}
-          <span class="rd-segment-count">{unreadLabel}</span>
-        </button>
-        <button
-          type="button"
-          class:is-active={view.readFilter === 'all'}
-          aria-pressed={view.readFilter === 'all'}
-          onclick={toggleReadFilter}
-        >
-          {t('list.all')}
-        </button>
-      </div>
+      <ButtonGroup
+        class="rd-segments"
+        label={t('list.showAria')}
+        options={showOptions}
+        value={view.readFilter}
+        option={showOption}
+        on_change={(value: ReadFilter | null) => {
+          if (value && value !== view.readFilter) toggleReadFilter();
+        }}
+      />
 
-      <div class="rd-segment" aria-label={t('list.sortAria')} role="group">
-        {#each sorts as sort (sort)}
-          <button
-            type="button"
-            class:is-active={view.sort === sort}
-            aria-pressed={view.sort === sort}
-            title="{sortLabel(sort)} {view.order === 'desc' ? t('list.first') : t('list.last')}"
-            onclick={() => setSort(sort)}
-          >
-            {sortLabel(sort)}
-          </button>
-        {/each}
-      </div>
+      <ButtonGroup
+        class="rd-segments"
+        label={t('list.sortAria')}
+        options={sortOptions}
+        value={view.sort}
+        on_change={(value: SortKey | null) => {
+          if (value) setSort(value);
+        }}
+      />
 
-      <div class="rd-segment" aria-label={t('list.orderAria')} role="group">
-        <button
-          type="button"
-          class:is-active={view.order === 'desc'}
-          title={t('list.newestFirst')}
-          onclick={() => view.order !== 'desc' && toggleOrder()}
-        >
-          <i class="ri-sort-desc" aria-hidden="true"></i>
-          <span class="rd-sr">{t('list.newestFirst')}</span>
-        </button>
-        <button
-          type="button"
-          class:is-active={view.order === 'asc'}
-          title={t('list.oldestFirst')}
-          onclick={() => view.order !== 'asc' && toggleOrder()}
-        >
-          <i class="ri-sort-asc" aria-hidden="true"></i>
-          <span class="rd-sr">{t('list.oldestFirst')}</span>
-        </button>
-      </div>
+      <ButtonGroup
+        class="rd-segments"
+        label={t('list.orderAria')}
+        options={orderOptions}
+        value={view.order}
+        option={orderOption}
+        on_change={(value: Order | null) => {
+          if (value && value !== view.order) toggleOrder();
+        }}
+      />
 
       <button class="rd-btn rd-btn--quiet" type="button" onclick={onMarkAll}>
         <i class="ri-check-double-line" aria-hidden="true"></i>
