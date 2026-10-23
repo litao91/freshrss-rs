@@ -254,10 +254,10 @@ try {
     `${beforeAbove.length} → ${afterAbove.length}`,
   );
 
-  const toastText = await page.locator('.rd-toast').textContent();
+  const toastText = await page.locator('.toast-stack .toast-message').textContent();
   check(
     'a toast reported how many articles moved',
-    /\d/.test(toastText ?? '') && (await page.locator('.rd-toast.is-visible').count()) === 1,
+    /\d/.test(toastText ?? '') && (await page.locator('.toast-stack .toast').count()) === 1,
     JSON.stringify(toastText),
   );
 
@@ -339,7 +339,7 @@ try {
   await page.waitForTimeout(1800);
   await shot(page, 'after-reading-pane-below');
 
-  const reported = await page.locator('.rd-toast').textContent();
+  const reported = await page.locator('.toast-stack .toast-message').textContent();
   const marked = Number((reported ?? '').match(/\d+/)?.[0] ?? NaN);
   check('the mark-below button reported a count', Number.isFinite(marked), JSON.stringify(reported));
   check(

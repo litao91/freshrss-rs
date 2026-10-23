@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { toast } from '../lib/toast.svelte';
+  /**
+   * The notification stack, mounted once from `App.svelte`.
+   *
+   * `bottom-center` is where this reader has always put its confirmations, and the `--toast-*`
+   * tokens in `app.css` give the card the same surface, border and shadow as the menu panels
+   * beside it. The priority accent bar on the card's left edge replaces the old all-over danger
+   * recolour for errors: one stripe says which kind of message this is without the whole card
+   * shouting.
+   */
+  import { Toast } from 'svelte-widgets';
 </script>
 
-<div class="rd-toast" class:is-visible={toast.visible} class:is-error={toast.kind === 'error'} role="status">
-  {#if toast.message}
-    <!-- `key` forces the transition to replay when the same text is shown twice in a row. -->
-    {#key toast.token}
-      {toast.message}
-    {/key}
-  {/if}
-</div>
+<Toast position="bottom-center" />

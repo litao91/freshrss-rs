@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Popover } from 'svelte-widgets';
   import { LANGUAGES, t } from '../lib/i18n';
   import {
     MAX_SIZE,
@@ -32,8 +33,8 @@
   let { search = $bindable(''), onSearch, onRefresh, onShowShortcuts, refreshing }: Props = $props();
 
   let searchEl: HTMLInputElement | undefined = $state();
-  let displayMenu: HTMLDetailsElement | undefined = $state();
-  let accountMenu: HTMLDetailsElement | undefined = $state();
+  let displayOpen = $state(false);
+  let accountOpen = $state(false);
 
   // Derived rather than plain constants: the labels go through `t()`, so they have to re-render
   // when the language changes.
@@ -55,65 +56,30 @@
     searchEl?.select();
   }
 
+  /**
+   * Closes both panels.
+   *
+   * Everything the old `<details>` pair needed a document-level listener and an Escape handler for
+   * — press-away dismissal, Escape, focus returning to the trigger — is `Popover`'s own now, and
+   * its escape layer stops the key before App's global handler can also close the open article.
+   * What remains here is the one thing no library can know: these two panels are one control
+   * surface and are never both open.
+   */
   function closeMenus(): void {
-    if (displayMenu) displayMenu.open = false;
-    if (accountMenu) accountMenu.open = false;
+    displayOpen = false;
+    accountOpen = false;
   }
 
-  /** Mirrors the browser-owned `open` of the two `<details>`, so the effect below can key on it. */
-  let anyMenuOpen = $state(false);
-
-  function syncMenuOpen(event?: Event): void {
-    const opened = event?.currentTarget as HTMLDetailsElement | undefined;
-    // Opening one menu closes the other. The pointer path already behaves this way — the press
-    // away dismisses the open menu before the other toggle lands — so the keyboard path matches.
-    if (opened?.open) {
-      if (opened !== displayMenu && displayMenu) displayMenu.open = false;
-      if (opened !== accountMenu && accountMenu) accountMenu.open = false;
-    }
-    anyMenuOpen = !!(displayMenu?.open || accountMenu?.open);
+  /**
+   * Opening one panel closes the other.
+   *
+   * A press away already does this, because the press lands outside the open panel before the
+   * other trigger's click arrives; the keyboard path presses nothing, so it needs saying.
+   */
+  function openOnly(which: 'display' | 'account'): void {
+    if (which === 'display') accountOpen = false;
+    else displayOpen = false;
   }
-
-  function isInsideMenu(node: Node | null): boolean {
-    if (!node) return false;
-    return !!displayMenu?.contains(node) || !!accountMenu?.contains(node);
-  }
-
-  function onAwayPointerDown(event: PointerEvent): void {
-    // Containment is the whole trick: a press on either summary, or anywhere inside a panel, is
-    // left to the native toggle. Closing on those too would race the activation behaviour and
-    // reopen the very menu the press was meant to close. `pointerdown` rather than `click`
-    // because real menus dismiss on press, before focus moves — and a scroll gesture starting
-    // outside the panel dismisses it exactly as the OS would.
-    if (isInsideMenu(event.target as Node)) return;
-    closeMenus();
-  }
-
-  function onMenuEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
-    // stopPropagation without preventDefault, and the split matters twice over: this listener sits
-    // on `document` while App's keydown sits on `window`, so stopping propagation is what gives
-    // the Escape to the menu instead of to the open article; NOT preventing the default is what
-    // still lets a modal <dialog> close on its own Escape in the rare case both are up at once.
-    event.stopPropagation();
-    const focused = document.activeElement;
-    const origin = isInsideMenu(focused) ? focused?.closest('details') : undefined;
-    closeMenus();
-    // Closing a <details> under its own focused control drops focus to <body>; menus put it back.
-    origin?.querySelector<HTMLElement>('summary')?.focus();
-  }
-
-  // One pair of document listeners while any menu is open and none at all the rest of the time:
-  // the reader's global keyboard handler must not have to know that menus exist.
-  $effect(() => {
-    if (!anyMenuOpen) return;
-    document.addEventListener('pointerdown', onAwayPointerDown);
-    document.addEventListener('keydown', onMenuEscape);
-    return () => {
-      document.removeEventListener('pointerdown', onAwayPointerDown);
-      document.removeEventListener('keydown', onMenuEscape);
-    };
-  });
 
   function submitSearch(event: Event): void {
     event.preventDefault();
@@ -196,115 +162,140 @@
       <span class="rd-sr">{t('topbar.refresh')}</span>
     </button>
 
-    <details class="rd-menu" bind:this={displayMenu} ontoggle={syncMenuOpen}>
-      <summary class="rd-icon-btn" title={t('topbar.display')}>
-        <i class="ri-font-size-2" aria-hidden="true"></i>
-        <span class="rd-sr">{t('topbar.display')}</span>
-      </summary>
-      <div class="rd-menu-panel rd-display">
-        <p class="rd-menu-label" id="rd-theme-label">{t('topbar.appearance')}</p>
-        <div class="rd-themes" role="group" aria-labelledby="rd-theme-label">
-          {#each themeOptions as option (option.value)}
-            <button
-              class="rd-theme-opt"
-              type="button"
-              data-feeddi-theme={option.value}
-              aria-pressed={prefs.themePref === option.value}
-              onclick={() => setTheme(option.value)}
-            >
-              <span class="rd-swatch" aria-hidden="true">
-                {#if option.value === 'auto'}
-                  <span class="rd-swatch-face" data-theme-preview="kagit"></span>
-                  <span class="rd-swatch-face" data-theme-preview="gece"></span>
-                {:else}
-                  <span class="rd-swatch-face" data-theme-preview={option.value as ThemeName}></span>
-                {/if}
-              </span>
-              {option.label}
-            </button>
-          {/each}
-        </div>
+    <!-- `dismiss_on: 'press'` for the same reason as the list's menus: it moves dismissal off the
+         browser's light-dismiss, whose Escape App's global handler would cancel on its way to
+         closing the open article. The panel's own surface is the popover element, so its padding,
+         border and shadow come from the `--popover-*` tokens rather than from `.rd-menu-panel`,
+         whose absolute positioning would fight the `float` attachment's inline coordinates.
 
-        <p class="rd-menu-label" id="rd-size-label">{t('topbar.textSize')}</p>
-        <div class="rd-stepper" role="group" aria-labelledby="rd-size-label">
-          <button
-            class="rd-icon-btn"
-            type="button"
-            title="{t('topbar.smallerText')} (-)"
-            disabled={prefs.size <= MIN_SIZE}
-            onclick={() => nudgeSize(-1)}
-          >
-            <i class="ri-subtract-line" aria-hidden="true"></i>
-            <span class="rd-sr">{t('topbar.smallerText')}</span>
-          </button>
-          <output class="rd-stepper-value" for="rd-search">{prefs.size}</output>
-          <button
-            class="rd-icon-btn"
-            type="button"
-            title="{t('topbar.largerText')} (+)"
-            disabled={prefs.size >= MAX_SIZE}
-            onclick={() => nudgeSize(1)}
-          >
-            <i class="ri-add-line" aria-hidden="true"></i>
-            <span class="rd-sr">{t('topbar.largerText')}</span>
-          </button>
-        </div>
-
-        <p class="rd-menu-label" id="rd-density-label">{t('topbar.density')}</p>
-        <div class="rd-segment" role="group" aria-labelledby="rd-density-label">
-          {#each densities as option (option.value)}
-            <button
-              type="button"
-              data-rd-density={option.value}
-              aria-pressed={prefs.density === option.value}
-              onclick={() => setDensity(option.value)}
-            >
-              {option.label}
-            </button>
-          {/each}
-        </div>
-
-        <p class="rd-menu-label" id="rd-view-label">{t('topbar.focusMode')}</p>
-        <div class="rd-view-toggles" role="group" aria-labelledby="rd-view-label">
-          <!-- Visible controls for the two view states the `f` and `b` shortcuts drive; the top
-               bar's dock button and the reading bar's focus button only cover part of the screen. -->
-          <button
-            class="rd-menu-item"
-            type="button"
-            aria-pressed={prefs.focus}
-            title="{t('topbar.focusMode')} (f)"
-            onclick={() => toggleFocus()}
-          >
-            <i class={prefs.focus ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'} aria-hidden="true"></i>
-            {t('topbar.focusMode')}
-            <span class="rd-hint">{t('topbar.focusModeHint')}</span>
-          </button>
-          <button
-            class="rd-menu-item"
-            type="button"
-            aria-pressed={isNarrow() ? prefs.drawerOpen : prefs.navOpen}
-            title="{t('topbar.subscriptionsPanel')} (b)"
-            onclick={() => toggleNavForViewport()}
-          >
-            <i class="ri-layout-left-2-line" aria-hidden="true"></i>
-            {t('topbar.subscriptionsPanel')}
-          </button>
-        </div>
-
-        <label class="rd-menu-label" for="rd-lang">{t('topbar.language')}</label>
-        <select
-          id="rd-lang"
-          class="rd-input"
-          data-feeddi-lang
-          value={prefs.language}
-          onchange={(e) => setLanguage((e.currentTarget.value === 'tr' ? 'tr' : 'en') as 'en' | 'tr')}
+         `Popover` aligns `center` or `start` only, so a wide panel anchored near the right edge
+         hangs off it and is shifted back inside the viewport rather than hanging right-aligned
+         the way the old `.rd-menu--end` did. -->
+    <Popover
+      bind:open={displayOpen}
+      placement="bottom"
+      align="start"
+      dismiss_on="press"
+      class="rd-display"
+    >
+      {#snippet trigger(props)}
+        <button
+          class="rd-icon-btn"
+          type="button"
+          title={t('topbar.display')}
+          {...props}
+          onclick={(event) => {
+            props.onclick?.(event);
+            openOnly('display');
+          }}
         >
-          {#each LANGUAGES as language (language.value)}
-            <option value={language.value} lang={language.value}>{language.label}</option>
-          {/each}
-        </select>
+          <i class="ri-font-size-2" aria-hidden="true"></i>
+          <span class="rd-sr">{t('topbar.display')}</span>
+        </button>
+      {/snippet}
+
+      <p class="rd-menu-label" id="rd-theme-label">{t('topbar.appearance')}</p>
+      <div class="rd-themes" role="group" aria-labelledby="rd-theme-label">
+        {#each themeOptions as option (option.value)}
+          <button
+            class="rd-theme-opt"
+            type="button"
+            data-feeddi-theme={option.value}
+            aria-pressed={prefs.themePref === option.value}
+            onclick={() => setTheme(option.value)}
+          >
+            <span class="rd-swatch" aria-hidden="true">
+              {#if option.value === 'auto'}
+                <span class="rd-swatch-face" data-theme-preview="kagit"></span>
+                <span class="rd-swatch-face" data-theme-preview="gece"></span>
+              {:else}
+                <span class="rd-swatch-face" data-theme-preview={option.value as ThemeName}></span>
+              {/if}
+            </span>
+            {option.label}
+          </button>
+        {/each}
       </div>
-    </details>
+
+      <p class="rd-menu-label" id="rd-size-label">{t('topbar.textSize')}</p>
+      <div class="rd-stepper" role="group" aria-labelledby="rd-size-label">
+        <button
+          class="rd-icon-btn"
+          type="button"
+          title="{t('topbar.smallerText')} (-)"
+          disabled={prefs.size <= MIN_SIZE}
+          onclick={() => nudgeSize(-1)}
+        >
+          <i class="ri-subtract-line" aria-hidden="true"></i>
+          <span class="rd-sr">{t('topbar.smallerText')}</span>
+        </button>
+        <output class="rd-stepper-value" for="rd-search">{prefs.size}</output>
+        <button
+          class="rd-icon-btn"
+          type="button"
+          title="{t('topbar.largerText')} (+)"
+          disabled={prefs.size >= MAX_SIZE}
+          onclick={() => nudgeSize(1)}
+        >
+          <i class="ri-add-line" aria-hidden="true"></i>
+          <span class="rd-sr">{t('topbar.largerText')}</span>
+        </button>
+      </div>
+
+      <p class="rd-menu-label" id="rd-density-label">{t('topbar.density')}</p>
+      <div class="rd-segment" role="group" aria-labelledby="rd-density-label">
+        {#each densities as option (option.value)}
+          <button
+            type="button"
+            data-rd-density={option.value}
+            aria-pressed={prefs.density === option.value}
+            onclick={() => setDensity(option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+
+      <p class="rd-menu-label" id="rd-view-label">{t('topbar.focusMode')}</p>
+      <div class="rd-view-toggles" role="group" aria-labelledby="rd-view-label">
+        <!-- Visible controls for the two view states the `f` and `b` shortcuts drive; the top
+             bar's dock button and the reading bar's focus button only cover part of the screen. -->
+        <button
+          class="rd-menu-item"
+          type="button"
+          aria-pressed={prefs.focus}
+          title="{t('topbar.focusMode')} (f)"
+          onclick={() => toggleFocus()}
+        >
+          <i class={prefs.focus ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'} aria-hidden="true"></i>
+          {t('topbar.focusMode')}
+          <span class="rd-hint">{t('topbar.focusModeHint')}</span>
+        </button>
+        <button
+          class="rd-menu-item"
+          type="button"
+          aria-pressed={isNarrow() ? prefs.drawerOpen : prefs.navOpen}
+          title="{t('topbar.subscriptionsPanel')} (b)"
+          onclick={() => toggleNavForViewport()}
+        >
+          <i class="ri-layout-left-2-line" aria-hidden="true"></i>
+          {t('topbar.subscriptionsPanel')}
+        </button>
+      </div>
+
+      <label class="rd-menu-label" for="rd-lang">{t('topbar.language')}</label>
+      <select
+        id="rd-lang"
+        class="rd-input"
+        data-feeddi-lang
+        value={prefs.language}
+        onchange={(e) => setLanguage((e.currentTarget.value === 'tr' ? 'tr' : 'en') as 'en' | 'tr')}
+      >
+        {#each LANGUAGES as language (language.value)}
+          <option value={language.value} lang={language.value}>{language.label}</option>
+        {/each}
+      </select>
+    </Popover>
 
     <button class="rd-icon-btn rd-hide-touch" type="button" title="{t('topbar.shortcuts')} (?)" onclick={onShowShortcuts}>
       <i class="ri-keyboard-box-line" aria-hidden="true"></i>
@@ -312,19 +303,35 @@
     </button>
 
     {#if session.user}
-      <details class="rd-menu rd-menu--end" bind:this={accountMenu} ontoggle={syncMenuOpen}>
-        <summary class="rd-avatar" title={t('topbar.accountMenu')}>
-          <span aria-hidden="true">{session.user.initial}</span>
-          <span class="rd-sr">{t('topbar.accountMenu')}</span>
-        </summary>
-        <div class="rd-menu-panel">
-          <p class="rd-menu-user">{session.user.username}</p>
-          <button class="rd-menu-item" type="button" onclick={handleSignOut}>
-            <i class="ri-logout-box-r-line" aria-hidden="true"></i>
-            {t('topbar.signOut')}
+      {@const user = session.user}
+      <Popover
+        bind:open={accountOpen}
+        placement="bottom"
+        align="start"
+        dismiss_on="press"
+        class="rd-account"
+      >
+        {#snippet trigger(props)}
+          <button
+            class="rd-avatar"
+            type="button"
+            title={t('topbar.accountMenu')}
+            {...props}
+            onclick={(event) => {
+              props.onclick?.(event);
+              openOnly('account');
+            }}
+          >
+            <span aria-hidden="true">{user.initial}</span>
+            <span class="rd-sr">{t('topbar.accountMenu')}</span>
           </button>
-        </div>
-      </details>
+        {/snippet}
+        <p class="rd-menu-user">{user.username}</p>
+        <button class="rd-menu-item" type="button" onclick={handleSignOut}>
+          <i class="ri-logout-box-r-line" aria-hidden="true"></i>
+          {t('topbar.signOut')}
+        </button>
+      </Popover>
     {/if}
   </div>
 </header>

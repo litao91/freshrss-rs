@@ -150,6 +150,35 @@ html[data-theme='gece'],
   --action-menu-item-hover-bg: var(--fd-hover);
   --action-menu-item-checked-bg: var(--fd-soft);
   --action-menu-section-border: 1px solid var(--fd-line);
+
+  /* Popover: the top bar's display and account panels. Same card as the menus; the old
+     `.rd-menu-panel` sat at z-index 40, above the list and below the toast. */
+  --popover-bg: var(--fd-surface);
+  --popover-border: 1px solid var(--fd-line);
+  --popover-radius: var(--rd-radius);
+  --popover-shadow: var(--rd-shadow-2);
+  --popover-padding: 0.5rem;
+  --popover-max-width: min(90vw, 30rem);
+  --popover-z-index: 40;
+
+  /* Toast: same card as the menus, in the place the reader's confirmations have always sat. The
+     priority stripe is the one deliberate difference from the old `.rd-toast`, which recoloured
+     its whole border and text for errors. The dismiss button draws no background of its own, so
+     the two button tokens only ever reach an action button, which this reader does not use. */
+  --toast-bg: var(--fd-surface);
+  --toast-border: 1px solid var(--fd-line);
+  --toast-radius: var(--rd-radius);
+  --toast-shadow: var(--rd-shadow-2);
+  --toast-padding: 0.6rem 0.95rem;
+  --toast-max-width: min(28rem, calc(100vw - 2rem));
+  --toast-font-size: 0.875rem;
+  --toast-inset: 1.5rem;
+  --toast-error-color: var(--fd-danger);
+  --toast-success-color: var(--fd-success);
+  --toast-warning-color: var(--fd-accent);
+  /* Above the menu panels (40), as the old `.rd-toast` was: a confirmation that lands under an
+     open menu is a confirmation nobody sees. */
+  --toast-z-index: 60;
 }
 
 /* ==========================================================================
@@ -433,7 +462,9 @@ body,
 .rd-read-bar,
 .rd-article-head,
 .rd-prose,
-.rd-menu-panel,
+.popover,
+.action-menu,
+.toast,
 .rd-dialog,
 .rd-auth,
 .rd-auth-card {
@@ -835,57 +866,12 @@ i.is-spinning {
   }
 }
 
-/* --- menus (details/summary) --- */
-
-.rd-menu {
-  position: relative;
-}
-
-.rd-menu > summary {
-  list-style: none;
-  cursor: pointer;
-}
-
-.rd-menu > summary::-webkit-details-marker {
-  display: none;
-}
-
-.rd-menu[open] > summary {
-  background: var(--fd-hover);
-  color: var(--fd-ink);
-}
-
-.rd-menu-panel {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 0.4rem);
-  right: 0;
-  min-width: 13rem;
-  padding: 0.5rem;
-  border: 1px solid var(--fd-line);
-  border-radius: var(--rd-radius);
-  background: var(--fd-surface);
-  box-shadow: var(--rd-shadow-2);
-}
-
-.rd-menu--end > .rd-menu-panel {
-  right: 0;
-  left: auto;
-}
-
-/* The panel arrives the way dialogs do — a short drop-and-fade, not a pop — so every overlay in
-   the reader speaks the same motion. A closed <details> hides its content, so each open restarts
-   the animation; the reduced-motion block in section 14 shortens it to nothing. */
-.rd-menu[open] > .rd-menu-panel {
-  animation: rd-menu-in 140ms ease-out;
-}
-
-@keyframes rd-menu-in {
-  from {
-    opacity: 0;
-    transform: translateY(-0.3rem) scale(0.99);
-  }
-}
+/* --- menu panels ---
+ *
+ * The panels themselves are svelte-widgets surfaces now (`Popover` for the top bar's two,
+ * `ActionMenu` for the list's), so their position, border, background and shadow come from the
+ * `--popover-*` and `--action-menu-*` tokens in section 2 rather than from rules here. What
+ * remains is the typography and the rows inside them. */
 
 .rd-menu-label {
   margin: 0.35rem 0.35rem 0.3rem;
@@ -986,6 +972,8 @@ i.is-spinning {
   justify-content: center;
   width: 2.15rem;
   height: 2.15rem;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
   background: var(--fd-accent);
   color: var(--fd-accent-ink);
@@ -995,14 +983,16 @@ i.is-spinning {
   list-style: none;
 }
 
-.rd-avatar::-webkit-details-marker {
-  display: none;
-}
-
 /* --- display panel --- */
 
-.rd-menu-panel.rd-display {
+/* The popover surface carries the padding and the chrome; these are the panel's own two widths,
+   which the token layer cannot express because it does not know what is inside. */
+.rd-display {
   min-width: 17rem;
+}
+
+.rd-account {
+  min-width: 13rem;
 }
 
 .rd-themes {
@@ -1945,38 +1935,6 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   min-width: 0;
 }
 
-.rd-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 1.5rem;
-  z-index: 60;
-  min-width: 12rem;
-  max-width: min(28rem, calc(100vw - 2rem));
-  padding: 0.6rem 0.95rem;
-  border: 1px solid var(--fd-line);
-  border-radius: var(--rd-radius);
-  background: var(--fd-surface);
-  color: var(--fd-ink);
-  font-size: 0.875rem;
-  box-shadow: var(--rd-shadow-2);
-  opacity: 0;
-  transform: translate(-50%, 0.6rem);
-  pointer-events: none;
-  transition:
-    opacity var(--rd-ease),
-    transform var(--rd-ease);
-}
-
-.rd-toast.is-visible {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
-
-.rd-toast.is-error {
-  border-color: var(--fd-danger);
-  color: var(--fd-danger);
-}
-
 /* ==========================================================================
    11. Dialogs
    ========================================================================== */
@@ -2523,7 +2481,6 @@ kbd {
   .rd-read-bar,
   .rd-read-progress,
   .rd-player,
-  .rd-toast,
   .rd-scrim {
     display: none !important;
   }
