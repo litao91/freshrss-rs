@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError, type CandidateSource, type FeedCandidate } from '../../lib/api';
   import { tree } from '../../lib/session.svelte';
   import { notify } from '../../lib/toast.svelte';
@@ -13,7 +14,8 @@
 
   let { open, onclose, onChanged }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
+  let shown = $state(false);
   let url = $state('');
   let name = $state('');
   /** The `#rd-add-folder` selection; `''` means "no folder" and becomes `category_id: null`. */
@@ -48,13 +50,8 @@
   };
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      reset();
-      if (!dialogEl.open) dialogEl.showModal();
-    }
+    shown = open;
+    if (open) reset();
   });
 
   function reset(): void {
@@ -172,15 +169,13 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-add-dialog"
   class="rd-dialog"
-  bind:this={dialogEl}
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-add-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <form class="rd-dialog-body" method="dialog" onsubmit={submit}>
     <h2 id="rd-add-title">Add subscription</h2>
@@ -271,4 +266,4 @@
       </button>
     </div>
   </form>
-</dialog>
+</Dialog>

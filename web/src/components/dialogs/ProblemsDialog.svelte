@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError, type FeedRefreshResult, type ProblemFeed } from '../../lib/api';
   import { formatRelativeTime } from '../../lib/format';
   import { selectScope } from '../../lib/view.svelte';
@@ -13,7 +14,8 @@
 
   let { open, onclose, onChanged }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
+  let shown = $state(false);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   let feeds = $state<ProblemFeed[]>([]);
@@ -22,13 +24,8 @@
   let retries = $state<Record<string, { pending: boolean; result: FeedRefreshResult | null; error: string | null }>>({});
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      if (!dialogEl.open) dialogEl.showModal();
-      void load();
-    }
+    shown = open;
+    if (open) void load();
   });
 
   async function load(): Promise<void> {
@@ -109,15 +106,14 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-problems-dialog"
-  class="rd-dialog rd-dialog--wide"
-  bind:this={dialogEl}
+  class="rd-dialog"
+  style="--dialog-width: min(42rem, calc(100vw - 2rem))"
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-problems-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleClose();
-  }}
+  on_close={handleClose}
 >
   <div class="rd-dialog-body">
     <h2 id="rd-problems-title">Feeds with problems</h2>
@@ -177,4 +173,4 @@
       <button class="rd-btn rd-btn--primary" type="button" onclick={handleClose}>Close</button>
     </div>
   </div>
-</dialog>
+</Dialog>

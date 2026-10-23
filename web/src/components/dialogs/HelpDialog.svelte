@@ -7,6 +7,7 @@
    * the handler and this table. English descriptions are those from `keys.ts` (passed as the `t()`
    * fallback); the dictionary only carries translations.
    */
+  import { Dialog } from 'svelte-widgets';
   import { SHORTCUTS, id as shortcutId, type Shortcut } from '../../lib/keys';
   import { t } from '../../lib/i18n';
 
@@ -18,15 +19,11 @@
 
   let { open, onclose }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
+  let shown = $state(false);
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else if (!dialogEl.open) {
-      dialogEl.showModal();
-    }
+    shown = open;
   });
 
   /**
@@ -53,18 +50,13 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-help-dialog"
   class="rd-dialog"
-  bind:this={dialogEl}
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-help-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
-  // The Close button is a `method="dialog"` submit, which closes the element natively; this is
-  // what tells the parent, so its `open` state cannot drift from the element.
-  onclose={handleCancel}
+  on_close={handleCancel}
 >
   <div class="rd-dialog-body">
     <h2 id="rd-help-title">{t('help.title')}</h2>
@@ -92,4 +84,4 @@
       </button>
     </form>
   </div>
-</dialog>
+</Dialog>

@@ -8,6 +8,7 @@
    * batch of feeds, and a serial run keeps the server's writer lock uncontended and the errors
    * attributable to a single pack.
    */
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError, type Package } from '../../lib/api';
   import { t, tf } from '../../lib/i18n';
   import { notify, notifyError } from '../../lib/toast.svelte';
@@ -22,7 +23,8 @@
 
   let { open, onclose, onChanged }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
+  let shown = $state(false);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   let packs = $state<Package[]>([]);
@@ -31,13 +33,8 @@
   let installing = $state(false);
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      if (!dialogEl.open) dialogEl.showModal();
-      void load();
-    }
+    shown = open;
+    if (open) void load();
   });
 
   async function load(): Promise<void> {
@@ -98,15 +95,14 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-packages-dialog"
-  class="rd-dialog rd-dialog--wide"
-  bind:this={dialogEl}
+  class="rd-dialog"
+  style="--dialog-width: min(42rem, calc(100vw - 2rem))"
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-packages-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <div class="rd-dialog-body">
     <h2 id="rd-packages-title">{t('packs.title')}</h2>
@@ -164,4 +160,4 @@
       </button>
     </div>
   </div>
-</dialog>
+</Dialog>

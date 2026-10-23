@@ -6,6 +6,7 @@
    * the current filters select on the *server*, not just the pages the reader has scrolled
    * through. The lead names the scope so it is visible what "all" means right now.
    */
+  import { Dialog } from 'svelte-widgets';
   import { entries, markAllRead } from '../../lib/entries.svelte';
   import { refreshTree } from '../../lib/session.svelte';
   import { t, tf } from '../../lib/i18n';
@@ -20,7 +21,13 @@
 
   let { open, onclose }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /**
+   * Mirrors the parent's flag so `Dialog` can close itself on Escape or a backdrop press while
+   * the parent keeps owning whether the dialog is up. `Dialog` brings its own `showModal()`,
+   * focus restoration and scroll lock; the reset is this dialog's own business.
+   */
+  let shown = $state(false);
+
   let busy = $state(false);
 
   /** Unread in the whole scope, not just the loaded pages — the number the action will touch. */
@@ -28,13 +35,8 @@
   const scope = $derived(scopeTitle(view.scope));
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else if (!dialogEl.open) {
-      busy = false;
-      dialogEl.showModal();
-    }
+    shown = open;
+    if (open) busy = false;
   });
 
   function handleCancel(): void {
@@ -64,16 +66,14 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-markall-dialog"
   class="rd-dialog"
-  bind:this={dialogEl}
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-markall-title"
   aria-describedby="rd-markall-scope"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <form class="rd-dialog-body" method="dialog" onsubmit={(e) => void confirm(e)}>
     <h2 id="rd-markall-title">{tf('markall.title', { n: count })}</h2>
@@ -92,4 +92,4 @@
       </button>
     </div>
   </form>
-</dialog>
+</Dialog>

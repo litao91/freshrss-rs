@@ -12,6 +12,7 @@
    *   and only sent back when that load succeeded and the reader actually changed a row; saving
    *   an empty list after a failed `GET` would silently delete every rule.
    */
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError, type FeedNode, type FilterActionName } from '../../lib/api';
   import { t, tf } from '../../lib/i18n';
   import { tree } from '../../lib/session.svelte';
@@ -36,7 +37,8 @@
     label: boolean;
   }
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors whether the parent has a feed to edit; `undefined` means closed. */
+  let shown = $state(false);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   let busy = $state(false);
@@ -96,17 +98,13 @@
   );
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (feed === undefined) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      // Seed from the tree node immediately so the form is never momentarily empty, then refresh
-      // from `GET /feeds/{id}` in case the tree has gone stale.
-      seed(feed);
-      formError = null;
-      if (!dialogEl.open) dialogEl.showModal();
-      void load(feed.id);
-    }
+    shown = feed !== undefined;
+    if (feed === undefined) return;
+    // Seed from the tree node immediately so the form is never momentarily empty, then refresh
+    // from `GET /feeds/{id}` in case the tree has gone stale.
+    seed(feed);
+    formError = null;
+    void load(feed.id);
   });
 
   function seed(source: FeedNode): void {
@@ -265,15 +263,14 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-feed-dialog"
-  class="rd-dialog rd-dialog--wide"
-  bind:this={dialogEl}
+  class="rd-dialog"
+  style="--dialog-width: min(42rem, calc(100vw - 2rem))"
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-feed-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <form class="rd-dialog-body" method="dialog" onsubmit={(e) => void submit(e)}>
     <h2 id="rd-feed-title">{t('feed.title')}{feed ? `: ${feed.name}` : ''}</h2>
@@ -462,4 +459,4 @@
       </button>
     </div>
   </form>
-</dialog>
+</Dialog>

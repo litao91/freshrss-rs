@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError } from '../../lib/api';
   import { notify } from '../../lib/toast.svelte';
 
@@ -16,7 +17,8 @@
 
   let { folder, onclose, onChanged }: Props = $props();
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors whether the parent has a folder to edit or create; `undefined` means closed. */
+  let shown = $state(false);
   let name = $state('');
   let busy = $state(false);
   let formError = $state<string | null>(null);
@@ -25,14 +27,10 @@
   const title = $derived(editing ? 'Folder settings' : 'New folder');
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (folder === undefined) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      name = folder?.name ?? '';
-      formError = null;
-      if (!dialogEl.open) dialogEl.showModal();
-    }
+    shown = folder !== undefined;
+    if (folder === undefined) return;
+    name = folder?.name ?? '';
+    formError = null;
   });
 
   function handleCancel(): void {
@@ -93,15 +91,13 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-folder-dialog"
   class="rd-dialog"
-  bind:this={dialogEl}
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-folder-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <form class="rd-dialog-body" method="dialog" onsubmit={submit}>
     <h2 id="rd-folder-title">{title}</h2>
@@ -142,4 +138,4 @@
       </button>
     </div>
   </form>
-</dialog>
+</Dialog>

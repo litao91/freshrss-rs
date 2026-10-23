@@ -8,6 +8,7 @@
    *
    * The body is the file's raw bytes, not a multipart form — that is the endpoint's contract.
    */
+  import { Dialog } from 'svelte-widgets';
   import { api, ApiError, type ImportReport } from '../../lib/api';
   import { t, tf } from '../../lib/i18n';
   import { tree } from '../../lib/session.svelte';
@@ -26,7 +27,8 @@
   /** The reference reader's ceiling; the server enforces its own, this just fails faster. */
   const MAX_BYTES = 2 * 1024 * 1024;
 
-  let dialogEl: HTMLDialogElement | undefined = $state();
+  /** Mirrors the parent's flag so `Dialog` can close itself while the parent owns whether it is up. */
+  let shown = $state(false);
   let fileInput: HTMLInputElement | undefined = $state();
   let file = $state<File | null>(null);
   /** `''` keeps the file's own folders; an id files everything under one category. */
@@ -39,13 +41,8 @@
   const categories = $derived(tree.data?.categories ?? []);
 
   $effect(() => {
-    if (!dialogEl) return;
-    if (!open) {
-      if (dialogEl.open) dialogEl.close();
-    } else {
-      reset();
-      if (!dialogEl.open) dialogEl.showModal();
-    }
+    shown = open;
+    if (open) reset();
   });
 
   function reset(): void {
@@ -111,15 +108,13 @@
   }
 </script>
 
-<dialog
+<Dialog
   id="rd-import-dialog"
   class="rd-dialog"
-  bind:this={dialogEl}
+  bind:open={shown}
+  closedby="closerequest"
   aria-labelledby="rd-import-title"
-  oncancel={(e) => {
-    e.preventDefault();
-    handleCancel();
-  }}
+  on_close={handleCancel}
 >
   <div class="rd-dialog-body">
     <h2 id="rd-import-title">{t('import.title')}</h2>
@@ -193,4 +188,4 @@
       </button>
     </div>
   </div>
-</dialog>
+</Dialog>

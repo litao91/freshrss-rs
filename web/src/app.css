@@ -139,7 +139,7 @@ html[data-theme='gece'],
  */
 :root {
   /* ActionMenu: the mark-above/below menu in the list toolbar, and the one a right-click opens.
-     Sized to match `.rd-menu-panel`, which is the menu this reader already had. */
+     Sized to match the menu panels this reader already had. */
   --action-menu-bg: var(--fd-surface);
   --action-menu-border: 1px solid var(--fd-line);
   --action-menu-radius: var(--rd-radius);
@@ -152,7 +152,7 @@ html[data-theme='gece'],
   --action-menu-section-border: 1px solid var(--fd-line);
 
   /* Popover: the top bar's display and account panels. Same card as the menus; the old
-     `.rd-menu-panel` sat at z-index 40, above the list and below the toast. */
+     hand-rolled panels sat at z-index 40, above the list and below the toast. */
   --popover-bg: var(--fd-surface);
   --popover-border: 1px solid var(--fd-line);
   --popover-radius: var(--rd-radius);
@@ -161,8 +161,19 @@ html[data-theme='gece'],
   --popover-max-width: min(90vw, 30rem);
   --popover-z-index: 40;
 
+  /* Dialog: the eight panels. `--dialog-width` is the narrow one; FeedDialog, ProblemsDialog and
+     PackagesDialog set it inline to the old `.rd-dialog--wide`. The content box only pads — the
+     body inside keeps its own flex column and gap. */
+  --dialog-bg: var(--fd-surface);
+  --dialog-border: 1px solid var(--fd-line);
+  --dialog-radius: var(--rd-radius-lg);
+  --dialog-shadow: var(--rd-shadow-2);
+  --dialog-width: min(30rem, calc(100vw - 2rem));
+  --dialog-backdrop: rgb(0 0 0 / 0.42);
+  --dialog-content-padding: 1.15rem 1.25rem 1.25rem;
+
   /* Toast: same card as the menus, in the place the reader's confirmations have always sat. The
-     priority stripe is the one deliberate difference from the old `.rd-toast`, which recoloured
+     priority stripe is the one deliberate difference from the hand-rolled toast, which recoloured
      its whole border and text for errors. The dismiss button draws no background of its own, so
      the two button tokens only ever reach an action button, which this reader does not use. */
   --toast-bg: var(--fd-surface);
@@ -176,7 +187,7 @@ html[data-theme='gece'],
   --toast-error-color: var(--fd-danger);
   --toast-success-color: var(--fd-success);
   --toast-warning-color: var(--fd-accent);
-  /* Above the menu panels (40), as the old `.rd-toast` was: a confirmation that lands under an
+  /* Above the menu panels (40), as the hand-rolled toast was: a confirmation that lands under an
      open menu is a confirmation nobody sees. */
   --toast-z-index: 60;
 }
@@ -304,7 +315,7 @@ video {
 .rd-list-body,
 .rd-read-scroll,
 .rd-nav-inner,
-.rd-dialog-body,
+.dialog-content,
 .rd-keys,
 .rd-problems,
 .rd-packs,
@@ -317,7 +328,7 @@ video {
 /* A thumb that darkens under the pointer is also the affordance that the region scrolls at all. */
 .rd-list-body:hover,
 .rd-read-scroll:hover,
-.rd-dialog-body:hover,
+.dialog-content:hover,
 .rd-keys:hover,
 .rd-problems:hover,
 .rd-packs:hover,
@@ -344,7 +355,7 @@ video {
   .rd-list-body::-webkit-scrollbar,
   .rd-read-scroll::-webkit-scrollbar,
   .rd-nav-inner::-webkit-scrollbar,
-  .rd-dialog-body::-webkit-scrollbar,
+  .dialog-content::-webkit-scrollbar,
   .rd-keys::-webkit-scrollbar,
   .rd-problems::-webkit-scrollbar,
   .rd-packs::-webkit-scrollbar {
@@ -360,7 +371,7 @@ video {
   .rd-list-body::-webkit-scrollbar-thumb,
   .rd-read-scroll::-webkit-scrollbar-thumb,
   .rd-nav-inner::-webkit-scrollbar-thumb,
-  .rd-dialog-body::-webkit-scrollbar-thumb,
+  .dialog-content::-webkit-scrollbar-thumb,
   .rd-keys::-webkit-scrollbar-thumb,
   .rd-problems::-webkit-scrollbar-thumb,
   .rd-packs::-webkit-scrollbar-thumb,
@@ -374,7 +385,7 @@ video {
   .rd-list-body::-webkit-scrollbar-track,
   .rd-read-scroll::-webkit-scrollbar-track,
   .rd-nav-inner::-webkit-scrollbar-track,
-  .rd-dialog-body::-webkit-scrollbar-track,
+  .dialog-content::-webkit-scrollbar-track,
   .rd-keys::-webkit-scrollbar-track,
   .rd-problems::-webkit-scrollbar-track,
   .rd-packs::-webkit-scrollbar-track,
@@ -1939,26 +1950,10 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
    11. Dialogs
    ========================================================================== */
 
-.rd-dialog {
-  width: min(30rem, calc(100vw - 2rem));
-  max-height: calc(100dvh - 3rem);
-  padding: 0;
-  border: 1px solid var(--fd-line);
-  border-radius: var(--rd-radius-lg);
-  background: var(--fd-surface);
-  color: var(--fd-ink);
-  box-shadow: var(--rd-shadow-2);
-  overscroll-behavior: contain;
-}
-
-.rd-dialog--wide {
-  width: min(42rem, calc(100vw - 2rem));
-}
-
-.rd-dialog::backdrop {
-  background: rgb(0 0 0 / 0.42);
-}
-
+/* The library's `Dialog` owns the chrome — width, border, background, shadow, backdrop — through
+   the `--dialog-*` tokens in section 2, and `.dialog-content` is its scroll box, which is why the
+   themed scrollbars above name that class now. What the library does not have is this reader's
+   entrance, so the drop-and-fade stays, keyed to the class every panel passes through. */
 .rd-dialog[open] {
   animation: rd-dialog-in 140ms ease-out;
 }
@@ -1974,11 +1969,6 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  padding: 1.15rem 1.25rem 1.25rem;
-  /* The feed dialog is taller than a short screen; scrolling the body is what keeps its
-     actions reachable instead of clipped by the dialog's own max-height. */
-  max-height: calc(100dvh - 3rem);
-  overflow-y: auto;
 }
 
 .rd-dialog-body h2 {
