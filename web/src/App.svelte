@@ -163,7 +163,7 @@
         // `j` and `Shift+J` are two bindings that share a key, so the modifier decides between
         // moving one row and marking every row below it.
         if (shortcut.shift) markFrom('below');
-        else if (reading) readingPane?.goNext();
+        else if (reading) void readingPane?.goNext();
         else move(1);
         break;
       case 'k':

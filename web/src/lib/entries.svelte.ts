@@ -94,15 +94,34 @@ export async function reload(): Promise<void> {
   }
 }
 
-/** Appends the next page, if there is one and none is already in flight. */
-export async function loadMore(): Promise<void> {
-  if (!entries.hasMore || entries.loadingMore || entries.loading || !entries.cursor) return;
+/** The page being fetched, so that a second caller waits for the one already in flight. */
+let moreInFlight: Promise<void> | null = null;
+
+/**
+ * Appends the next page, if there is one.
+ *
+ * Resolves with the request already in flight rather than at once. The reading pane calls this when
+ * the reader walks off the last loaded row, and a scroll to the bottom of the list has usually asked
+ * for that same page a moment earlier; returning immediately there would leave the pane with no new
+ * row to move to and the reader pressing `Next` a second time to find out.
+ */
+export function loadMore(): Promise<void> {
+  if (moreInFlight) return moreInFlight;
+  const cursor = entries.cursor;
+  if (!entries.hasMore || entries.loading || cursor === null) return Promise.resolve();
+  moreInFlight = appendPage(cursor).finally(() => {
+    moreInFlight = null;
+  });
+  return moreInFlight;
+}
+
+async function appendPage(cursor: string): Promise<void> {
   const mine = generation;
   entries.loadingMore = true;
   try {
     const page = await api.entries({
       ...listParams(),
-      cursor: entries.cursor,
+      cursor,
       // The fence comes from the first page, not from now.
       id_max: entries.idMax ?? undefined,
     });
@@ -112,7 +131,10 @@ export async function loadMore(): Promise<void> {
     if (mine !== generation || isAbort(err)) return;
     notifyError(message(err));
   } finally {
-    if (mine === generation) entries.loadingMore = false;
+    // Unconditional, unlike the two guards above: a page lands or it does not, and the spinner says
+    // which. Only one request is ever in flight, so a stale answer cannot be clearing a newer
+    // listing's flag — and leaving it up is what a reader who changed scope mid-fetch would see.
+    entries.loadingMore = false;
   }
 }
 

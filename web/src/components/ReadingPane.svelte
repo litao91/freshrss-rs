@@ -11,12 +11,19 @@
   import DOMPurify from 'dompurify';
   import { ActionButton, CopyButton } from 'svelte-widgets';
   import { api, mediaUrl, type EntryDetail } from '../lib/api';
-  import { entries, markReadFrom, setLabels, setRead, setStarred } from '../lib/entries.svelte';
+  import {
+    entries,
+    listParams,
+    loadMore,
+    markReadFrom,
+    setLabels,
+    setRead,
+    setStarred,
+  } from '../lib/entries.svelte';
   import { formatFullTime } from '../lib/format';
   import { notifyError } from '../lib/toast.svelte';
   import { prefs, toggleFocus } from '../lib/prefs.svelte';
   import { resetScroll } from '../lib/scroll';
-  import { view } from '../lib/view.svelte';
 
   let {
     entryId,
@@ -154,19 +161,10 @@
     fetchingFull = false;
     try {
       // The listing context travels with the request, so prev/next follow the order on screen rather
-      // than the order in the database.
-      detail = await api.entry(
-        entryId,
-        {
-          scope: undefined,
-          sort: view.sort,
-          order: view.order,
-          read: view.readFilter === 'unread' ? 'unread' : undefined,
-          search: view.scope.kind === 'search' ? view.scope.query : undefined,
-          id_max: undefined,
-        },
-        mine,
-      );
+      // than the order in the database. All of it, not a subset: the neighbours have to come from the
+      // listing the reader is looking at, scope and star filter included, or "next" at the end of one
+      // feed's page lands in another feed.
+      detail = await api.entry(entryId, { ...listParams(), limit: undefined }, mine);
       // Reading an article marks it read, the same as clicking it in the list. Doing it here too covers
       // arriving by a keyboard shortcut or a deep link.
       if (!detail.entry.is_read) void setRead([detail.entry.id], true);
@@ -257,7 +255,7 @@
   }
 
   /**
-   * The article before this one, preferring the list on screen.
+   * The article beside this one, preferring the list on screen.
    *
    * The server computes prev/next from the same filters as the listing — which means that under the
    * "unread" filter, opening an article marks it read and it drops out of the server's answer for its
@@ -269,15 +267,28 @@
     if (!id) return null;
     const at = entries.items.findIndex((e) => e.id === id);
     if (at >= 0) {
-      const next = entries.items[at + direction];
-      if (next) return next.id;
-      return null;
+      const row = entries.items[at + direction];
+      return row ? row.id : null;
     }
-    return direction < 0 ? detail?.prev_id ?? null : detail?.next_id ?? null;
+    return (direction < 0 ? detail?.prev_id : detail?.next_id) ?? null;
   }
 
   const prevId = $derived(neighbour(-1));
   const nextId = $derived(neighbour(1));
+
+  /**
+   * Sitting on the last loaded row of a listing that has more pages to give.
+   *
+   * The list ends at the bottom of a page, not at the end of the feed, and `neighbour` can only see
+   * rows that have arrived — so without this the fortieth unread article of four hundred grays out
+   * `Next` and swallows `j`, with the rest of the listing one request away.
+   */
+  const pageEnd = $derived(
+    detail !== null &&
+      nextId === null &&
+      entries.hasMore &&
+      entries.items[entries.items.length - 1]?.id === detail.entry.id,
+  );
 
   /** Exposed so the shortcuts can move between articles without the pane knowing about the list. */
   export function goPrev(): void {
@@ -285,9 +296,19 @@
     if (id) onNavigate(id);
   }
 
-  export function goNext(): void {
-    const id = nextId;
-    if (id) onNavigate(id);
+  export async function goNext(): Promise<void> {
+    if (nextId) {
+      onNavigate(nextId);
+      return;
+    }
+    if (!pageEnd) return;
+    // Fetch the page and walk into it, which is what `j` does in the list. Navigating straight to an
+    // id the list does not hold would leave the reader reading with no row highlighted and nothing
+    // to scroll to, and every step after that would be another id from the server rather than a row.
+    await loadMore();
+    const at = entries.items.findIndex((e) => e.id === detail?.entry.id);
+    const row = at < 0 ? undefined : entries.items[at + 1];
+    if (row) onNavigate(row.id);
   }
 
   export function openOriginal(): void {
@@ -324,8 +345,8 @@
       class="rd-icon-btn"
       type="button"
       title="Next (j)"
-      disabled={!nextId}
-      onclick={goNext}
+      disabled={!nextId && !pageEnd}
+      onclick={() => void goNext()}
     >
       <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
       <span class="rd-sr">Next</span>

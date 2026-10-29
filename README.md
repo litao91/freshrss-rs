@@ -183,6 +183,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 npm --prefix web run check
 node web/tools/browser-check.mjs http://127.0.0.1:8080 <user> <password>
 node web/tools/mark-from-check.mjs http://127.0.0.1:8080 <user> <password>
+node web/tools/page-boundary-check.mjs http://127.0.0.1:8080 <user> <password>
 ```
 
 Tests are offline: feed parsing runs against `fixtures/`, and HTTP behaviour is exercised through
@@ -195,7 +196,11 @@ error. It needs a running server with a user that has some articles; `scripts/se
 produces one against a scratch database. The second points the same browser at the anchored
 mark-read gestures — the two shortcuts, the toolbar and right-click menus and the reading pane's
 buttons — including that a mark reaches articles outside the rendered window, which is the whole
-reason the anchor is resolved server-side: 35 checks.
+reason the anchor is resolved server-side: 35 checks. The third holds a listing's second page in
+flight and reads across the boundary: `Next` stays live on the last row that has arrived, waits for
+the page the list has usually already asked for, and lands the reader in the list with the row
+highlighted rather than off the edge of it — and it does go dead at the true end, which is the other
+half of the same question: 10 checks.
 
 ## License
 
