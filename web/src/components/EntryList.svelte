@@ -274,9 +274,9 @@
         }}
       />
 
-      <button class="rd-btn rd-btn--quiet" type="button" onclick={onMarkAll}>
+      <button class="rd-btn rd-btn--quiet" type="button" title={t('list.markAll')} onclick={onMarkAll}>
         <i class="ri-check-double-line" aria-hidden="true"></i>
-        {t('list.markAll')}
+        <span>{t('list.markAll')}</span>
       </button>
 
       <!-- Sits beside "mark all" rather than replacing it: that one is the whole scope, these two

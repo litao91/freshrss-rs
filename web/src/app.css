@@ -2468,6 +2468,42 @@ kbd {
   }
 }
 
+/* Five controls fit on one row down to about 700px; below that the wrap orphans the two buttons on
+   a row of their own with the left half of it empty. Two rows instead, placed by child order the
+   way `.rd-list-tools > .rd-btn` already leans on it: the show filter keeps the left of the first
+   row with the direction toggle and the two buttons after it, and the sort group — the widest of
+   the five, and the one a squeezed column would wrap inside itself — takes the second row at full
+   width, starting in the same column as the show filter above it. */
+@media (max-width: 700px) {
+  .rd-list-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .rd-list-tools > :nth-child(1) {
+    grid-area: 1 / 1;
+    justify-self: start;
+  }
+  .rd-list-tools > :nth-child(3) {
+    grid-area: 1 / 2;
+    justify-self: end;
+  }
+  .rd-list-tools > .rd-btn {
+    grid-area: 1 / 3;
+    justify-self: end;
+    margin-left: 0;
+  }
+  .rd-list-tools .rd-mark-menu {
+    grid-area: 1 / 4;
+    justify-self: end;
+  }
+  .rd-list-tools > :nth-child(2) {
+    grid-area: 2 / 1 / 2 / 5;
+    justify-self: start;
+  }
+}
+
 @media (max-width: 620px) {
   .rd-list-tools > .rd-btn span {
     display: none;
