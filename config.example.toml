@@ -94,3 +94,8 @@ max_mb = 512
 level = "info"
 # "pretty", "compact" or "json".
 format = "pretty"
+
+[api]
+# Master switch for the Google Reader (/api/greader.php) and Fever (/api/fever.php)
+# compatible endpoints. Off answers 503 to every compat request.
+enabled = true

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tower::ServiceExt;
 
 use freshrss_feed::http::{FixtureFetcher, FixtureResponse};
@@ -54,7 +54,10 @@ async fn call(
     let (payload, builder) = match body {
         Some(body) => (
             Body::from(body),
-            builder.header(header::CONTENT_TYPE, content_type.unwrap_or("application/x-www-form-urlencoded")),
+            builder.header(
+                header::CONTENT_TYPE,
+                content_type.unwrap_or("application/x-www-form-urlencoded"),
+            ),
         ),
         None => (Body::empty(), builder),
     };
@@ -305,7 +308,10 @@ async fn stream_contents_pages_without_skipping_or_repeating() {
     deduped.sort();
     deduped.dedup();
     assert_eq!(seen.len(), deduped.len(), "no row appears on two pages");
-    assert!(second.body.get("continuation").is_none(), "a short page ends the stream");
+    assert!(
+        second.body.get("continuation").is_none(),
+        "a short page ends the stream"
+    );
 }
 
 #[tokio::test]
@@ -322,10 +328,21 @@ async fn item_ids_are_decimal_and_items_contents_accepts_both_spellings() {
     .await;
     let refs = ids.body["itemRefs"].as_array().expect("refs");
     assert_eq!(refs.len(), 3);
-    assert!(refs[0]["id"].as_str().expect("id").chars().all(|c| c.is_ascii_digit()));
+    assert!(refs[0]["id"]
+        .as_str()
+        .expect("id")
+        .chars()
+        .all(|c| c.is_ascii_digit()));
 
-    let hex = format!("tag:google.com,2005:reader/item/{:016x}", refs[0]["id"].as_str().unwrap().parse::<i64>().unwrap());
-    let body = format!("i={}&i={}", hex, refs[1]["id"].as_str().expect("decimal id"));
+    let hex = format!(
+        "tag:google.com,2005:reader/item/{:016x}",
+        refs[0]["id"].as_str().unwrap().parse::<i64>().unwrap()
+    );
+    let body = format!(
+        "i={}&i={}",
+        hex,
+        refs[1]["id"].as_str().expect("decimal id")
+    );
     let contents = call(
         &app,
         Method::POST,
@@ -385,7 +402,10 @@ async fn subscription_and_unread_shapes() {
     let sub = &subs.body["subscriptions"][0];
     assert_eq!(sub["id"], "feed/1");
     assert_eq!(sub["frss:priority"], "main");
-    assert!(sub["iconUrl"].as_str().expect("icon").contains("/api/v1/feeds/1/icon"));
+    assert!(sub["iconUrl"]
+        .as_str()
+        .expect("icon")
+        .contains("/api/v1/feeds/1/icon"));
 
     let counts = call(
         &app,
@@ -418,7 +438,10 @@ async fn edit_tag_marks_read_stars_and_labels_with_the_token_holes() {
         None,
     )
     .await;
-    let first = ids.body["itemRefs"][0]["id"].as_str().expect("id").to_owned();
+    let first = ids.body["itemRefs"][0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
 
     // FeedMe sends no T at all; the mutation must still apply.
     let marked = call(
@@ -485,7 +508,10 @@ async fn edit_tag_marks_read_stars_and_labels_with_the_token_holes() {
         .find(|t| t["id"] == "user/-/label/todo")
         .expect("the new label");
     assert_eq!(todo["type"], "tag");
-    assert_eq!(todo["unread_count"], 0, "the labelled article was read first");
+    assert_eq!(
+        todo["unread_count"], 0,
+        "the labelled article was read first"
+    );
 
     // A wrong T is the one thing that must be refused.
     let token = call(
@@ -558,7 +584,10 @@ async fn mark_all_as_read_honours_the_ts_bound() {
         .iter()
         .find(|c| c["id"] == "feed/1")
         .expect("feed");
-    assert_eq!(feed["count"], 2, "only the oldest article was within the bound");
+    assert_eq!(
+        feed["count"], 2,
+        "only the oldest article was within the bound"
+    );
 
     let bad = call(
         &app,
@@ -593,7 +622,7 @@ async fn quickadd_reports_failure_with_a_200_and_edit_unsubscribes() {
         Method::POST,
         "/api/greader.php/reader/api/0/subscription/edit",
         Some(&auth),
-        Some(format!("ac=unsubscribe&s=feed/1")),
+        Some("ac=unsubscribe&s=feed/1".to_owned()),
         None,
     )
     .await;
@@ -607,7 +636,10 @@ async fn quickadd_reports_failure_with_a_200_and_edit_unsubscribes() {
         None,
     )
     .await;
-    assert_eq!(subs.body["subscriptions"].as_array().expect("subs").len(), 0);
+    assert_eq!(
+        subs.body["subscriptions"].as_array().expect("subs").len(),
+        0
+    );
 }
 
 #[tokio::test]

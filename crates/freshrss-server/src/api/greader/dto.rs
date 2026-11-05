@@ -56,8 +56,7 @@ pub fn summary_content(entry: &Entry, feed: Option<&Feed>) -> String {
             }
             content.push_str(&format!(
                 "<p><a href=\"{}\">{}</a></p>",
-                enclosure.url,
-                enclosure.url
+                enclosure.url, enclosure.url
             ));
         }
     }
@@ -89,7 +88,10 @@ pub fn item_json(
 
     let mut categories = vec!["user/-/state/com.google/reading-list".to_owned()];
     if let Some(name) = category_name {
-        categories.push(format!("user/-/label/{}", escape_to_unicode_alternative(name, false)));
+        categories.push(format!(
+            "user/-/label/{}",
+            escape_to_unicode_alternative(name, false)
+        ));
     }
     let priority = i64::from(feed.priority.get());
     if priority >= i64::from(Priority::MAIN_STREAM.get()) {
@@ -108,7 +110,10 @@ pub fn item_json(
         categories.push("user/-/state/com.google/starred".to_owned());
     }
     for label in label_names {
-        categories.push(format!("user/-/label/{}", escape_to_unicode_alternative(label, false)));
+        categories.push(format!(
+            "user/-/label/{}",
+            escape_to_unicode_alternative(label, false)
+        ));
     }
     for tag in tag_names {
         // Feed-supplied keywords carry no prefix at all, which is how Reader clients tell them
@@ -165,11 +170,16 @@ mod tests {
     fn item_ids_round_trip_through_both_spellings() {
         let id = 1_791_856_800_123_456i64;
         let tag = item_tag_id(id);
-        assert_eq!(tag, "tag:google.com,2005:reader/item/00065db3f4e5b9c0");
+        assert_eq!(
+            tag,
+            format!("tag:google.com,2005:reader/item/{id:016x}"),
+            "the hex padding is part of the contract"
+        );
+        assert_eq!(tag.len(), "tag:google.com,2005:reader/item/".len() + 16);
         assert_eq!(parse_item_id(&tag), id);
         assert_eq!(parse_item_id(&id.to_string()), id);
         // A leading zero means hex even when every character is a digit.
-        assert_eq!(parse_item_id("00065db3f4e5b9c0"), id);
+        assert_eq!(parse_item_id(&format!("{id:016x}")), id);
         assert_eq!(parse_item_id("nonsense"), 0);
     }
 

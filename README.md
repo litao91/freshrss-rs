@@ -91,6 +91,37 @@ back to the body fingerprint, which is exactly what makes a second refresh of an
 free. Poll no faster than the bridge crawls: regenerating its RSS per request is its own work, not
 yours.
 
+## Client apps: the Google Reader and Fever APIs
+
+Besides its own JSON API, the server speaks the two protocols FreshRSS speaks, so existing RSS
+clients can point at it unchanged:
+
+| Client setting | Value |
+| --- | --- |
+| Google Reader API URL | `https://<host>/api/greader.php` |
+| Fever API URL | `https://<host>/api/fever.php` |
+| Username | your username |
+| Password | the **API password**, not the web password |
+
+The API password is separate on purpose — it travels to third-party apps and derives two
+non-expiring credentials (the Google Reader token and the Fever key), so it can be rotated without
+touching your login:
+
+```sh
+freshrss-rs set-api-password alice            # reads the password from stdin
+curl -X PUT -H 'content-type: application/json' \
+     -d '{"password":"…"}' /api/v1/me/api-password   # or through your web session
+```
+
+Behaviour follows the PHP implementation, including the corners clients rely on: continuation
+tokens are inclusive decimal microsecond ids, `stream/items/ids` answers decimal where
+`stream/contents` answers hex tag URIs, an empty or `x` action token is accepted (FeedMe and Reeder
+send exactly that), `output=json` is mandatory on `tag/list`, `subscription/list` and
+`unread-count` because no XML output ever existed, and Fever answers a wrong key with HTTP 200 and
+`auth: 0`. One upstream bug is deliberately not reproduced: FreshRSS served disabled accounts
+through Fever when their key file existed; here a disabled account is refused. `[api] enabled =
+false` turns both endpoints off with 503.
+
 ## Article images
 
 Article bodies and list thumbnails load their images through

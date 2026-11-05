@@ -567,3 +567,24 @@ pub async fn truncate_entries(conn: &mut SqliteConnection, id: i64, id_user: i64
     tx.commit().await?;
     Ok(deleted)
 }
+
+/// The `lastUpdate` of the feed closest to being due, for the Fever API's
+/// `last_refreshed_on_time`.
+///
+/// Upstream orders by the same refresh-due expression the scheduler uses and takes one row, so the
+/// value means "when we last touched the feed we are most behind on", not "the newest refresh" —
+/// clients only compare it against their own cache, so either reading works, and this one is the
+/// PHP's.
+pub async fn least_recently_refreshed(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT lastUpdate FROM feed WHERE id_user = ?1
+         ORDER BY (CASE WHEN error > lastUpdate THEN error ELSE lastUpdate END) ASC
+         LIMIT 1",
+    )
+    .bind(id_user)
+    .fetch_optional(&mut *conn)
+    .await?)
+}

@@ -11,7 +11,9 @@ use axum::response::Response;
 use crate::api::greader::streams::{resolve_stream, Stream};
 use crate::api::greader::{plain, Ctx};
 use crate::db::dao::entry_query::{list, EntryQuery};
-use crate::db::dao::{category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao};
+use crate::db::dao::{
+    category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao, user as user_dao,
+};
 use crate::domain::ids::{now_unix, EntryId};
 use crate::domain::state::EntryState;
 use crate::service::refresh::Settings;
@@ -65,10 +67,16 @@ pub async fn edit_tag(ctx: Ctx<'_>) -> Response {
                         };
                         if adding {
                             let tag = tag_dao::find_or_create(&mut conn, id_user, &name).await?;
-                            tag_dao::tag_entries(&mut conn, tag, &ids.iter().map(|id| id.micros()).collect::<Vec<_>>())
-                                .await?;
+                            tag_dao::tag_entries(
+                                &mut conn,
+                                tag,
+                                &ids.iter().map(|id| id.micros()).collect::<Vec<_>>(),
+                            )
+                            .await?;
                         } else {
-                            if let Some(tag) = tag_dao::find_by_name(&mut conn, id_user, &name).await? {
+                            if let Some(tag) =
+                                tag_dao::find_by_name(&mut conn, id_user, &name).await?
+                            {
                                 for id in &ids {
                                     tag_dao::untag_entry(&mut conn, tag.id, id.micros()).await?;
                                 }
@@ -113,7 +121,11 @@ pub async fn mark_all_as_read(ctx: Ctx<'_>) -> Response {
         return plain(StatusCode::BAD_REQUEST, "Bad Request!");
     }
     let ts: i64 = ts_raw.parse().unwrap_or(0);
-    let id_max = EntryId::from_micros(if ts == 0 { now_unix() * 1_000_000 } else { ts });
+    let id_max = EntryId::from_micros(if ts == 0 {
+        crate::domain::ids::now_micros()
+    } else {
+        ts
+    });
     let now = now_unix();
 
     let stream = match resolve_stream(&ctx, &stream_id).await {
@@ -146,10 +158,9 @@ pub async fn mark_all_as_read(ctx: Ctx<'_>) -> Response {
                 }
                 other => {
                     let (scope, state) = match other {
-                        Stream::Starred => (
-                            crate::domain::list_type::ListType::Starred,
-                            EntryState::ALL,
-                        ),
+                        Stream::Starred => {
+                            (crate::domain::list_type::ListType::Starred, EntryState::ALL)
+                        }
                         Stream::Main => (
                             crate::domain::list_type::ListType::MainStream,
                             EntryState::ALL,
@@ -217,7 +228,11 @@ async fn labelled_ids(
         limit: usize::MAX,
         ..Default::default()
     };
-    Ok(list(conn, &query).await?.into_iter().map(|e| e.id).collect())
+    Ok(list(conn, &query)
+        .await?
+        .into_iter()
+        .map(|e| e.id)
+        .collect())
 }
 
 /// `POST /reader/api/0/rename-tag` — categories first, then labels, as upstream tries them.
@@ -422,7 +437,9 @@ pub async fn subscription_import(ctx: Ctx<'_>) -> Response {
     if body.len() > 1024 * 1024 {
         return plain(StatusCode::BAD_REQUEST, "Bad Request!");
     }
-    match crate::service::import::opml(&ctx.state.db, ctx.user.id, body.as_bytes(), false, None).await {
+    match crate::service::import::opml(&ctx.state.db, ctx.user.id, body.as_bytes(), false, None)
+        .await
+    {
         Ok(_) => plain(StatusCode::OK, "OK"),
         Err(_) => plain(StatusCode::BAD_REQUEST, "Bad Request!"),
     }
@@ -441,7 +458,9 @@ async fn category_for(ctx: &Ctx<'_>, name: Option<&str>) -> Option<Option<i64>> 
     let found = ctx
         .state
         .db
-        .with(move |mut conn| async move { cat_dao::find_by_name(&mut conn, id_user, &lookup).await })
+        .with(
+            move |mut conn| async move { cat_dao::find_by_name(&mut conn, id_user, &lookup).await },
+        )
         .await
         .ok()?;
     match found {
@@ -477,7 +496,9 @@ async fn default_category(ctx: &Ctx<'_>) -> Option<i64> {
     let id_user = ctx.user.id;
     ctx.state
         .db
-        .with(move |mut conn| async move { user_dao::default_category_id(&mut conn, id_user).await })
+        .with(
+            move |mut conn| async move { user_dao::default_category_id(&mut conn, id_user).await },
+        )
         .await
         .ok()
         .flatten()

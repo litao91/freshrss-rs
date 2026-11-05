@@ -4,6 +4,7 @@ pub mod cookie;
 pub mod dto;
 pub mod error;
 pub mod extract;
+pub mod fever;
 pub mod greader;
 pub mod v1;
 
