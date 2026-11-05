@@ -912,7 +912,9 @@ mod tests {
         let sent = requests.await.expect("the server reported");
         // Header case on the wire is the HTTP/1 writer's choice, not the contract under test.
         assert!(
-            sent[0].to_ascii_lowercase().contains("if-none-match: \"v1\""),
+            sent[0]
+                .to_ascii_lowercase()
+                .contains("if-none-match: \"v1\""),
             "and the validator really was replayed: {}",
             sent[0]
         );
