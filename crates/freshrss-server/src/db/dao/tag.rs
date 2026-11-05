@@ -335,7 +335,6 @@ pub async fn labels_for_entries(
     Ok(out)
 }
 
-
 /// The newest entry id carrying each label, for the compat API's `newestItemTimestampUsec`.
 pub async fn newest_item_per_tag(
     conn: &mut SqliteConnection,

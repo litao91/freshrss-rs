@@ -18,8 +18,8 @@ use freshrss_search::ast::{DateField, DateRange, Expr, Op, Pred};
 use crate::api::greader::dto;
 use crate::api::greader::escape::{decode_url, escape_to_unicode_alternative};
 use crate::api::greader::{json_body, plain, Ctx};
-use crate::db::dao::{category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao};
 use crate::db::dao::entry_query::{list, EntryQuery};
+use crate::db::dao::{category as cat_dao, entry as entry_dao, feed as feed_dao, tag as tag_dao};
 use crate::domain::ids::EntryId;
 use crate::domain::list_type::ListType;
 use crate::domain::state::EntryState;
@@ -36,7 +36,9 @@ pub enum Stream {
     Category(i64),
     Label(i64),
     /// `com.google/read` and `…/unread` as a *scope*: the reading list restricted by state.
-    ReadState { unread: bool },
+    ReadState {
+        unread: bool,
+    },
 }
 
 /// Resolves a stream id. `None` means the grammar did not match at all; a stream whose subject does
@@ -156,12 +158,18 @@ fn time_window(ctx: &Ctx<'_>) -> Option<Expr> {
             children: vec![
                 Expr::Leaf(vec![Pred::Date {
                     field: DateField::Ingestion,
-                    range: DateRange { min: Some(ot), max: None },
+                    range: DateRange {
+                        min: Some(ot),
+                        max: None,
+                    },
                     negated: false,
                 }]),
                 Expr::Leaf(vec![Pred::Date {
                     field: DateField::Modified,
-                    range: DateRange { min: Some(ot), max: None },
+                    range: DateRange {
+                        min: Some(ot),
+                        max: None,
+                    },
                     negated: false,
                 }]),
             ],
@@ -171,12 +179,18 @@ fn time_window(ctx: &Ctx<'_>) -> Option<Expr> {
         parts.push(Expr::Leaf(vec![
             Pred::Date {
                 field: DateField::Ingestion,
-                range: DateRange { min: None, max: Some(nt) },
+                range: DateRange {
+                    min: None,
+                    max: Some(nt),
+                },
                 negated: false,
             },
             Pred::Date {
                 field: DateField::Modified,
-                range: DateRange { min: None, max: Some(nt) },
+                range: DateRange {
+                    min: None,
+                    max: Some(nt),
+                },
                 negated: false,
             },
         ]));
@@ -184,7 +198,10 @@ fn time_window(ctx: &Ctx<'_>) -> Option<Expr> {
     match parts.len() {
         0 => None,
         1 => parts.pop(),
-        _ => Some(Expr::Node { op: Op::And, children: parts }),
+        _ => Some(Expr::Node {
+            op: Op::And,
+            children: parts,
+        }),
     }
 }
 
@@ -245,7 +262,10 @@ pub async fn build_query(ctx: &Ctx<'_>, stream: Stream) -> EntryQuery {
 }
 
 /// Runs the query and applies the inclusive-continuation compensation.
-async fn page(ctx: &Ctx<'_>, query: EntryQuery) -> crate::error::Result<(Vec<crate::domain::entry::Entry>, Option<String>)> {
+async fn page(
+    ctx: &Ctx<'_>,
+    query: EntryQuery,
+) -> crate::error::Result<(Vec<crate::domain::entry::Entry>, Option<String>)> {
     let n = query.limit.saturating_sub(1).max(1);
     let compensated = ctx.param("c").is_some_and(|v| {
         let t = v.trim();
@@ -514,7 +534,10 @@ pub async fn subscription_export(ctx: Ctx<'_>) -> Response {
     (
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "application/xml; charset=UTF-8".to_owned()),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/xml; charset=UTF-8".to_owned(),
+            ),
             (
                 axum::http::header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"feeds_{stamp}.opml.xml\""),

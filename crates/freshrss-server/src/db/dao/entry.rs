@@ -706,11 +706,10 @@ pub async fn newest_item_per_feed(
     conn: &mut SqliteConnection,
     id_user: i64,
 ) -> Result<std::collections::HashMap<i64, i64>> {
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT id_feed, MAX(id) FROM entry WHERE id_user = ?1 GROUP BY id_feed",
-    )
-    .bind(id_user)
-    .fetch_all(&mut *conn)
-    .await?;
+    let rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT id_feed, MAX(id) FROM entry WHERE id_user = ?1 GROUP BY id_feed")
+            .bind(id_user)
+            .fetch_all(&mut *conn)
+            .await?;
     Ok(rows.into_iter().collect())
 }

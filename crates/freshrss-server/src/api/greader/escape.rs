@@ -56,7 +56,10 @@ mod tests {
 
     #[test]
     fn the_three_xml_characters_are_always_substituted() {
-        assert_eq!(escape_to_unicode_alternative("a & b < c > d", false), "a ＆ b ＜ c ＞ d");
+        assert_eq!(
+            escape_to_unicode_alternative("a & b < c > d", false),
+            "a ＆ b ＜ c ＞ d"
+        );
     }
 
     #[test]

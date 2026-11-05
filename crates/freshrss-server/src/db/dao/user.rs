@@ -147,7 +147,7 @@ pub async fn find_by_fever_key(conn: &mut SqliteConnection, key: &str) -> Result
         .push_bind(key);
     Ok(builder
         .build()
-    .try_map(from_row)
+        .try_map(from_row)
         .fetch_optional(&mut *conn)
         .await?)
 }

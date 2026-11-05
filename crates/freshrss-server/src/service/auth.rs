@@ -448,7 +448,12 @@ pub fn greader_action_token(config: &AppConfig, user: &User) -> Option<String> {
 /// Never for a wrong token: `None` is the answer, so the caller sends one 401 whether the user is
 /// unknown, disabled, or the token simply does not match — three failures that must not be
 /// distinguishable from the outside.
-pub async fn greader_user(db: &Db, config: &AppConfig, username: &str, token: &str) -> Result<Option<User>> {
+pub async fn greader_user(
+    db: &Db,
+    config: &AppConfig,
+    username: &str,
+    token: &str,
+) -> Result<Option<User>> {
     let username = username.to_owned();
     let token = token.to_owned();
     db.with(move |mut conn| async move {
@@ -497,7 +502,8 @@ pub async fn client_login(db: &Db, username: &str, password: &str) -> Result<Use
 /// The Fever reverse lookup: the key names the user, so the key is the index.
 pub async fn fever_user(db: &Db, key: &str) -> Result<Option<User>> {
     let key = key.to_lowercase();
-    db.with(move |mut conn| async move { user_dao::find_by_fever_key(&mut conn, &key).await }).await
+    db.with(move |mut conn| async move { user_dao::find_by_fever_key(&mut conn, &key).await })
+        .await
 }
 
 /// A comparison that does not short-circuit on the first differing byte.

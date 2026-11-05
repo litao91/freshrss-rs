@@ -43,7 +43,10 @@ const USERNAME_RE: &str = r"^([0-9a-zA-Z_][0-9a-zA-Z_.@\-]{1,38}|[0-9a-zA-Z])$";
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/accounts/ClientLogin", get(client_login).post(client_login))
+        .route(
+            "/accounts/ClientLogin",
+            get(client_login).post(client_login),
+        )
         .route("/reader/api/0/token", get(action_token))
         .route("/check/compatibility", get(compatibility))
         .fallback(dispatch)
@@ -54,10 +57,7 @@ pub fn router() -> Router<AppState> {
 ///
 /// Client apps are native and web wrappers exist, so the PHP answered every request with a
 /// permissive CORS set; reproducing it is cheaper than discovering which client needed it.
-async fn compat_headers(
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
+async fn compat_headers(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
     if request.method() == Method::OPTIONS {
         let mut res = StatusCode::NO_CONTENT.into_response();
         apply_cors(&mut res);
@@ -70,7 +70,10 @@ async fn compat_headers(
 
 fn apply_cors(res: &mut Response) {
     let headers = res.headers_mut();
-    headers.insert("access-control-allow-headers", "Authorization".parse().unwrap());
+    headers.insert(
+        "access-control-allow-headers",
+        "Authorization".parse().unwrap(),
+    );
     headers.insert("access-control-allow-methods", "GET, POST".parse().unwrap());
     headers.insert("access-control-allow-origin", "*".parse().unwrap());
     headers.insert("access-control-max-age", "600".parse().unwrap());
@@ -177,10 +180,7 @@ async fn client_login(
     }
 }
 
-async fn action_token(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Response {
+async fn action_token(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if api_disabled(&state) {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable!");
     }
@@ -322,7 +322,10 @@ impl Ctx<'_> {
 
     /// A query or form parameter, query first: the PHP reads most of them from `$_REQUEST`.
     pub fn param(&self, name: &str) -> Option<String> {
-        self.query.get(name).cloned().or_else(|| self.form().get(name).cloned())
+        self.query
+            .get(name)
+            .cloned()
+            .or_else(|| self.form().get(name).cloned())
     }
 
     /// The form-decoded POST body, parsed once per call site that needs it.
