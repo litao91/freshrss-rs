@@ -496,6 +496,10 @@ export const api = {
       body: { current, next },
     }),
 
+  /** The separate password client apps authenticate with; setting it rotates both API keys. */
+  setApiPassword: (password: string) =>
+    request<{ set: boolean }>('/me/api-password', { method: 'PUT', body: { password } }),
+
   sessions: () => request<SessionInfo[]>('/me/sessions'),
 
   revokeSession: (id: string) => request<void>(`/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),

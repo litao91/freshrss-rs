@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ButtonGroup, Popover } from 'svelte-widgets';
+  import ApiDialog from './dialogs/ApiDialog.svelte';
   import { LANGUAGES, t } from '../lib/i18n';
   import {
     MAX_SIZE,
@@ -35,6 +36,7 @@
   let searchEl: HTMLInputElement | undefined = $state();
   let displayOpen = $state(false);
   let accountOpen = $state(false);
+  let apiDialogOpen = $state(false);
 
   // Derived rather than plain constants: the labels go through `t()`, so they have to re-render
   // when the language changes.
@@ -324,11 +326,17 @@
           </button>
         {/snippet}
         <p class="rd-menu-user">{user.username}</p>
+        <button class="rd-menu-item" type="button" onclick={() => (apiDialogOpen = true)}>
+          <i class="ri-key-2-line" aria-hidden="true"></i>
+          {t('topbar.apiPassword')}
+        </button>
         <button class="rd-menu-item" type="button" onclick={handleSignOut}>
           <i class="ri-logout-box-r-line" aria-hidden="true"></i>
           {t('topbar.signOut')}
         </button>
       </Popover>
     {/if}
+
+    <ApiDialog open={apiDialogOpen} onclose={() => (apiDialogOpen = false)} />
   </div>
 </header>
