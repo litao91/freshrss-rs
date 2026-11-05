@@ -253,3 +253,24 @@ pub async fn revoke_session(
     }
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize)]
+pub struct SetApiPasswordRequest {
+    pub password: String,
+}
+
+/// `PUT /me/api-password`: the password Google Reader and Fever compatible clients use.
+///
+/// Session-authenticated on purpose — setting this credential is exactly as powerful as the
+/// account for every client app, so it asks for the session rather than being another anonymous
+/// endpoint.
+pub async fn set_api_password(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(req): Json<SetApiPasswordRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    auth::set_api_password(&state.db, &user.username, &req.password)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(json!({ "set": true })))
+}

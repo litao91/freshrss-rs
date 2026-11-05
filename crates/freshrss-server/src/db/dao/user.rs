@@ -136,6 +136,22 @@ pub async fn count(conn: &mut SqliteConnection) -> Result<i64> {
         .await?)
 }
 
+/// The Fever reverse lookup: the API key is `md5(username:password)`, so the key names the user
+/// and there is nothing to brute-force beyond the digest itself. Queried through the config JSON
+/// rather than a column of its own because the key is a derived credential, not user data.
+pub async fn find_by_fever_key(conn: &mut SqliteConnection, key: &str) -> Result<Option<User>> {
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder
+        .push(COLUMNS)
+        .push(" FROM user WHERE json_extract(config, '$.fever_key') = ")
+        .push_bind(key);
+    Ok(builder
+        .build()
+    .try_map(from_row)
+        .fetch_optional(&mut *conn)
+        .await?)
+}
+
 pub async fn update_password(
     conn: &mut SqliteConnection,
     id: i64,

@@ -126,6 +126,21 @@ impl Default for SessionConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ApiConfig {
+    /// Master switch for the Google Reader and Fever compatible endpoints. FreshRSS's
+    /// `api_enabled`; off means 503 for every compat request. On by default, because a reader
+    /// without client apps is half a reader.
+    pub enabled: bool,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RegistrationMode {
@@ -266,6 +281,7 @@ pub struct AppConfig {
     pub mark_when: MarkWhen,
     pub http: HttpConfig,
     pub media: MediaConfig,
+    pub api: ApiConfig,
     pub log: LogConfig,
 }
 
@@ -286,6 +302,7 @@ impl Default for AppConfig {
             mark_when: MarkWhen::default(),
             http: HttpConfig::default(),
             media: MediaConfig::default(),
+            api: ApiConfig::default(),
             log: LogConfig::default(),
         }
     }

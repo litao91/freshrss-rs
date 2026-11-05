@@ -42,6 +42,8 @@ enum Command {
     CreateUser(freshrss_server::cli::CreateUserArgs),
     /// Refresh due feeds now and print the run's report.
     Refresh(freshrss_server::cli::RefreshArgs),
+    /// Set the password that Google Reader and Fever compatible clients authenticate with.
+    SetApiPassword(freshrss_server::cli::SetApiPasswordArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -69,6 +71,9 @@ async fn main() -> Result<()> {
         Command::Serve => serve(config).await?,
         Command::CreateUser(args) => freshrss_server::cli::create_user(&config, args).await?,
         Command::Refresh(args) => freshrss_server::cli::refresh(&config, args).await?,
+        Command::SetApiPassword(args) => {
+            freshrss_server::cli::set_api_password(&config, args).await?
+        }
         Command::Parse(_) => unreachable!("handled above, before configuration is loaded"),
     }
     Ok(())

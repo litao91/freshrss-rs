@@ -334,3 +334,20 @@ pub async fn labels_for_entries(
     }
     Ok(out)
 }
+
+
+/// The newest entry id carrying each label, for the compat API's `newestItemTimestampUsec`.
+pub async fn newest_item_per_tag(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+) -> Result<std::collections::HashMap<i64, i64>> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT et.id_tag, MAX(e.id) FROM entrytag et
+         INNER JOIN entry e ON e.id = et.id_entry
+         WHERE e.id_user = ?1 GROUP BY et.id_tag",
+    )
+    .bind(id_user)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}

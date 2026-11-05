@@ -1,7 +1,7 @@
 //! The `/api/v1` route table.
 
 use axum::{
-    routing::{delete, get},
+    routing::{delete, get, put},
     Router,
 };
 
@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .nest("/auth", auth::router())
         .route("/media", get(media::proxy))
         .route("/me", get(me::bootstrap))
+        .route("/me/api-password", put(auth::set_api_password))
         .route("/me/sessions", get(auth::list_sessions))
         .route("/me/sessions/{id}", delete(auth::revoke_session))
         .route("/tree", get(tree::tree))

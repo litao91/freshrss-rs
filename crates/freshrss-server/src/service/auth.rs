@@ -373,3 +373,141 @@ pub async fn change_password(
     })
     .await
 }
+
+// --- the client-API credentials ---------------------------------------------
+
+/// Sets the separate password that Google Reader and Fever compatible clients authenticate with.
+///
+/// Two credentials are derived from the one plaintext and stored, because the two APIs verify in
+/// incompatible ways: the Google Reader token is a sha1 over the *stored hash*, while Fever's key
+/// is the md5 of `username:password` — a digest that can only be computed while the plaintext is
+/// still in hand. Neither expires and neither is a session: they are recomputed per request,
+/// exactly as FreshRSS recomputes them from its config files.
+///
+/// # Errors
+///
+/// The same validation errors as [`register`], plus `NotFound` for an unknown user.
+pub async fn set_api_password(db: &Db, username: &str, password: &str) -> Result<User> {
+    let username = username.trim().to_string();
+    User::validate_password(password).map_err(validation_error)?;
+    let password_hash = hash_password(password)?;
+    let fever_key = fever_key(&username, password);
+    db.with(move |mut conn| async move {
+        let Some(mut user) = user_dao::find_by_username(&mut conn, &username).await? else {
+            return Err(Error::NotFound(format!("user {username}")));
+        };
+        user.config.api_password_hash = Some(password_hash);
+        user.config.fever_key = Some(fever_key);
+        user_dao::update_config(&mut conn, user.id, &user.config).await?;
+        Ok(user)
+    })
+    .await
+}
+
+/// `md5("<username>:<password>")`, lowercase hex: the Fever API key, verbatim.
+fn fever_key(username: &str, password: &str) -> String {
+    use md5::{Digest as _, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(username.as_bytes());
+    hasher.update(b":");
+    hasher.update(password.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// The stateless Google Reader token: `sha1(salt ‖ username ‖ stored api password hash)`.
+///
+/// The stored hash is token material, which is what makes the token recomputable without keeping
+/// any server-side secret per user — and what invalidates every issued token when the API password
+/// changes, which is the only revocation this scheme has.
+pub fn greader_token(config: &AppConfig, user: &User) -> Option<String> {
+    use sha1::{Digest as _, Sha1};
+    let hash = user.config.api_password_hash.as_deref()?;
+    let mut hasher = Sha1::new();
+    hasher.update(config.session.secret.as_bytes());
+    hasher.update(user.username.as_bytes());
+    hasher.update(hash.as_bytes());
+    Some(hex::encode(hasher.finalize()))
+}
+
+/// The action token mutations accept as `T`: the same sha1, right-padded with `Z` to 57 characters.
+///
+/// The padding is FreshRSS's and looks like noise, but clients copy the string they got from
+/// `GET /reader/api/0/token` byte for byte, so the bytes matter more than the aesthetics.
+pub fn greader_action_token(config: &AppConfig, user: &User) -> Option<String> {
+    let mut token = greader_token(config, user)?;
+    while token.len() < 57 {
+        token.push('Z');
+    }
+    Some(token)
+}
+
+/// Resolves `Authorization: GoogleLogin auth=<user>/<token>`.
+///
+/// # Errors
+///
+/// Never for a wrong token: `None` is the answer, so the caller sends one 401 whether the user is
+/// unknown, disabled, or the token simply does not match — three failures that must not be
+/// distinguishable from the outside.
+pub async fn greader_user(db: &Db, config: &AppConfig, username: &str, token: &str) -> Result<Option<User>> {
+    let username = username.to_owned();
+    let token = token.to_owned();
+    db.with(move |mut conn| async move {
+        let Some(user) = user_dao::find_by_username(&mut conn, &username).await? else {
+            return Ok(None);
+        };
+        if !user.enabled {
+            return Ok(None);
+        }
+        let expected = match greader_token(config, &user) {
+            Some(expected) => expected,
+            None => return Ok(None),
+        };
+        Ok(constant_time_eq(expected.as_bytes(), token.as_bytes()).then_some(user))
+    })
+    .await
+}
+
+/// Verifies the plaintext for `POST /accounts/ClientLogin`.
+///
+/// Deliberately does not check `enabled`, matching FreshRSS: ClientLogin's own gate is the
+/// password, and a disabled account is stopped on every request that follows.
+///
+/// # Errors
+///
+/// `NotFound` for an unknown username (a 400 at the endpoint, per FreshRSS), `Auth` for a wrong
+/// password or an account with no API password set.
+pub async fn client_login(db: &Db, username: &str, password: &str) -> Result<User> {
+    let username = username.trim().to_string();
+    let password = password.to_owned();
+    db.with(move |mut conn| async move {
+        let Some(user) = user_dao::find_by_username(&mut conn, &username).await? else {
+            return Err(Error::NotFound(format!("user {username}")));
+        };
+        let Some(hash) = user.config.api_password_hash.as_deref() else {
+            return Err(Error::BadCredentials);
+        };
+        if !verify_password(&password, hash) {
+            return Err(Error::BadCredentials);
+        }
+        Ok(user)
+    })
+    .await
+}
+
+/// The Fever reverse lookup: the key names the user, so the key is the index.
+pub async fn fever_user(db: &Db, key: &str) -> Result<Option<User>> {
+    let key = key.to_lowercase();
+    db.with(move |mut conn| async move { user_dao::find_by_fever_key(&mut conn, &key).await }).await
+}
+
+/// A comparison that does not short-circuit on the first differing byte.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}

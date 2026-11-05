@@ -34,6 +34,15 @@ pub struct UserConfig {
     pub posts_per_page: u32,
     /// Interface language, matching the reader's `select#rd-lang`.
     pub language: String,
+    /// Argon2id hash of the separate password that client apps (Google Reader / Fever compatible)
+    /// authenticate with. `None` until the operator sets one: without it every compat-API login
+    /// fails, which is the safe default for an endpoint that accepts a raw password over HTTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_password_hash: Option<String>,
+    /// `md5("<username>:<api password>")`, the Fever API key. Derived when the API password is set,
+    /// because Fever's credential *is* that digest and the plaintext is gone after the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fever_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -70,6 +79,8 @@ impl Default for UserConfig {
             filters: Vec::new(),
             posts_per_page: 50,
             language: "en".into(),
+            api_password_hash: None,
+            fever_key: None,
         }
     }
 }

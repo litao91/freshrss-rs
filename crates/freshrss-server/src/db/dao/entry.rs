@@ -700,3 +700,17 @@ pub async fn delete_all_for_user(conn: &mut SqliteConnection, id_user: i64) -> R
         .await?
         .rows_affected() as usize)
 }
+
+/// The newest entry id per feed, for the compat API's `newestItemTimestampUsec`.
+pub async fn newest_item_per_feed(
+    conn: &mut SqliteConnection,
+    id_user: i64,
+) -> Result<std::collections::HashMap<i64, i64>> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT id_feed, MAX(id) FROM entry WHERE id_user = ?1 GROUP BY id_feed",
+    )
+    .bind(id_user)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}

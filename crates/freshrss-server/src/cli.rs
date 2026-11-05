@@ -795,3 +795,41 @@ mod tests {
         assert!(report.items.is_empty());
     }
 }
+
+/// Arguments for `freshrss-rs set-api-password`.
+#[derive(Debug, Args)]
+pub struct SetApiPasswordArgs {
+    pub username: String,
+
+    /// The API password. Read from stdin when omitted, so it need not land in a shell history.
+    #[arg(long, value_name = "PASSWORD")]
+    pub password: Option<String>,
+}
+
+/// Sets the password client apps authenticate with, for both compat APIs at once.
+///
+/// Kept out of the web UI for now on purpose: the Google Reader token and the Fever key are
+/// non-expiring credentials derived from this password, so setting one is a deliberate act, and a
+/// shell command is the right weight for it.
+pub async fn set_api_password(config: &AppConfig, args: SetApiPasswordArgs) -> Result<()> {
+    let password = match args.password {
+        Some(password) => password,
+        None => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading the password from stdin")?;
+            line.trim_end().to_owned()
+        }
+    };
+    if password.is_empty() {
+        bail!("an empty password was given");
+    }
+    let db = Db::open(&config.database).await?;
+    let user = crate::service::auth::set_api_password(&db, &args.username, &password).await?;
+    println!(
+        "API password set for {} (id {}); Google Reader and Fever clients can now sign in",
+        user.username, user.id
+    );
+    Ok(())
+}

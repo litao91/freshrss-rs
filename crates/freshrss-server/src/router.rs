@@ -86,6 +86,8 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/version", get(version))
         .nest("/api/v1", api)
+        .nest("/api/greader.php", crate::api::greader::router())
+        .nest("/api/greader", crate::api::greader::router())
         .merge(crate::static_files::router())
         .with_state(state)
         // Reader traffic is JSON and HTML, both of which compress four-to-one, and a self-hosted
