@@ -1,0 +1,8 @@
+.git
+target
+web/node_modules
+static
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

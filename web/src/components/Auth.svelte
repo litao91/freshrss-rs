@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ApiError } from '../lib/api';
+  import { t } from '../lib/i18n';
   import { signIn, signUp, session } from '../lib/session.svelte';
   import { notifyError } from '../lib/toast.svelte';
 
@@ -19,13 +20,9 @@
   const canRegister = $derived(session.policy?.can_register !== false);
   const active = $derived(canRegister ? mode : 'login');
 
-  const title = $derived(active === 'login' ? 'Log in' : 'Create your account');
-  const lead = $derived(
-    active === 'login'
-      ? 'Sign in to your reader.'
-      : 'Pick a username and password. The first account on this server becomes its administrator.',
-  );
-  const submitLabel = $derived(active === 'login' ? 'Log in' : 'Sign up');
+  const title = $derived(active === 'login' ? t('auth.loginTitle') : t('auth.registerTitle'));
+  const lead = $derived(active === 'login' ? t('auth.loginLead') : t('auth.registerLead'));
+  const submitLabel = $derived(active === 'login' ? t('auth.loginSubmit') : t('auth.registerSubmit'));
 
   function switchMode(next: 'login' | 'register'): void {
     if (next === 'register' && !canRegister) return;
@@ -50,8 +47,8 @@
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         formError = err.message;
       } else {
-        notifyError(err instanceof Error ? err.message : 'Could not reach the server');
-        formError = 'Something went wrong. Please try again.';
+        notifyError(err instanceof Error ? err.message : t('auth.unreachable'));
+        formError = t('auth.wentWrong');
       }
     } finally {
       busy = false;
@@ -79,7 +76,7 @@
 
     {#if session.error}
       <p class="rd-field-error" role="alert">
-        The server could not be reached: {session.error}
+        {t('auth.unreachable')} {session.error}
       </p>
     {/if}
 
@@ -102,13 +99,13 @@
 
       {#if active === 'register'}
         <div>
-          <label class="rd-label" for="auth-email">Email <span class="rd-hint">(optional)</span></label>
+          <label class="rd-label" for="auth-email">{t('auth.email')} <span class="rd-hint">{t('auth.emailOptional')}</span></label>
           <input id="auth-email" class="rd-input" type="email" autocomplete="email" bind:value={email} />
         </div>
       {/if}
 
       <div>
-        <label class="rd-label" for="auth-password">Password</label>
+        <label class="rd-label" for="auth-password">{t('auth.password')}</label>
         <input
           id="auth-password"
           class="rd-input"
@@ -125,19 +122,19 @@
       {/if}
 
       <button class="rd-btn rd-btn--primary" type="submit" disabled={busy}>
-        {#if busy}Working…{:else}{submitLabel}{/if}
+        {#if busy}{t('auth.working')}{:else}{submitLabel}{/if}
       </button>
     </form>
 
     <p class="rd-auth-switch">
       {#if !canRegister}
-        Registration is closed on this server. Ask whoever runs it for an account.
+        {t('auth.closed')}
       {:else if active === 'login'}
-        Don't have an account?
-        <button type="button" onclick={() => switchMode('register')}>Sign up</button>
+        {t('auth.toRegister')}
+        <button type="button" onclick={() => switchMode('register')}>{t('auth.registerSubmit')}</button>
       {:else}
-        Already have an account?
-        <button type="button" onclick={() => switchMode('login')}>Log in</button>
+        {t('auth.toLogin')}
+        <button type="button" onclick={() => switchMode('login')}>{t('auth.loginSubmit')}</button>
       {/if}
     </p>
   </div>

@@ -42,6 +42,7 @@
   /** Whether the pane shows the scraped full article rather than the feed's own body. */
   let showFull = $state(false);
   let fetchingFull = $state(false);
+  let refetchingFull = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
   let controller: AbortController | null = null;
 
@@ -207,6 +208,28 @@
       notifyError(err instanceof Error ? err.message : 'Could not fetch the full article');
     } finally {
       fetchingFull = false;
+    }
+  }
+
+  /**
+   * Scrapes the article again even though a body is stored.
+   *
+   * The endpoint always re-fetches; it is the pane that prefers the stored copy. A publisher who
+   * fixes a broken page, or a body scraped before the extraction improved, is exactly why someone
+   * needs the other half of that arrangement.
+   */
+  async function refetchFull(): Promise<void> {
+    if (!detail) return;
+    refetchingFull = true;
+    try {
+      const got = await api.fulltext(detail.entry.id);
+      if (!detail) return;
+      detail.entry.full_content = got.content_html;
+      showFull = true;
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Could not fetch the full article');
+    } finally {
+      refetchingFull = false;
     }
   }
 
@@ -423,6 +446,19 @@
         <i class={fetchingFull ? 'ri-loader-4-line is-spinning' : showFull ? 'ri-file-text-line' : 'ri-article-line'}></i>
         <span class="rd-sr">{showFull ? 'Show the feed’s version' : 'Show the full article'}</span>
       </button>
+      {#if showFull || detail?.entry.full_content}
+        <button
+          class="rd-icon-btn rd-fulltext-refetch"
+          type="button"
+          title="Re-fetch the full article"
+          aria-busy={refetchingFull}
+          disabled={refetchingFull || fetchingFull}
+          onclick={() => void refetchFull()}
+        >
+          <i class={refetchingFull ? 'ri-loader-4-line is-spinning' : 'ri-refresh-line'}></i>
+          <span class="rd-sr">Re-fetch the full article</span>
+        </button>
+      {/if}
     {/if}
     <CopyButton
       class="rd-icon-btn rd-share-btn"

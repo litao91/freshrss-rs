@@ -1,0 +1,24 @@
+[Unit]
+Description=freshrss-rs self-hosted RSS reader
+Documentation=https://github.com/litao91/freshrss-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/freshrss-rs serve
+Environment=FRESHRSS_CONFIG=/etc/freshrss-rs/config.toml
+User=freshrss
+Group=freshrss
+StateDirectory=freshrss
+Restart=on-failure
+RestartSec=2
+
+# The service only needs its own state directory and its config; everything else can be read-only.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/freshrss
+
+[Install]
+WantedBy=multi-user.target

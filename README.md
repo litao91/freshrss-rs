@@ -233,6 +233,37 @@ the page the list has usually already asked for, and lands the reader in the lis
 highlighted rather than off the edge of it — and it does go dead at the true end, which is the other
 half of the same question: 10 checks.
 
+## Deploying
+
+The release binary embeds the built SPA, so a deployment is one file plus one config:
+
+```sh
+npm --prefix web run build          # before the release build, so rust-embed picks it up
+cargo build --release
+install -m 755 target/release/freshrss-rs /usr/local/bin/
+install -m 644 config.toml /etc/freshrss-rs/config.toml
+install -m 644 deploy/freshrss-rs.service /etc/systemd/system/
+systemd-tmpfiles --create   # or: useradd --system --create-home freshrss
+systemctl enable --now freshrss-rs
+```
+
+`deploy/freshrss-rs.service` runs the server as its own user with `ProtectSystem=strict` and keeps
+state in `/var/lib/freshrss`; point `database.path` there in the config it reads.
+
+Or as a container — the image builds the SPA in a node stage and embeds it in the binary stage:
+
+```sh
+docker build -t freshrss-rs .
+docker run -d --name freshrss-rs -p 8080:8080 \
+  -v freshrss-data:/data -v ./config.toml:/etc/freshrss-rs/config.toml:ro \
+  freshrss-rs
+```
+
+`/data` holds the database and the favicon cache; every setting can also come from the
+environment as `FRESHRSS_<SECTION>_<KEY>`, which is how the image redirects the database into the
+volume without editing the config. Create the first account with
+`docker exec -it freshrss-rs freshrss-rs create-user <name> --admin`.
+
 ## License
 
 AGPL-3.0-or-later, matching FreshRSS, from which this is derived. See [LICENSE](LICENSE).
