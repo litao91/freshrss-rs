@@ -232,38 +232,49 @@
               {#each feeds as feed (feed.id)}
                 {@const fScope = feedScope(feed)}
                 <li>
-                  <a
-                    class="rd-tree-link"
-                    class:is-active={isActive(view.scope, fScope)}
-                    class:is-unread={feed.unread > 0}
-                    class:is-error={feed.error > 0 || feed.muted}
-                    href={scopeHref(fScope)}
-                    title={feed.muted ? tf('nav.muted', { name: feed.name }) : feed.name}
-                    onclick={(e) => go(e, fScope)}
-                    oncontextmenu={(e) => {
-                      e.preventDefault();
-                      onManageFeed(feed);
-                    }}
-                  >
-                    {#if feed.favicon.url}
-                      <img class="rd-favicon" src={feed.favicon.url} alt="" loading="lazy" />
-                    {:else}
-                      <span
-                        class="rd-favicon rd-favicon--letter"
-                        style:background={feed.favicon.color}
-                        aria-hidden="true"
-                      >
-                        {feed.favicon.letter}
-                      </span>
-                    {/if}
-                    <span class="rd-tree-label">{feed.name}</span>
-                    {#if feed.unread > 0}
-                      <span class="rd-count">
-                        <span>{formatCount(feed.unread)}</span>
-                        <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
-                      </span>
-                    {/if}
-                  </a>
+                  <div class="rd-feed-row">
+                    <a
+                      class="rd-tree-link"
+                      class:is-active={isActive(view.scope, fScope)}
+                      class:is-unread={feed.unread > 0}
+                      class:is-error={feed.error > 0 || feed.muted}
+                      href={scopeHref(fScope)}
+                      title={feed.muted ? tf('nav.muted', { name: feed.name }) : feed.name}
+                      onclick={(e) => go(e, fScope)}
+                      oncontextmenu={(e) => {
+                        e.preventDefault();
+                        onManageFeed(feed);
+                      }}
+                    >
+                      {#if feed.favicon.url}
+                        <img class="rd-favicon" src={feed.favicon.url} alt="" loading="lazy" />
+                      {:else}
+                        <span
+                          class="rd-favicon rd-favicon--letter"
+                          style:background={feed.favicon.color}
+                          aria-hidden="true"
+                        >
+                          {feed.favicon.letter}
+                        </span>
+                      {/if}
+                      <span class="rd-tree-label">{feed.name}</span>
+                      {#if feed.unread > 0}
+                        <span class="rd-count">
+                          <span>{formatCount(feed.unread)}</span>
+                          <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
+                        </span>
+                      {/if}
+                    </a>
+                    <button
+                      class="rd-feed-settings"
+                      type="button"
+                      title={tf('nav.feedSettingsFor', { name: feed.name })}
+                      onclick={() => onManageFeed(feed)}
+                    >
+                      <i class="ri-more-2-fill" aria-hidden="true"></i>
+                      <span class="rd-sr">{tf('nav.feedSettingsFor', { name: feed.name })}</span>
+                    </button>
+                  </div>
                 </li>
               {/each}
             </ul>
@@ -274,37 +285,48 @@
       {#each orphans as feed (feed.id)}
         {@const oScope = feedScope(feed)}
         <li>
-          <a
-            class="rd-tree-link"
-            class:is-active={isActive(view.scope, oScope)}
-            class:is-unread={feed.unread > 0}
-            href={scopeHref(oScope)}
-            title={t('nav.notInFolder')}
-            onclick={(e) => go(e, oScope)}
-            oncontextmenu={(e) => {
-              e.preventDefault();
-              onManageFeed(feed);
-            }}
-          >
-            {#if feed.favicon.url}
-              <img class="rd-favicon" src={feed.favicon.url} alt="" loading="lazy" />
-            {:else}
-              <span
-                class="rd-favicon rd-favicon--letter"
-                style:background={feed.favicon.color}
-                aria-hidden="true"
-              >
-                {feed.favicon.letter}
-              </span>
-            {/if}
-            <span class="rd-tree-label">{feed.name}</span>
-            {#if feed.unread > 0}
-              <span class="rd-count">
-                <span>{formatCount(feed.unread)}</span>
-                <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
-              </span>
-            {/if}
-          </a>
+          <div class="rd-feed-row">
+            <a
+              class="rd-tree-link"
+              class:is-active={isActive(view.scope, oScope)}
+              class:is-unread={feed.unread > 0}
+              href={scopeHref(oScope)}
+              title={t('nav.notInFolder')}
+              onclick={(e) => go(e, oScope)}
+              oncontextmenu={(e) => {
+                e.preventDefault();
+                onManageFeed(feed);
+              }}
+            >
+              {#if feed.favicon.url}
+                <img class="rd-favicon" src={feed.favicon.url} alt="" loading="lazy" />
+              {:else}
+                <span
+                  class="rd-favicon rd-favicon--letter"
+                  style:background={feed.favicon.color}
+                  aria-hidden="true"
+                >
+                  {feed.favicon.letter}
+                </span>
+              {/if}
+              <span class="rd-tree-label">{feed.name}</span>
+              {#if feed.unread > 0}
+                <span class="rd-count">
+                  <span>{formatCount(feed.unread)}</span>
+                  <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
+                </span>
+              {/if}
+            </a>
+            <button
+              class="rd-feed-settings"
+              type="button"
+              title={tf('nav.feedSettingsFor', { name: feed.name })}
+              onclick={() => onManageFeed(feed)}
+            >
+              <i class="ri-more-2-fill" aria-hidden="true"></i>
+              <span class="rd-sr">{tf('nav.feedSettingsFor', { name: feed.name })}</span>
+            </button>
+          </div>
         </li>
       {/each}
     </ul>

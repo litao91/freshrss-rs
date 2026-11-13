@@ -232,6 +232,16 @@ const en: Record<string, string> = {
   'packs.loadError': 'Could not load the starter packs.',
   'packs.installError': "Couldn't subscribe to the selected packs.",
   'packs.done': '{n} feeds added.',
+
+  'topbar.clearSearch': 'Clear search',
+  'list.showAll': 'Show all articles',
+  'list.noFeedsYet': 'No subscriptions yet',
+  'list.noFeedsYetHint': 'Add a feed or import an OPML file to start reading.',
+  'nav.feedSettingsFor': 'Settings for the {name} feed',
+  'read.minRead': '{n} min read',
+  'read.backToTop': 'Back to top',
+  'read.updated': 'updated',
+  'read.updatedTitle': 'The feed changed this article after we first saw it',
 };
 
 const tr: Record<string, string> = {
@@ -473,6 +483,16 @@ const tr: Record<string, string> = {
   'packs.loadError': 'Hazır paketler yüklenemedi.',
   'packs.installError': 'Seçilen paketlere abone olunamadı.',
   'packs.done': '{n} besleme eklendi.',
+
+  'topbar.clearSearch': 'Aramayı temizle',
+  'list.showAll': 'Tüm makaleleri göster',
+  'list.noFeedsYet': 'Henüz abonelik yok',
+  'list.noFeedsYetHint': 'Okumaya başlamak için bir besleme ekleyin veya OPML dosyası içe aktarın.',
+  'nav.feedSettingsFor': '{name} beslemesinin ayarları',
+  'read.minRead': '{n} dk okuma',
+  'read.backToTop': 'Başa dön',
+  'read.updated': 'güncellendi',
+  'read.updatedTitle': 'Besleme bu makaleyi ilk gördüğümüzden sonra değiştirdi',
 };
 
 const DICTS: Record<Language, Record<string, string>> = { en, tr };

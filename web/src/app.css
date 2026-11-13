@@ -116,11 +116,30 @@ html[data-theme='gece'],
     2 * var(--rd-item-py) + 1.05rem + 1.35rem + 1.15rem + 2 * var(--rd-item-gap) + 1px
   );
 
-  --rd-shadow-1: 0 1px 2px rgb(0 0 0 / 0.06);
-  --rd-shadow-2: 0 6px 24px rgb(0 0 0 / 0.14);
+  /* Layered shadows: a tight contact shadow plus a wider ambient one reads as a surface lifted off
+     the paper rather than a grey blur pasted behind it. Three steps — resting chrome, floating
+     panels, and the modal/auth card that sits highest. */
+  --rd-shadow-1: 0 1px 2px rgb(0 0 0 / 0.05), 0 1px 1px rgb(0 0 0 / 0.03);
+  --rd-shadow-2: 0 8px 30px rgb(0 0 0 / 0.12), 0 2px 8px rgb(0 0 0 / 0.07);
+  --rd-shadow-3: 0 24px 60px rgb(0 0 0 / 0.2), 0 8px 20px rgb(0 0 0 / 0.1);
   --rd-ring: 0 0 0 3px color-mix(in srgb, var(--fd-focus) 45%, transparent);
+  /* A warm halo borrowed from the accent, for the primary action and the avatar — the one place a
+     control glows, so it stays an event rather than a hum. */
+  --rd-glow: 0 3px 14px color-mix(in srgb, var(--fd-accent) 32%, transparent);
 
   --rd-ease: 140ms cubic-bezier(0.2, 0, 0.2, 1);
+  /* An expo-out for entrances: fast to arrive, slow to settle, so a new article lands rather than
+     slides. The spring overshoots once, for the star — a small celebration, not a bounce loop. */
+  --rd-ease-out: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  --rd-ease-spring: 340ms cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Paper tooth: a seamless grayscale noise tile at a few percent alpha. Layered into the large
+     background fields (the reading surface, the auth screen) it gives the warm palette a physical
+     grain without touching text contrast. Theme-agnostic, so it survives the cross-fade. */
+  --rd-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  /* A theme-agnostic top sheen for the chrome: a whisper of white falling to nothing. Kept as a
+     background-image over the theme colour so the colour still cross-fades underneath it. */
+  --rd-sheen: linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0) 62%);
 
   /* The theme cross-fade, as a list rather than a rule: two places have to fade with the theme —
      the surfaces in section 4 and the narrow-screen drawer, whose own `transition` replaces
@@ -558,12 +577,14 @@ body,
   background: var(--fd-accent);
   border-color: var(--fd-accent);
   color: var(--fd-accent-ink);
+  box-shadow: var(--rd-glow);
 }
 
 .rd-btn--primary:hover {
   background: var(--fd-accent-hover);
   border-color: var(--fd-accent-hover);
   color: var(--fd-accent-ink);
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--fd-accent) 40%, transparent);
 }
 
 .rd-btn--quiet {
@@ -603,6 +624,10 @@ body,
 .rd-icon-btn:hover {
   background: var(--fd-hover);
   color: var(--fd-ink);
+}
+
+.rd-icon-btn:active {
+  transform: scale(0.92);
 }
 
 /* `ActionButton` lays itself out as an inline grid sized to a hidden width sizer. Its own rule is
@@ -690,14 +715,27 @@ select.rd-input {
 .rd-count {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   margin-left: auto;
-  padding: 0 0.35rem;
+  min-width: 1.5rem;
+  padding: 0.05rem 0.4rem;
   border-radius: var(--rd-radius-pill);
-  background: transparent;
+  background: color-mix(in srgb, var(--fd-field) 12%, transparent);
   color: var(--fd-muted);
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  transition:
+    background var(--rd-ease),
+    color var(--rd-ease);
+}
+
+/* A badge on a feed with unread articles — or on the row the reader is in — carries the accent, so
+   the eye lands on what is waiting without every quiet feed shouting. */
+.rd-tree-link.is-unread .rd-count,
+.rd-tree-link.is-active .rd-count {
+  background: var(--fd-soft);
+  color: var(--fd-accent);
 }
 
 .rd-star {
@@ -742,6 +780,13 @@ select.rd-input {
   color: #d99a1e;
 }
 
+/* A single overshoot when an article is starred — the one celebratory gesture in the reader. It
+   fires on the state change, not on a loop, and the reduced-motion block stills it. */
+.rd-star[aria-pressed='true'] i,
+.rd-read-bar .is-starred i {
+  animation: rd-star-pop var(--rd-ease-spring);
+}
+
 .rd-star[aria-pressed='true'] i::before {
   content: '\f186'; /* ri-star-fill */
 }
@@ -752,6 +797,9 @@ select.rd-input {
   height: 0.45rem;
   border-radius: 50%;
   background: var(--fd-accent);
+  /* A quiet halo marks the row as unread at a glance without forty pulsing dots competing for the
+     eye. Static, so a long list costs nothing to paint. */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fd-accent) 16%, transparent);
   flex: 0 0 auto;
 }
 
@@ -765,7 +813,8 @@ select.rd-input {
   gap: 0.35rem;
   padding: 0 0.6rem;
   border-bottom: 1px solid var(--fd-line);
-  background: var(--fd-side);
+  background-color: var(--fd-side);
+  background-image: var(--rd-sheen);
 }
 
 .rd-brand {
@@ -875,8 +924,10 @@ html[data-rd-nav='kapali'] .rd-nav-dock i.ri-sidebar-unfold-line {
 }
 
 /* Any icon spins while the action behind it is in flight: the refresh job, a per-feed retry, an
-   on-demand full-text fetch. */
-i.is-spinning {
+   on-demand full-text fetch. `.rd-spin` is the class the list and reading pane put on their loader
+   glyphs; `is-spinning` is the one the top bar toggles. Both drive the same keyframe. */
+i.is-spinning,
+.rd-spin {
   animation: rd-spin 900ms linear infinite;
 }
 
@@ -1001,6 +1052,21 @@ i.is-spinning {
   font-weight: 700;
   cursor: pointer;
   list-style: none;
+  box-shadow:
+    var(--rd-shadow-1),
+    0 0 0 2px var(--fd-surface),
+    0 0 0 3px color-mix(in srgb, var(--fd-accent) 28%, transparent);
+  transition:
+    transform var(--rd-ease),
+    box-shadow var(--rd-ease);
+}
+
+.rd-avatar:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    var(--rd-shadow-2),
+    0 0 0 2px var(--fd-surface),
+    0 0 0 3px color-mix(in srgb, var(--fd-accent) 45%, transparent);
 }
 
 /* --- display panel --- */
@@ -1127,7 +1193,8 @@ i.is-spinning {
   flex-direction: column;
   min-height: 0;
   border-right: 1px solid var(--fd-line);
-  background: var(--fd-side);
+  background-color: var(--fd-side);
+  background-image: var(--rd-sheen);
 }
 
 .rd-nav-inner {
@@ -1182,6 +1249,7 @@ i.is-spinning {
 }
 
 .rd-tree-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -1206,6 +1274,19 @@ i.is-spinning {
   background: var(--fd-soft);
   color: var(--fd-accent);
   font-weight: 600;
+}
+
+/* A spine of accent in the row's left padding marks the current scope at a glance, the way a ribbon
+   marks a page. It sits in the padding, so it never shifts the label. */
+.rd-tree-link.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: var(--rd-radius-pill);
+  background: var(--fd-accent);
 }
 
 .rd-tree-icon {
@@ -1571,7 +1652,12 @@ html[data-rd-density='sikisik'] .rd-item-summary {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--fd-surface);
+  position: relative;
+  background-color: var(--fd-surface);
+  /* Grain over a faint top light: the reading surface reads as a sheet of paper rather than a flat
+     panel. Both layers are theme-agnostic, so the colour beneath still cross-fades. */
+  background-image: var(--rd-grain),
+    radial-gradient(120% 70% at 50% -10%, rgb(255 255 255 / 0.04), transparent 60%);
 }
 
 .rd-read-bar {
@@ -1667,13 +1753,31 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
 }
 
 .rd-article-feed {
-  display: inline-block;
-  margin-bottom: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.7rem;
+  padding: 0.22rem 0.65rem;
+  border-radius: var(--rd-radius-pill);
+  background: var(--fd-soft);
   color: var(--fd-accent);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+  transition:
+    background var(--rd-ease),
+    color var(--rd-ease);
+}
+
+.rd-article-feed:hover {
+  background: color-mix(in srgb, var(--fd-accent) 18%, var(--fd-soft));
+  color: var(--fd-accent-hover);
+  text-decoration: none;
+}
+
+.rd-article-feed i {
+  font-size: 0.85rem;
 }
 
 .rd-article-title {
@@ -1698,12 +1802,46 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
 }
 
 .rd-article-byline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
   color: var(--fd-muted);
   font-size: 0.8125rem;
 }
 
+/* A middle dot between byline parts — author, date, reading time — so the line reads as one
+   caption rather than a run-on. The first part draws no leading dot. */
+.rd-article-byline > * + *::before {
+  content: '·';
+  margin-right: 0.55rem;
+  color: var(--fd-field);
+}
+
 .rd-article-byline time {
   font-variant-numeric: tabular-nums;
+}
+
+.rd-article-readtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.rd-article-readtime i {
+  font-size: 0.9rem;
+  color: var(--fd-field);
+}
+
+.rd-updated {
+  padding: 0.05rem 0.45rem;
+  border-radius: var(--rd-radius-pill);
+  background: var(--fd-soft);
+  color: var(--fd-accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .rd-article-foot {
@@ -1985,13 +2123,27 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
    themed scrollbars above name that class now. What the library does not have is this reader's
    entrance, so the drop-and-fade stays, keyed to the class every panel passes through. */
 .rd-dialog[open] {
-  animation: rd-dialog-in 140ms ease-out;
+  animation: rd-dialog-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* A touch of blur behind the modal lifts it off the page without darkening the backdrop further;
+   the colour stays the library's `--dialog-backdrop` token. */
+dialog::backdrop {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 
 @keyframes rd-dialog-in {
   from {
     opacity: 0;
-    transform: translateY(-0.4rem) scale(0.99);
+    transform: translateY(-0.5rem) scale(0.985);
+  }
+}
+
+@keyframes rd-auth-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
   }
 }
 
@@ -2298,16 +2450,22 @@ kbd {
   justify-content: center;
   min-height: 100dvh;
   padding: 1.5rem;
-  background: var(--fd-bg);
+  background-color: var(--fd-bg);
+  /* Two warm accent lights bleeding in from opposite corners over the paper grain: the sign-in is
+     the reader's front door, and it should feel like the same room as the reading surface. */
+  background-image: var(--rd-grain),
+    radial-gradient(70% 55% at 50% -12%, color-mix(in srgb, var(--fd-accent) 13%, transparent), transparent 70%),
+    radial-gradient(55% 45% at 108% 112%, color-mix(in srgb, var(--fd-accent) 9%, transparent), transparent 70%);
 }
 
 .rd-auth-card {
   width: min(23rem, 100%);
-  padding: 1.75rem;
+  padding: 1.9rem 1.75rem;
   border: 1px solid var(--fd-line);
   border-radius: var(--rd-radius-lg);
   background: var(--fd-surface);
-  box-shadow: var(--rd-shadow-1);
+  box-shadow: var(--rd-shadow-3);
+  animation: rd-auth-in var(--rd-ease-out);
 }
 
 .rd-auth-brand {
@@ -2347,6 +2505,18 @@ kbd {
   gap: 0.85rem;
 }
 
+.rd-auth-form .rd-input {
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+.rd-auth-form .rd-btn--primary {
+  justify-content: center;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.6rem 0.8rem;
+}
+
 .rd-auth-switch {
   margin-top: 1rem;
   color: var(--fd-muted);
@@ -2362,6 +2532,323 @@ kbd {
   font: inherit;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ==========================================================================
+   12b. Refinements — affordances, loading, empty states, motion
+   ========================================================================== */
+
+/* --- search affordances ---
+ *
+ * A visible `/` cap tells a first-time reader the box has a shortcut; a clear button appears once
+ * there is something to clear. Both live in the field's right padding, which widens to hold them. */
+.rd-search input {
+  padding-right: 2.4rem;
+}
+
+.rd-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.rd-search-hint {
+  position: absolute;
+  right: 0.55rem;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.rd-search-clear {
+  position: absolute;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fd-muted);
+  font-size: 1rem;
+  cursor: pointer;
+  transition:
+    background var(--rd-ease),
+    color var(--rd-ease);
+}
+
+.rd-search-clear:hover {
+  background: var(--fd-hover);
+  color: var(--fd-ink);
+}
+
+/* --- skeleton loading ---
+ *
+ * Shimmering placeholders shaped like the content that is coming, so a slow page reads as "your
+ * articles are on their way" rather than a spinner over nothing. The list rows mirror `--rd-item-h`
+ * exactly; the article mirrors the reading column. Both sit outside the virtual list and the real
+ * `.rd-article`, so the windowing arithmetic and the harness selectors never see them. */
+.rd-skeleton-bar {
+  display: block;
+  height: 0.8rem;
+  border-radius: var(--rd-radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--fd-hover) 25%,
+    color-mix(in srgb, var(--fd-hover) 45%, var(--fd-surface)) 37%,
+    var(--fd-hover) 63%
+  );
+  background-size: 400% 100%;
+  animation: rd-shimmer 1.4s ease infinite;
+}
+
+.rd-skeleton-list {
+  padding: 0;
+}
+
+.rd-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--rd-item-gap);
+  height: var(--rd-item-h);
+  padding: var(--rd-item-py) var(--rd-item-px);
+  border-bottom: 1px solid var(--fd-line);
+}
+
+.rd-skeleton-meta {
+  width: 45%;
+  height: 0.65rem;
+}
+
+.rd-skeleton-title {
+  width: 82%;
+  height: 0.95rem;
+}
+
+.rd-skeleton-summary {
+  width: 60%;
+  height: 0.7rem;
+}
+
+.rd-skeleton-row:nth-child(2n) .rd-skeleton-title {
+  width: 68%;
+}
+.rd-skeleton-row:nth-child(3n) .rd-skeleton-summary {
+  width: 74%;
+}
+.rd-skeleton-row:nth-child(3n) .rd-skeleton-meta {
+  width: 38%;
+}
+
+.rd-skeleton-article {
+  max-width: var(--rd-read-max);
+  margin: 0 auto;
+  padding: 1.6rem 1.5rem 4rem;
+}
+
+.rd-skeleton-kicker {
+  width: 8rem;
+  height: 1.1rem;
+  border-radius: var(--rd-radius-pill);
+  margin-bottom: 0.9rem;
+}
+
+.rd-skeleton-h1 {
+  height: 1.7rem;
+  margin-bottom: 0.6rem;
+}
+
+.rd-skeleton-byline {
+  width: 55%;
+  height: 0.75rem;
+  margin: 0.9rem 0 1.8rem;
+}
+
+.rd-skeleton-prose {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rd-skeleton-prose .rd-skeleton-bar {
+  height: 0.85rem;
+}
+
+/* --- empty & error states --- */
+
+.rd-list-empty,
+.rd-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.rd-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.75rem;
+  height: 3.75rem;
+  margin-bottom: 0.35rem;
+  border-radius: 50%;
+  background: var(--fd-soft);
+  color: var(--fd-accent);
+  font-size: 1.7rem;
+}
+
+.rd-empty-icon i {
+  display: block;
+  margin: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+.rd-empty-title {
+  color: var(--fd-ink-2);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.rd-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* --- back to top ---
+ *
+ * A long article earns a way back. The button waits in the reading pane's corner until the reader
+ * has scrolled well past the head, then fades up; it hides while a media player owns the bottom. */
+.rd-totop {
+  position: absolute;
+  right: 1.4rem;
+  bottom: 1.6rem;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  padding: 0;
+  border: 1px solid var(--fd-line);
+  border-radius: 50%;
+  background: var(--fd-surface);
+  color: var(--fd-ink-2);
+  font-size: 1.2rem;
+  cursor: pointer;
+  box-shadow: var(--rd-shadow-2);
+  opacity: 0;
+  transform: translateY(0.6rem);
+  pointer-events: none;
+  transition:
+    opacity var(--rd-ease-out),
+    transform var(--rd-ease-out),
+    background var(--rd-ease),
+    color var(--rd-ease);
+}
+
+.rd-totop.is-visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.rd-totop:hover {
+  background: var(--fd-soft);
+  color: var(--fd-accent);
+}
+
+/* --- feed settings in the sidebar ---
+ *
+ * Feed settings were reachable only by right-click, which is a hidden door. A quiet button beside
+ * each feed row opens the same dialog; it fades in on hover and focus, and stays put on touch. */
+.rd-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.rd-feed-row .rd-tree-link {
+  flex: 1 1 auto;
+}
+
+.rd-feed-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fd-muted);
+  font-size: 1rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+  opacity: 0;
+  transition:
+    opacity var(--rd-ease),
+    background var(--rd-ease),
+    color var(--rd-ease);
+}
+
+.rd-feed-row:hover .rd-feed-settings,
+.rd-feed-settings:focus-visible {
+  opacity: 1;
+}
+
+.rd-feed-settings:hover {
+  background: var(--fd-hover);
+  color: var(--fd-ink);
+}
+
+@media (hover: none) {
+  .rd-feed-settings {
+    opacity: 0.7;
+  }
+}
+
+/* --- article entrance --- */
+
+.rd-article {
+  animation: rd-article-in var(--rd-ease-out);
+}
+
+/* --- motion keyframes --- */
+
+@keyframes rd-star-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.35) rotate(-8deg);
+  }
+  100% {
+    transform: scale(1) rotate(0);
+  }
+}
+
+@keyframes rd-article-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.6rem);
+  }
+}
+
+@keyframes rd-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
 }
 
 /* ==========================================================================
@@ -2453,6 +2940,20 @@ kbd {
 
   .rd-back {
     display: inline-flex;
+  }
+
+  /* The reading toolbar carries a dozen icon actions; on a phone they cannot share one row without
+     the last few sliding off-screen where no thumb can reach them. Let the bar wrap and drop the
+     spacer that only exists to push the two groups apart on a wide screen, so every action stays
+     visible and tappable. */
+  .rd-read-bar {
+    flex-wrap: wrap;
+    gap: 0.15rem;
+    padding: 0.35rem 0.5rem;
+  }
+
+  .rd-read-bar-spacer {
+    display: none;
   }
 
   .rd-article {

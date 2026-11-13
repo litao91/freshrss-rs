@@ -304,6 +304,12 @@
 
   const title = $derived(scopeTitle(view.scope));
 
+  /** Whether any feed is subscribed, so an empty list can offer to add one rather than just report. */
+  const hasFeeds = $derived(
+    (tree.data?.categories.some((c) => c.feeds.length > 0) ?? false) ||
+      (tree.data?.orphans.length ?? 0) > 0,
+  );
+
 </script>
 
 <svelte:head>
@@ -344,11 +350,13 @@
       bind:this={entryList}
       selectedId={view.selectedEntryId}
       anchorId={anchorId}
+      hasFeeds={hasFeeds}
       onOpen={(id) => {
         highlighted = id;
         selectEntry(id);
       }}
       onMarkAll={() => (markAllDialogOpen = true)}
+      onAddSubscription={() => (addDialogOpen = true)}
     />
 
     {#if view.selectedEntryId}

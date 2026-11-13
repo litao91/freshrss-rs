@@ -20,10 +20,11 @@
     setRead,
     setStarred,
   } from '../lib/entries.svelte';
-  import { formatFullTime } from '../lib/format';
+  import { formatFullTime, readingMinutes } from '../lib/format';
+  import { t, tf } from '../lib/i18n';
   import { notifyError } from '../lib/toast.svelte';
   import { prefs, toggleFocus } from '../lib/prefs.svelte';
-  import { resetScroll } from '../lib/scroll';
+  import { resetScroll, scrollToTop } from '../lib/scroll';
 
   let {
     entryId,
@@ -44,6 +45,8 @@
   let fetchingFull = $state(false);
   let refetchingFull = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
+  /** Whether the reader has scrolled far enough down that a way back to the top is worth offering. */
+  let showTop = $state(false);
   let controller: AbortController | null = null;
 
   /**
@@ -143,6 +146,7 @@
   });
   const starred = $derived(row?.is_favorite ?? detail?.entry.is_favorite ?? false);
   const read = $derived(row?.is_read ?? detail?.entry.is_read ?? false);
+  const readMins = $derived(detail ? readingMinutes(detail.entry.content_text) : 0);
 
   $effect(() => {
     void entryId;
@@ -172,6 +176,7 @@
       // The new article starts at the top, and instantly: gliding up through the tail of the
       // previous one would be motion with nothing to say.
       if (scrollEl) resetScroll(scrollEl);
+      showTop = false;
     } catch (err) {
       if (mine.aborted) return;
       error = err instanceof Error ? err.message : 'Could not load the article';
@@ -231,6 +236,12 @@
     } finally {
       refetchingFull = false;
     }
+  }
+
+  /** Reveals the back-to-top button once the reader is well past the article head. */
+  function onReadScroll(event: Event): void {
+    const el = event.currentTarget as HTMLElement;
+    showTop = el.scrollTop > 600;
   }
 
   function toggleStar(): void {
@@ -477,20 +488,31 @@
     </button>
   </div>
 
-  <div id="rd-read-scroll" class="rd-read-scroll" bind:this={scrollEl}>
+  <div id="rd-read-scroll" class="rd-read-scroll" bind:this={scrollEl} onscroll={onReadScroll}>
     <div class="rd-read-progress" aria-hidden="true"></div>
     {#if error}
       <div class="rd-list-empty">
-        <i class="ri-error-warning-line" aria-hidden="true"></i>
+        <span class="rd-empty-icon"><i class="ri-error-warning-line" aria-hidden="true"></i></span>
         <p>{error}</p>
-        <button class="rd-btn" type="button" onclick={() => void load()}>Try again</button>
+        <div class="rd-empty-actions">
+          <button class="rd-btn" type="button" onclick={() => void load()}>{t('common.tryAgain')}</button>
+        </div>
       </div>
     {:else if loading && !detail}
-      <div class="rd-list-empty">
-        <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
-        <p>Loading…</p>
+      <div class="rd-skeleton-article" aria-busy="true">
+        <span class="rd-sr">{t('common.loading')}</span>
+        <span class="rd-skeleton-bar rd-skeleton-kicker" aria-hidden="true"></span>
+        <span class="rd-skeleton-bar rd-skeleton-h1" aria-hidden="true"></span>
+        <span class="rd-skeleton-bar rd-skeleton-h1" style:width="72%" aria-hidden="true"></span>
+        <span class="rd-skeleton-bar rd-skeleton-byline" aria-hidden="true"></span>
+        <div class="rd-skeleton-prose" aria-hidden="true">
+          {#each Array(9) as _, i (i)}
+            <span class="rd-skeleton-bar" style:width="{i % 3 === 2 ? 60 : i % 3 === 1 ? 92 : 100}%"></span>
+          {/each}
+        </div>
       </div>
     {:else if detail}
+      {#key entryId}
       <article class="rd-article">
         <header class="rd-article-head">
           <a
@@ -499,6 +521,7 @@
             target="_blank"
             rel="noopener noreferrer"
           >
+            <i class="ri-rss-line" aria-hidden="true"></i>
             {detail.feed.name}
           </a>
           <h1 class="rd-article-title">
@@ -515,8 +538,14 @@
             <time datetime={new Date(detail.entry.date * 1000).toISOString()}>
               {formatFullTime(detail.entry.date)}
             </time>
+            {#if readMins > 0}
+              <span class="rd-article-readtime">
+                <i class="ri-time-line" aria-hidden="true"></i>
+                {tf('read.minRead', { n: readMins })}
+              </span>
+            {/if}
             {#if detail.entry.is_updated}
-              <span class="rd-updated" title="The feed changed this article after we first saw it">updated</span>
+              <span class="rd-updated" title={t('read.updatedTitle')}>{t('read.updated')}</span>
             {/if}
           </p>
         </header>
@@ -559,6 +588,18 @@
           {/if}
         </section>
       {/if}
+      {/key}
     {/if}
   </div>
+
+  <button
+    class="rd-totop"
+    class:is-visible={showTop && !media}
+    type="button"
+    title={t('read.backToTop')}
+    onclick={() => scrollEl && scrollToTop(scrollEl)}
+  >
+    <i class="ri-arrow-up-line" aria-hidden="true"></i>
+    <span class="rd-sr">{t('read.backToTop')}</span>
+  </button>
 </section>

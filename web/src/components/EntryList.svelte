@@ -39,15 +39,21 @@
   let {
     selectedId,
     anchorId,
+    hasFeeds,
     onOpen,
     onMarkAll,
+    onAddSubscription,
   }: {
     selectedId: string | null;
     /** The row the "mark above/below" actions work from; null while the keyboard is nowhere. */
     anchorId: string | null;
+    /** Whether the reader follows any feed at all, so an empty corpus can offer to add one. */
+    hasFeeds: boolean;
     onOpen: (id: string) => void;
     /** Asks App to open `#rd-markall-dialog`: marking everything read needs a confirmation. */
     onMarkAll: () => void;
+    /** Opens `#rd-add-dialog`, offered when there is nothing subscribed yet. */
+    onAddSubscription: () => void;
   } = $props();
 
   let scrollEl: HTMLDivElement | undefined = $state();
@@ -325,23 +331,45 @@
   >
     {#if entries.error}
       <div class="rd-list-empty">
-        <i class="ri-error-warning-line" aria-hidden="true"></i>
+        <span class="rd-empty-icon"><i class="ri-error-warning-line" aria-hidden="true"></i></span>
         <p>{entries.error}</p>
-        <button class="rd-btn" type="button" onclick={() => void reload()}>{t('common.tryAgain')}</button>
+        <div class="rd-empty-actions">
+          <button class="rd-btn" type="button" onclick={() => void reload()}>{t('common.tryAgain')}</button>
+        </div>
       </div>
     {:else if entries.loading && entries.items.length === 0}
-      <div class="rd-list-empty">
-        <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
-        <p>{t('common.loading')}</p>
+      <div class="rd-skeleton-list" aria-busy="true">
+        <span class="rd-sr">{t('common.loading')}</span>
+        {#each Array(9) as _, i (i)}
+          <div class="rd-skeleton-row" aria-hidden="true">
+            <span class="rd-skeleton-bar rd-skeleton-meta"></span>
+            <span class="rd-skeleton-bar rd-skeleton-title"></span>
+            <span class="rd-skeleton-bar rd-skeleton-summary"></span>
+          </div>
+        {/each}
       </div>
     {:else if isEmpty()}
       <div class="rd-list-empty">
-        <i class="ri-inbox-line" aria-hidden="true"></i>
-        {#if view.readFilter === 'unread'}
-          <p>{t('list.nothingUnread')}</p>
+        {#if !hasFeeds}
+          <span class="rd-empty-icon"><i class="ri-rss-line" aria-hidden="true"></i></span>
+          <p class="rd-empty-title">{t('list.noFeedsYet')}</p>
+          <p class="rd-hint">{t('list.noFeedsYetHint')}</p>
+          <div class="rd-empty-actions">
+            <button class="rd-btn rd-btn--primary" type="button" onclick={onAddSubscription}>
+              <i class="ri-add-line" aria-hidden="true"></i>
+              {t('nav.addSubscription')}
+            </button>
+          </div>
+        {:else if view.readFilter === 'unread'}
+          <span class="rd-empty-icon"><i class="ri-check-double-line" aria-hidden="true"></i></span>
+          <p class="rd-empty-title">{t('list.nothingUnread')}</p>
           <p class="rd-hint">{t('list.nothingUnreadHint')}</p>
+          <div class="rd-empty-actions">
+            <button class="rd-btn" type="button" onclick={toggleReadFilter}>{t('list.showAll')}</button>
+          </div>
         {:else}
-          <p>{t('list.noMatches')}</p>
+          <span class="rd-empty-icon"><i class="ri-inbox-line" aria-hidden="true"></i></span>
+          <p class="rd-empty-title">{t('list.noMatches')}</p>
         {/if}
       </div>
     {:else}

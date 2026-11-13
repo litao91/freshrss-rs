@@ -34,6 +34,7 @@
   let { search = $bindable(''), onSearch, onRefresh, onShowShortcuts, refreshing }: Props = $props();
 
   let searchEl: HTMLInputElement | undefined = $state();
+  let searchFocused = $state(false);
   let displayOpen = $state(false);
   let accountOpen = $state(false);
   let apiDialogOpen = $state(false);
@@ -87,6 +88,13 @@
     event.preventDefault();
     onSearch(search.trim());
     closeMenus();
+  }
+
+  /** The clear button empties the box and returns to the main stream, then keeps focus in the field. */
+  function clearSearch(): void {
+    search = '';
+    onSearch('');
+    searchEl?.focus();
   }
 
   async function handleSignOut(): Promise<void> {
@@ -146,7 +154,17 @@
       spellcheck="false"
       bind:this={searchEl}
       bind:value={search}
+      onfocus={() => (searchFocused = true)}
+      onblur={() => (searchFocused = false)}
     />
+    {#if search}
+      <button class="rd-search-clear" type="button" title={t('topbar.clearSearch')} onclick={clearSearch}>
+        <i class="ri-close-line" aria-hidden="true"></i>
+        <span class="rd-sr">{t('topbar.clearSearch')}</span>
+      </button>
+    {:else if !searchFocused}
+      <kbd class="rd-search-hint" aria-hidden="true">/</kbd>
+    {/if}
   </form>
 
   <div class="rd-top-actions">

@@ -37,3 +37,8 @@ export function revealWindow(el: HTMLElement, top: number, size: number): void {
 export function resetScroll(el: HTMLElement): void {
   el.scrollTo({ top: 0, behavior: 'auto' });
 }
+
+/** Glides a container back to the top, honouring the OS motion preference — the back-to-top button. */
+export function scrollToTop(el: HTMLElement): void {
+  el.scrollTo({ top: 0, behavior: behavior() });
+}

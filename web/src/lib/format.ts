@@ -78,6 +78,18 @@ export function isoTime(seconds: number): string {
   return toDate(seconds).toISOString();
 }
 
+/**
+ * A reading-time estimate in whole minutes, at ~200 words per minute.
+ *
+ * Fed the article's plain text (`content_text`), not its HTML, so tags and attributes are not
+ * counted as words. Always at least one minute: a two-line post still takes a moment, and "0 min
+ * read" reads as a bug.
+ */
+export function readingMinutes(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(words / 200));
+}
+
 const RELATIVE_FMT = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
 /**
