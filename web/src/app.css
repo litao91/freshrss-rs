@@ -2876,6 +2876,220 @@ kbd {
 }
 
 /* ==========================================================================
+   12c. Loading indicators & motion
+   ========================================================================== */
+
+/* --- indeterminate progress bar ---
+ *
+ * One shared sweep for every "working, no total known" moment: the refresh job, a list reload, an
+ * article switch. A moving accent segment reads as progress without pretending to know a percent. */
+.rd-bar {
+  position: relative;
+  overflow: hidden;
+  height: 2px;
+  background: color-mix(in srgb, var(--fd-accent) 16%, transparent);
+}
+
+.rd-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--fd-accent);
+  transform-origin: 0 50%;
+  animation: rd-indeterminate 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes rd-indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.4);
+  }
+  50% {
+    transform: translateX(20%) scaleX(0.5);
+  }
+  100% {
+    transform: translateX(100%) scaleX(0.4);
+  }
+}
+
+/* --- refresh job: bar under the top bar + a live status chip --- */
+
+.rd-top {
+  position: relative;
+}
+
+.rd-refresh-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.rd-refresh-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--rd-radius-pill);
+  background: var(--fd-soft);
+  color: var(--fd-accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rd-refresh-chip i {
+  font-size: 0.9rem;
+}
+
+/* --- list reload: a bar plus a gentle dim of the stale rows --- */
+
+.rd-list-loading {
+  height: 2px;
+}
+
+.rd-item {
+  transition:
+    background var(--rd-ease),
+    opacity var(--rd-ease);
+}
+
+.rd-list.is-reloading .rd-item {
+  opacity: 0.55;
+}
+
+/* --- article switch: a sticky bar plus a dim of the outgoing article --- */
+
+.rd-read-loading {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: 2px;
+  margin-bottom: -2px;
+}
+
+.rd-article {
+  transition: opacity var(--rd-ease);
+}
+
+.rd-read.is-loading .rd-article {
+  opacity: 0.55;
+}
+
+/* --- scroll-edge shadows ---
+ *
+ * The classic local/scroll background pair: a cover gradient that travels with the content hides
+ * the fixed shadow at the edge you are flush against, so a shadow appears only where there is more
+ * to scroll. Pure CSS, no scroll listener, and it works in every pane that scrolls. */
+.rd-list-body {
+  --rd-scroll-bg: var(--fd-bg);
+}
+.rd-read-scroll {
+  --rd-scroll-bg: var(--fd-surface);
+}
+.rd-nav-inner {
+  --rd-scroll-bg: var(--fd-side);
+}
+
+.rd-list-body,
+.rd-read-scroll,
+.rd-nav-inner {
+  background-image:
+    linear-gradient(var(--rd-scroll-bg) 30%, transparent),
+    linear-gradient(transparent, var(--rd-scroll-bg) 70%),
+    radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.14), transparent),
+    radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.14), transparent);
+  background-position:
+    top,
+    bottom,
+    top,
+    bottom;
+  background-size:
+    100% 28px,
+    100% 28px,
+    100% 10px,
+    100% 10px;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* --- count tick: a badge that just changed gives one small pop --- */
+
+.rd-count > span,
+.rd-segment-count {
+  display: inline-block;
+}
+
+.rd-tick {
+  animation: rd-tick 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes rd-tick {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* --- buttons lift a hair under the pointer, press down on click --- */
+
+.rd-btn {
+  transition:
+    background var(--rd-ease),
+    border-color var(--rd-ease),
+    color var(--rd-ease),
+    transform var(--rd-ease),
+    box-shadow var(--rd-ease);
+}
+
+.rd-btn:hover {
+  transform: translateY(-1px);
+}
+
+/* --- boot splash: the brand breathing over a progress sweep --- */
+
+.rd-boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.rd-boot .brand-mark {
+  width: 2rem;
+  height: 2.3rem;
+  animation: rd-boot-pulse 1.6s ease-in-out infinite;
+}
+
+.rd-boot-bar {
+  width: 8rem;
+}
+
+.rd-boot-label {
+  color: var(--fd-muted);
+  font-size: 0.85rem;
+}
+
+@keyframes rd-boot-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ==========================================================================
    13. Responsive
    ========================================================================== */
 

@@ -87,7 +87,7 @@
         {t('common.cancel')}
       </button>
       <button class="rd-btn rd-btn--primary" type="submit" disabled={busy}>
-        <i class="ri-check-double-line" aria-hidden="true"></i>
+        <i class={busy ? 'ri-loader-4-line rd-spin' : 'ri-check-double-line'} aria-hidden="true"></i>
         {busy ? t('common.saving') : t('markall.confirm')}
       </button>
     </div>

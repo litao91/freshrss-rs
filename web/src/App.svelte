@@ -319,7 +319,19 @@
 {#if session.loading}
   <div class="rd-auth">
     <div class="rd-auth-card">
-      <div class="rd-auth-brand"><span>{t('common.loading')}</span></div>
+      <div class="rd-boot">
+        <svg class="brand-mark" viewBox="8 4 48 55" aria-hidden="true" focusable="false">
+          <path class="brand-mark-ink" d="M10.5 22h10v20h-10z"></path>
+          <path
+            class="brand-mark-accent"
+            d="M12.5 12H28.5C38.5 12 46.5 11 53.5 6C49.5 18 39.5 23 26.5 23H10.5V14A2 2 0 0 1 12.5 12Z"
+          ></path>
+          <path class="brand-mark-ink" d="M10.5 27H24.5C32.5 27 37.5 26 42.5 22C39.5 32 32.5 37 22.5 37H10.5Z"></path>
+          <path class="brand-mark-accent" d="M10.5 40H20.5V46C20.5 52.5 16 56.5 10.5 57Z"></path>
+        </svg>
+        <div class="rd-boot-bar rd-bar" aria-hidden="true"></div>
+        <span class="rd-boot-label">{t('common.loading')}</span>
+      </div>
     </div>
   </div>
 {:else if !isSignedIn()}

@@ -234,6 +234,7 @@ const en: Record<string, string> = {
   'packs.done': '{n} feeds added.',
 
   'topbar.clearSearch': 'Clear search',
+  'topbar.refreshProgress': '{done} feeds · {new} new',
   'list.showAll': 'Show all articles',
   'list.noFeedsYet': 'No subscriptions yet',
   'list.noFeedsYetHint': 'Add a feed or import an OPML file to start reading.',
@@ -486,6 +487,7 @@ const tr: Record<string, string> = {
   'packs.done': '{n} besleme eklendi.',
 
   'topbar.clearSearch': 'Aramayı temizle',
+  'topbar.refreshProgress': '{done} besleme · {new} yeni',
   'list.showAll': 'Tüm makaleleri göster',
   'list.noFeedsYet': 'Henüz abonelik yok',
   'list.noFeedsYetHint': 'Okumaya başlamak için bir besleme ekleyin veya OPML dosyası içe aktarın.',

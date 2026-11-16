@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ButtonGroup, Popover } from 'svelte-widgets';
   import ApiDialog from './dialogs/ApiDialog.svelte';
-  import { LANGUAGES, t } from '../lib/i18n';
+  import { LANGUAGES, t, tf } from '../lib/i18n';
   import {
     MAX_SIZE,
     MIN_SIZE,
@@ -20,6 +20,7 @@
     type ThemePref,
   } from '../lib/prefs.svelte';
   import { session, signOut } from '../lib/session.svelte';
+  import { refreshJob } from '../lib/refresh.svelte';
 
   interface Props {
     /** Current contents of `#rd-search`, bound so `/` can focus and fill it. */
@@ -168,6 +169,12 @@
   </form>
 
   <div class="rd-top-actions">
+    {#if refreshJob.running}
+      <span class="rd-refresh-chip" role="status" aria-live="polite">
+        <i class="ri-loader-4-line rd-spin" aria-hidden="true"></i>
+        {tf('topbar.refreshProgress', { done: refreshJob.feedsDone, new: refreshJob.newEntries })}
+      </span>
+    {/if}
     <button
       class="rd-icon-btn"
       type="button"
@@ -357,4 +364,8 @@
 
     <ApiDialog open={apiDialogOpen} onclose={() => (apiDialogOpen = false)} />
   </div>
+
+  {#if refreshJob.running}
+    <div class="rd-refresh-bar rd-bar" aria-hidden="true"></div>
+  {/if}
 </header>

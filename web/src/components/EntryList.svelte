@@ -213,11 +213,13 @@
   }
 </script>
 
-<section id="icerik" class="rd-list">
+<section id="icerik" class="rd-list" class:is-reloading={entries.loading && entries.items.length > 0}>
   {#snippet showOption({ option }: { option: { value: ReadFilter } })}
     {#if option.value === 'unread'}
       {t('list.unread')}
-      <span class="rd-segment-count">{unreadLabel}</span>
+      {#key unreadLabel}
+        <span class="rd-segment-count rd-tick">{unreadLabel}</span>
+      {/key}
     {:else}
       {t('list.all')}
     {/if}
@@ -316,6 +318,10 @@
       </ActionMenu>
     </div>
   </div>
+
+  {#if entries.loading && entries.items.length > 0}
+    <div class="rd-list-loading rd-bar" aria-hidden="true"></div>
+  {/if}
 
   <!-- The region a right-click applies to. `ActionMenu` wraps this in a `display: contents` div
        of its own, so the list's layout is untouched, and it owns the popover, the deferral that

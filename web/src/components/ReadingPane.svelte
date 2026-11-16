@@ -411,7 +411,7 @@
   const mediaIsAudio = $derived((media?.type ?? '').toLowerCase().startsWith('audio/'));
 </script>
 
-<section class="rd-read" aria-label={detail?.entry.title ?? 'Article'}>
+<section class="rd-read" class:is-loading={loading} aria-label={detail?.entry.title ?? 'Article'}>
   <div class="rd-read-bar">
     <button class="rd-icon-btn rd-back" type="button" title="Back to list" onclick={onBack}>
       <i class="ri-arrow-left-line" aria-hidden="true"></i>
@@ -541,6 +541,9 @@
   </div>
 
   <div id="rd-read-scroll" class="rd-read-scroll" bind:this={scrollEl} onscroll={onReadScroll}>
+    {#if loading && detail}
+      <div class="rd-read-loading rd-bar" aria-hidden="true"></div>
+    {/if}
     <div class="rd-read-progress" aria-hidden="true"></div>
     {#if error}
       <div class="rd-list-empty">

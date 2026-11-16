@@ -123,7 +123,7 @@
           <span class="rd-tree-label">{t('nav.allArticles')}</span>
           {#if counts && counts.main_stream.unread > 0}
             <span class="rd-count">
-              <span>{formatCount(counts.main_stream.unread)}</span>
+              {#key formatCount(counts.main_stream.unread)}<span class="rd-tick">{formatCount(counts.main_stream.unread)}</span>{/key}
               <span class="rd-sr">{tf('nav.unreadCount', { n: counts.main_stream.unread })}</span>
             </span>
           {/if}
@@ -140,7 +140,7 @@
           <span class="rd-tree-label">{t('nav.starred')}</span>
           {#if counts && counts.starred.total > 0}
             <span class="rd-count">
-              <span>{formatCount(counts.starred.total)}</span>
+              {#key formatCount(counts.starred.total)}<span class="rd-tick">{formatCount(counts.starred.total)}</span>{/key}
               <span class="rd-sr">{tf('nav.starredCount', { n: counts.starred.total })}</span>
             </span>
           {/if}
@@ -211,7 +211,7 @@
               <span class="rd-tree-label">{folder.name}</span>
               {#if folder.unread > 0}
                 <span class="rd-count">
-                  <span>{formatCount(folder.unread)}</span>
+                  {#key formatCount(folder.unread)}<span class="rd-tick">{formatCount(folder.unread)}</span>{/key}
                   <span class="rd-sr">{tf('nav.unreadCount', { n: folder.unread })}</span>
                 </span>
               {/if}
@@ -260,7 +260,7 @@
                       <span class="rd-tree-label">{feed.name}</span>
                       {#if feed.unread > 0}
                         <span class="rd-count">
-                          <span>{formatCount(feed.unread)}</span>
+                          {#key formatCount(feed.unread)}<span class="rd-tick">{formatCount(feed.unread)}</span>{/key}
                           <span class="rd-sr">{tf('nav.unreadCount', { n: feed.unread })}</span>
                         </span>
                       {/if}
@@ -349,7 +349,7 @@
               <span class="rd-tree-label">{label.name}</span>
               {#if label.unread > 0}
                 <span class="rd-count">
-                  <span>{formatCount(label.unread)}</span>
+                  {#key formatCount(label.unread)}<span class="rd-tick">{formatCount(label.unread)}</span>{/key}
                   <span class="rd-sr">{tf('nav.unreadCount', { n: label.unread })}</span>
                 </span>
               {/if}
