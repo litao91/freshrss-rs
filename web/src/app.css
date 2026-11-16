@@ -2024,6 +2024,30 @@ html[data-rd-focus='acik'] .rd-focus-btn .ri-fullscreen-exit-line {
   display: block;
 }
 
+/* A dead or refused image becomes a quiet labelled box, not a broken-image glyph: the column keeps
+   its rhythm and the reader learns the picture is unavailable rather than that the page is broken. */
+.rd-prose .rd-img-broken {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 5rem;
+  max-width: 100%;
+  margin-inline: auto;
+  padding: 1rem;
+  border: 1px dashed var(--fd-line);
+  border-radius: var(--rd-radius-sm);
+  background: var(--fd-side);
+  color: var(--fd-muted);
+  font-family: var(--rd-ui-font);
+  font-size: 0.8rem;
+}
+
+.rd-prose .rd-img-broken i {
+  font-size: 1.2rem;
+  color: var(--fd-field);
+}
+
 .rd-prose figure {
   margin-inline: 0;
 }

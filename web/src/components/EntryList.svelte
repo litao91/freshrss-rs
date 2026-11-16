@@ -409,6 +409,9 @@
                       src={mediaUrl(entry.thumbnail, entry.link)}
                       alt=""
                       loading="lazy"
+                      onerror={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = 'none';
+                      }}
                     />
                   {:else if entry.has_media}
                     <i class="ri-play-circle-line rd-item-media" aria-hidden="true"></i>

@@ -84,26 +84,40 @@
         node.dataset.src ?? node.dataset.original ?? node.dataset.lazySrc ?? node.dataset.actualsrc;
       if (lazy) node.setAttribute('src', lazy);
       if (node.dataset.srcset) node.setAttribute('srcset', node.dataset.srcset);
-      // Image hosts police Referer in both directions and a browser cannot satisfy either policy
-      // from inside the reader, so remote images are fetched by the server, which replays the
-      // article's own address. See `mediaUrl`.
+      // Remember the publisher's address before proxying: if the proxy is refused, the pane retries
+      // the original directly (no referrer) rather than leaving a broken image in the column.
+      const src = node.getAttribute('src');
+      if (src) {
+        if (/^https?:/i.test(src)) node.setAttribute('data-frss-original', src);
+        node.setAttribute('src', mediaUrl(src, mediaVia));
+      }
+      const srcset = node.getAttribute('srcset');
+      if (srcset) node.setAttribute('srcset', proxySrcset(srcset));
+    }
+    // `<picture>` sources carry images and need the same proxying; a media `<source>` (video/audio)
+    // must NOT go through it, because the endpoint only serves images.
+    if (node instanceof HTMLSourceElement && node.parentElement instanceof HTMLPictureElement) {
       const src = node.getAttribute('src');
       if (src) node.setAttribute('src', mediaUrl(src, mediaVia));
       const srcset = node.getAttribute('srcset');
-      if (srcset) {
-        node.setAttribute(
-          'srcset',
-          srcset
-            .split(',')
-            .map((part) => {
-              const [url, ...rest] = part.trim().split(/\s+/);
-              return [mediaUrl(url, mediaVia), ...rest].join(' ');
-            })
-            .join(', '),
-        );
-      }
+      if (srcset) node.setAttribute('srcset', proxySrcset(srcset));
+    }
+    if (node instanceof HTMLVideoElement) {
+      const poster = node.getAttribute('poster');
+      if (poster) node.setAttribute('poster', mediaUrl(poster, mediaVia));
     }
   });
+
+  /** Routes every candidate of a `srcset` through the media proxy, keeping its descriptors. */
+  function proxySrcset(value: string): string {
+    return value
+      .split(',')
+      .map((part) => {
+        const [url, ...rest] = part.trim().split(/\s+/);
+        return [mediaUrl(url, mediaVia), ...rest].join(' ');
+      })
+      .join(', ');
+  }
 
   /** The article the body being sanitized belongs to; the hook above routes its images through it. */
   let mediaVia = '';
@@ -242,6 +256,44 @@
   function onReadScroll(event: Event): void {
     const el = event.currentTarget as HTMLElement;
     showTop = el.scrollTop > 600;
+  }
+
+  /**
+   * A refused or dead image must not leave a broken-image glyph in the article.
+   *
+   * First failure: retry the publisher's address directly with no referrer. The browser is a real
+   * browser, so the UA- and referer-based hotlink blocks that refused the server proxy often allow
+   * it. Second failure: swap in a quiet placeholder so the column reads as "image unavailable"
+   * rather than broken. Error events do not bubble, hence the capture-phase listener on the prose.
+   */
+  function onImageError(event: Event): void {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const original = img.dataset.frssOriginal;
+    if (img.dataset.frssFallback !== '1' && original && /^https?:/i.test(original)) {
+      img.dataset.frssFallback = '1';
+      img.removeAttribute('srcset');
+      img.referrerPolicy = 'no-referrer';
+      img.src = original;
+      return;
+    }
+    const label = img.alt || t('read.imageUnavailable');
+    const box = document.createElement('span');
+    box.className = 'rd-img-broken';
+    box.setAttribute('role', 'img');
+    box.setAttribute('aria-label', label);
+    box.title = label;
+    const icon = document.createElement('i');
+    icon.className = 'ri-image-off-line';
+    icon.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.textContent = label;
+    box.append(icon, text);
+    const width = img.getAttribute('width');
+    const height = img.getAttribute('height');
+    if (width) box.style.width = `${width}px`;
+    if (height) box.style.height = `${height}px`;
+    img.replaceWith(box);
   }
 
   function toggleStar(): void {
@@ -551,7 +603,7 @@
         </header>
 
         <!-- The one `{@html}` in the application. Sanitized above, and sanitized on ingest. -->
-        <div class="rd-prose">
+        <div class="rd-prose" onerrorcapture={onImageError}>
           {@html body}
         </div>
 

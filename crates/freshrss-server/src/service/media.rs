@@ -104,6 +104,43 @@ fn prune(root: &Path, max_bytes: u64) {
     }
 }
 
+/// Recognises a raster image by its leading bytes, for hosts that mislabel or omit Content-Type.
+///
+/// Deliberately a closed set of signatures: the media endpoint must stay an *image* proxy, so a
+/// body that is not recognisably one of these formats is refused rather than served under a
+/// guessed type. SVG is absent on purpose — it is an image format that runs script.
+pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return match &bytes[8..12] {
+            b"avif" | b"avis" => Some("image/avif"),
+            b"heic" | b"heix" | b"mif1" => Some("image/heif"),
+            _ => None,
+        };
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some("image/x-icon");
+    }
+    if bytes.starts_with(&[0x49, 0x49, 0x2a, 0x00]) || bytes.starts_with(&[0x4d, 0x4d, 0x00, 0x2a]) {
+        return Some("image/tiff");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +204,37 @@ mod tests {
             .collect();
         assert!(left.len() <= 2, "pruned to the ceiling: {left:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sniff_recognises_the_common_raster_signatures() {
+        assert_eq!(
+            sniff_image_mime(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0]),
+            Some("image/png")
+        );
+        assert_eq!(sniff_image_mime(&[0xff, 0xd8, 0xff, 0xe0]), Some("image/jpeg"));
+        assert_eq!(sniff_image_mime(b"GIF89a..."), Some("image/gif"));
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBP");
+        assert_eq!(sniff_image_mime(&webp), Some("image/webp"));
+        let mut avif = vec![0, 0, 0, 0];
+        avif.extend_from_slice(b"ftyp");
+        avif.extend_from_slice(b"avif");
+        assert_eq!(sniff_image_mime(&avif), Some("image/avif"));
+        assert_eq!(sniff_image_mime(b"BMxxxx"), Some("image/bmp"));
+    }
+
+    #[test]
+    fn sniff_refuses_non_images_and_scriptable_formats() {
+        assert_eq!(sniff_image_mime(b"<html>not an image</html>"), None);
+        assert_eq!(sniff_image_mime(b"%PDF-1.4"), None);
+        assert_eq!(sniff_image_mime(b"<svg xmlns='http://www.w3.org/2000/svg'>"), None);
+        assert_eq!(sniff_image_mime(&[]), None);
+        // An `ftyp` box that is not an image brand (an mp4, say) is not an image.
+        let mut mp4 = vec![0, 0, 0, 0];
+        mp4.extend_from_slice(b"ftyp");
+        mp4.extend_from_slice(b"isom");
+        assert_eq!(sniff_image_mime(&mp4), None);
     }
 }

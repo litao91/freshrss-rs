@@ -242,6 +242,7 @@ const en: Record<string, string> = {
   'read.backToTop': 'Back to top',
   'read.updated': 'updated',
   'read.updatedTitle': 'The feed changed this article after we first saw it',
+  'read.imageUnavailable': 'Image unavailable',
 };
 
 const tr: Record<string, string> = {
@@ -493,6 +494,7 @@ const tr: Record<string, string> = {
   'read.backToTop': 'Başa dön',
   'read.updated': 'güncellendi',
   'read.updatedTitle': 'Besleme bu makaleyi ilk gördüğümüzden sonra değiştirdi',
+  'read.imageUnavailable': 'Görsel kullanılamıyor',
 };
 
 const DICTS: Record<Language, Record<string, string>> = { en, tr };

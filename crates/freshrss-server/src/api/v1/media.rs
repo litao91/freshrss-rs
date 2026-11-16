@@ -28,6 +28,11 @@ use freshrss_feed::http::{FetchOutcome, FetchRequest, FetchedBody};
 /// into a mirror that hammers the hosts it mirrors.
 const CACHE_CONTROL: &str = "public, max-age=604800";
 
+/// Image CDNs and WAFs routinely refuse non-browser agents, and the feed bot UA is exactly what
+/// they block. For images the reader is acting as the reader's browser, so present as one.
+const BROWSER_UA: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 #[derive(Debug, Deserialize)]
 pub struct MediaQuery {
     pub url: String,
@@ -81,28 +86,37 @@ pub async fn proxy(
 
     let settings = Settings::from_config(&state.config);
     let mut request = FetchRequest::new(url.clone());
-    request.user_agent = settings.user_agent;
+    request.user_agent = BROWSER_UA.to_owned();
     request.timeout = settings.timeout;
     request.max_bytes = settings.max_bytes;
     request.accept = "image/*,*/*;q=0.8".to_owned();
-    request.referer = query.via.as_deref().and_then(article_origin);
 
-    let body = fetch_with_retry(&state, &request).await.map_err(ApiError)?;
+    let body = fetch_with_fallbacks(&state, &mut request, query.via.as_deref(), &url)
+        .await
+        .map_err(ApiError)?;
 
-    let mime = body
+    let declared = body
         .content_type
         .as_deref()
         .map(|c| c.split(';').next().unwrap_or(c).trim())
         .unwrap_or("")
         .to_owned();
-    // Without this check the endpoint would proxy anything anyone points it at, which is the
-    // open proxy this handler exists to not be.
-    if !mime.starts_with("image/") {
-        return Err(ApiError(Error::Http {
-            status: 502,
-            message: format!("the address is not an image (it answered {mime:?})"),
-        }));
-    }
+    // Hosts mislabel images as octet-stream or omit the type entirely; trust the bytes over the
+    // header, but only for signatures recognised as raster images, so this stays an image proxy
+    // rather than the open proxy the handler exists to not be.
+    let mime = if declared.starts_with("image/") {
+        declared
+    } else {
+        match crate::service::media::sniff_image_mime(&body.body) {
+            Some(sniffed) => sniffed.to_owned(),
+            None => {
+                return Err(ApiError(Error::Http {
+                    status: 502,
+                    message: format!("the address is not an image (it answered {declared:?})"),
+                }));
+            }
+        }
+    };
 
     crate::service::media::put(&cache_root, &url, &body.body, &mime, max_bytes);
     Ok(serve(mime, body.body))
@@ -120,19 +134,35 @@ fn serve(mime: String, body: Vec<u8>) -> Response {
         .into_response()
 }
 
-/// Fetches once, and once more when the first attempt fails.
+/// Fetches the image, varying the `Referer` across attempts rather than repeating one refusal.
 ///
 /// Image hosts blip — a timeout, a 502 of their own, a rate limiter having a moment — and on a
 /// cache miss there is no older copy to fall back on, so the reader's image is whatever this
-/// returns. One extra request buys a lot of blank-image avoidance; a host that is really gone
-/// costs one redundant refusal.
-async fn fetch_with_retry(state: &AppState, request: &FetchRequest) -> Result<FetchedBody, Error> {
+/// returns. But the more common blank is a *policy* refusal, not a blip: hotlink protection that
+/// rejects a foreign `Referer` (the article's origin is foreign to the image CDN) while accepting
+/// none, or one that wants the image's own host. Repeating the identical request teaches it
+/// nothing; walking the referer candidates does. The article origin goes first because it is what
+/// same-site checks want and it keeps the reader's address out of third-party logs.
+async fn fetch_with_fallbacks(
+    state: &AppState,
+    request: &mut FetchRequest,
+    via: Option<&str>,
+    url: &str,
+) -> Result<FetchedBody, Error> {
+    let mut candidates: Vec<Option<String>> = Vec::new();
+    for candidate in [via.and_then(article_origin), None, article_origin(url)] {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
     let mut last = None;
-    for _ in 0..2 {
+    for referer in candidates {
+        request.referer = referer;
         match state.fetcher.fetch(request).await {
             Ok(FetchOutcome::Found(body)) => return Ok(body),
-            // A conditional request is never made here, so a 304 means the host misbehaved, and a
-            // second attempt is not going to teach it better manners.
+            // A conditional request is never made here, so a 304 means the host misbehaved, and
+            // another referer is not going to teach it better manners.
             Ok(FetchOutcome::NotModified) => {
                 return Err(Error::Http {
                     status: 502,
@@ -146,7 +176,7 @@ async fn fetch_with_retry(state: &AppState, request: &FetchRequest) -> Result<Fe
         status: 502,
         message: format!(
             "the image host refused: {}",
-            last.expect("two attempts, both of them failures")
+            last.expect("at least one referer candidate, all of them failures")
         ),
     })
 }
