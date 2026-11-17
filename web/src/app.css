@@ -898,6 +898,8 @@ select.rd-input {
   align-items: center;
   gap: 0.15rem;
   margin-left: auto;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--fd-line);
 }
 
 /* Icon-only controls that make no sense on touch (keyboard help). */
@@ -3188,6 +3190,39 @@ dialog::backdrop {
   width: 1.6rem;
   height: 1.6rem;
   border-width: 3px;
+}
+
+/* --- row identity & toolbar grouping --- */
+
+/* A feed-identity tile leads each row so the source is scannable at a glance. It is shorter than
+   the three fixed text lines, so the windowed row height arithmetic is untouched. */
+.rd-item-avatar {
+  flex: 0 0 auto;
+  width: 2.2rem;
+  height: 2.2rem;
+  margin: 0.15rem 0.55rem 0 0;
+  border-radius: var(--rd-radius-sm);
+  object-fit: cover;
+  background: var(--fd-side);
+}
+
+.rd-item-avatar--letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* Hairline dividers group the reading toolbar into navigation / actions / share clusters. */
+.rd-bar-div {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  margin: 0.4rem 0.2rem;
+  background: var(--fd-line);
 }
 
 /* --- search: recent queries + syntax help --- */

@@ -466,6 +466,7 @@
       <span class="rd-sr">Next</span>
     </button>
 
+    <span class="rd-bar-div" aria-hidden="true"></span>
     <span class="rd-read-bar-spacer"></span>
 
     <button
@@ -514,6 +515,7 @@
         <span class="rd-sr">Mark all below as read</span>
       {/snippet}
     </ActionButton>
+    <span class="rd-bar-div" aria-hidden="true"></span>
     <button class="rd-icon-btn" type="button" title="Add a label" onclick={() => void addLabel()}>
       <i class="ri-price-tag-3-line" aria-hidden="true"></i>
       <span class="rd-sr">Add a label</span>
@@ -551,6 +553,7 @@
         </button>
       {/if}
     {/if}
+    <span class="rd-bar-div" aria-hidden="true"></span>
     <CopyButton
       class="rd-icon-btn rd-share-btn"
       title="Share"
