@@ -45,6 +45,7 @@
   let fetchingFull = $state(false);
   let refetchingFull = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
+  let proseEl: HTMLDivElement | undefined = $state();
   /** Whether the reader has scrolled far enough down that a way back to the top is worth offering. */
   let showTop = $state(false);
   let readScrollTick = false;
@@ -165,6 +166,16 @@
   const read = $derived(row?.is_read ?? detail?.entry.is_read ?? false);
   const readMins = $derived(detail ? readingMinutes(detail.entry.content_text) : 0);
 
+  // Cached images are already complete when they land in the DOM; mark them so they never sit at
+  // opacity 0 waiting for a load event that has already fired.
+  $effect(() => {
+    void body;
+    if (!proseEl) return;
+    for (const img of proseEl.querySelectorAll('img')) {
+      if (img.complete) img.classList.add('is-loaded');
+    }
+  });
+
   $effect(() => {
     void entryId;
     void load();
@@ -274,6 +285,12 @@
    * it. Second failure: swap in a quiet placeholder so the column reads as "image unavailable"
    * rather than broken. Error events do not bubble, hence the capture-phase listener on the prose.
    */
+  /** Fades a photo in once it has decoded; see the `.rd-prose img` opacity rule. */
+  function onImageLoad(event: Event): void {
+    const img = event.target;
+    if (img instanceof HTMLImageElement) img.classList.add('is-loaded');
+  }
+
   function onImageError(event: Event): void {
     const img = event.target;
     if (!(img instanceof HTMLImageElement)) return;
@@ -614,7 +631,7 @@
         </header>
 
         <!-- The one `{@html}` in the application. Sanitized above, and sanitized on ingest. -->
-        <div class="rd-prose" onerrorcapture={onImageError}>
+        <div class="rd-prose" bind:this={proseEl} onerrorcapture={onImageError} onloadcapture={onImageLoad}>
           {@html body}
         </div>
 

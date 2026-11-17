@@ -252,7 +252,9 @@
 
   <div class="rd-list-head">
     <div class="rd-list-title-row">
-      <h1 id="rd-list-title" class="rd-list-title">{title}</h1>
+      {#key title}
+        <h1 id="rd-list-title" class="rd-list-title">{title}</h1>
+      {/key}
     </div>
 
     <div class="rd-list-tools">

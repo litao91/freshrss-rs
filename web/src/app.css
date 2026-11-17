@@ -3058,6 +3058,117 @@ kbd {
 }
 
 /* ==========================================================================
+   12d. Entrance & feedback motion
+   ========================================================================== */
+
+/* Panes resize rather than snap when an article opens/closes or the sidebar/focus toggles: the
+   grid tracks interpolate, so the reader glides between layouts. Track animation is compositor
+   friendly and the windowed list only depends on row heights, which never change here. */
+.rd-app {
+  transition: grid-template-columns var(--rd-ease-out);
+}
+
+/* The list heading crossfades/slides when the scope changes (keyed in EntryList). */
+.rd-list-title {
+  animation: rd-title-in var(--rd-ease-out);
+}
+
+@keyframes rd-title-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Opening a folder settles its feeds in; closing stays instant (display:none) so collapse is crisp. */
+li.rd-folder.is-open > .rd-tree--nested {
+  animation: rd-tree-in 200ms var(--rd-ease-out);
+}
+
+@keyframes rd-tree-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Staged entrance for the sidebar's top-level rows on boot. Keyed rows are not re-mounted on count
+   syncs, so this plays once, not on every badge tick. */
+.rd-nav-inner > .rd-tree > li {
+  animation: rd-rise-in 300ms var(--rd-ease-out) both;
+}
+.rd-nav-inner > .rd-tree > li:nth-child(1) {
+  animation-delay: 40ms;
+}
+.rd-nav-inner > .rd-tree > li:nth-child(2) {
+  animation-delay: 80ms;
+}
+.rd-nav-inner > .rd-tree > li:nth-child(3) {
+  animation-delay: 120ms;
+}
+.rd-nav-inner > .rd-tree > li:nth-child(4) {
+  animation-delay: 160ms;
+}
+.rd-nav-inner > .rd-tree > li:nth-child(5) {
+  animation-delay: 200ms;
+}
+
+@keyframes rd-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Article photos fade in once decoded instead of popping. ReadingPane marks already-complete
+   images on render and listens for load, so a cached image never stays hidden. */
+.rd-prose img {
+  opacity: 0;
+  transition: opacity 320ms ease;
+}
+
+.rd-prose img.is-loaded {
+  opacity: 1;
+}
+
+/* A faint accent spine previews the row under the pointer; the selected row keeps the full one. */
+.rd-item:hover::before {
+  background: color-mix(in srgb, var(--fd-accent) 30%, transparent);
+}
+
+.rd-star i {
+  transition: transform var(--rd-ease);
+}
+
+.rd-star:hover i {
+  transform: scale(1.18) rotate(-6deg);
+}
+
+/* Medallions and the refresh chip pop in when they mount. */
+.rd-empty-icon,
+.rd-refresh-chip {
+  animation: rd-pop-in 240ms var(--rd-ease-spring);
+}
+
+@keyframes rd-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* The modal scrim fades in behind the panel entrance. */
+dialog::backdrop {
+  animation: rd-backdrop-in 200ms ease;
+}
+
+@keyframes rd-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ==========================================================================
    13. Responsive
    ========================================================================== */
 
