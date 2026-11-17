@@ -329,7 +329,7 @@
           <path class="brand-mark-ink" d="M10.5 27H24.5C32.5 27 37.5 26 42.5 22C39.5 32 32.5 37 22.5 37H10.5Z"></path>
           <path class="brand-mark-accent" d="M10.5 40H20.5V46C20.5 52.5 16 56.5 10.5 57Z"></path>
         </svg>
-        <div class="rd-boot-bar rd-bar" aria-hidden="true"></div>
+        <span class="rd-spinner rd-spinner--lg" aria-hidden="true"></span>
         <span class="rd-boot-label">{t('common.loading')}</span>
       </div>
     </div>

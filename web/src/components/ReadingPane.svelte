@@ -438,6 +438,9 @@
 
 <section class="rd-read" class:is-loading={loading} aria-label={detail?.entry.title ?? 'Article'}>
   <div class="rd-read-bar">
+    {#if loading}
+      <span class="rd-spinner" role="status" aria-label={t('common.loading')}></span>
+    {/if}
     <button class="rd-icon-btn rd-back" type="button" title="Back to list" onclick={onBack}>
       <i class="ri-arrow-left-line" aria-hidden="true"></i>
       <span class="rd-sr">Back to list</span>

@@ -39,6 +39,8 @@
   let displayOpen = $state(false);
   let accountOpen = $state(false);
   let apiDialogOpen = $state(false);
+  let syntaxOpen = $state(false);
+  let recent = $state<string[]>(readRecent());
 
   // Derived rather than plain constants: the labels go through `t()`, so they have to re-render
   // when the language changes.
@@ -87,7 +89,9 @@
 
   function submitSearch(event: Event): void {
     event.preventDefault();
-    onSearch(search.trim());
+    const query = search.trim();
+    rememberRecent(query);
+    onSearch(query);
     closeMenus();
   }
 
@@ -96,6 +100,45 @@
     search = '';
     onSearch('');
     searchEl?.focus();
+  }
+
+  // Recent queries, kept locally so the box offers them back on focus.
+  function readRecent(): string[] {
+    try {
+      const raw = localStorage.getItem('feeddi-reader-searches');
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((x): x is string => typeof x === 'string').slice(0, 6)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function rememberRecent(query: string): void {
+    if (!query) return;
+    recent = [query, ...recent.filter((q) => q !== query)].slice(0, 6);
+    try {
+      localStorage.setItem('feeddi-reader-searches', JSON.stringify(recent));
+    } catch {
+      // History is a convenience, never a requirement.
+    }
+  }
+
+  function pickRecent(query: string): void {
+    search = query;
+    onSearch(query);
+    searchFocused = false;
+    closeMenus();
+  }
+
+  function clearRecent(): void {
+    recent = [];
+    try {
+      localStorage.removeItem('feeddi-reader-searches');
+    } catch {
+      // ignore
+    }
   }
 
   async function handleSignOut(): Promise<void> {
@@ -166,7 +209,65 @@
     {:else if !searchFocused}
       <kbd class="rd-search-hint" aria-hidden="true">/</kbd>
     {/if}
+    {#if searchFocused && !search.trim() && recent.length > 0}
+      <div class="rd-search-suggest">
+        <p class="rd-menu-label">{t('search.recent')}</p>
+        {#each recent as q (q)}
+          <button
+            class="rd-menu-item"
+            type="button"
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => pickRecent(q)}
+          >
+            <i class="ri-history-line" aria-hidden="true"></i>
+            {q}
+          </button>
+        {/each}
+        <button
+          class="rd-search-suggest-clear"
+          type="button"
+          onmousedown={(e) => e.preventDefault()}
+          onclick={clearRecent}
+        >
+          {t('search.clearRecent')}
+        </button>
+      </div>
+    {/if}
   </form>
+
+  <Popover
+    bind:open={syntaxOpen}
+    placement="bottom"
+    align="start"
+    dismiss_on="press"
+    class="rd-search-syntax"
+  >
+    {#snippet trigger(props)}
+      <button class="rd-icon-btn rd-search-help" type="button" title={t('search.syntax')} {...props}>
+        <i class="ri-question-line" aria-hidden="true"></i>
+        <span class="rd-sr">{t('search.syntax')}</span>
+      </button>
+    {/snippet}
+    <p class="rd-menu-label">{t('search.syntax')}</p>
+    <dl class="rd-syntax">
+      <dt><code>intitle:</code></dt>
+      <dd>{t('search.op.intitle')}</dd>
+      <dt><code>intext:</code></dt>
+      <dd>{t('search.op.intext')}</dd>
+      <dt><code>author:</code></dt>
+      <dd>{t('search.op.author')}</dd>
+      <dt><code>inurl:</code></dt>
+      <dd>{t('search.op.inurl')}</dd>
+      <dt><code>#label</code></dt>
+      <dd>{t('search.op.label')}</dd>
+      <dt><code>pubdate:</code></dt>
+      <dd>{t('search.op.date')}</dd>
+      <dt><code>f:id</code></dt>
+      <dd>{t('search.op.feed')}</dd>
+      <dt><code>OR - ( ) " "</code></dt>
+      <dd>{t('search.op.bool')}</dd>
+    </dl>
+  </Popover>
 
   <div class="rd-top-actions">
     {#if refreshJob.running}

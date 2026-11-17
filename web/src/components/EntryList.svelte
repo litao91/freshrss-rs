@@ -255,6 +255,9 @@
       {#key title}
         <h1 id="rd-list-title" class="rd-list-title">{title}</h1>
       {/key}
+      {#if entries.loading}
+        <span class="rd-spinner" role="status" aria-label={t('common.loading')}></span>
+      {/if}
     </div>
 
     <div class="rd-list-tools">

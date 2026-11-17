@@ -44,11 +44,46 @@ export const SORT_LABELS: Record<SortKey, string> = {
   feed: 'Feed',
 };
 
+/** The reader's chosen filter/sort/direction survive a reload, like its appearance prefs do. */
+const VIEW_KEY = 'feeddi-reader-view';
+
+function storedView(): { readFilter: ReadFilter; sort: SortKey; order: Order } {
+  const fallback = { readFilter: 'unread' as ReadFilter, sort: 'id' as SortKey, order: 'desc' as Order };
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { readFilter?: unknown; sort?: unknown; order?: unknown };
+    return {
+      readFilter: parsed.readFilter === 'all' ? 'all' : 'unread',
+      sort:
+        parsed.sort === 'date' || parsed.sort === 'title' || parsed.sort === 'feed'
+          ? parsed.sort
+          : 'id',
+      order: parsed.order === 'asc' ? 'asc' : 'desc',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistView(): void {
+  try {
+    localStorage.setItem(
+      VIEW_KEY,
+      JSON.stringify({ readFilter: view.readFilter, sort: view.sort, order: view.order }),
+    );
+  } catch {
+    // Private browsing / quota: the preference simply does not survive, never breaks the session.
+  }
+}
+
+const initialView = storedView();
+
 export const view = $state({
   scope: { kind: 'main' } as Scope,
-  readFilter: 'unread' as ReadFilter,
-  sort: 'id' as SortKey,
-  order: 'desc' as Order,
+  readFilter: initialView.readFilter,
+  sort: initialView.sort,
+  order: initialView.order,
   /** The article open in the reading pane; `null` means the list is full width. */
   selectedEntryId: null as string | null,
 });
@@ -124,11 +159,13 @@ export function selectEntry(id: string | null): void {
 export function toggleReadFilter(): void {
   view.readFilter = view.readFilter === 'unread' ? 'all' : 'unread';
   view.selectedEntryId = null;
+  persistView();
 }
 
 export function toggleOrder(): void {
   view.order = view.order === 'desc' ? 'asc' : 'desc';
   view.selectedEntryId = null;
+  persistView();
 }
 
 /**
@@ -145,6 +182,7 @@ export function setSort(sort: SortKey): void {
   view.sort = sort;
   view.order = sort === 'title' || sort === 'feed' ? 'asc' : 'desc';
   view.selectedEntryId = null;
+  persistView();
 }
 
 /**
