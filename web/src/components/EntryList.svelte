@@ -20,7 +20,7 @@
     setRead,
     setStarred,
   } from '../lib/entries.svelte';
-  import { formatCount, formatListTime } from '../lib/format';
+  import { contrastInk, formatCount, formatListTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { prefs } from '../lib/prefs.svelte';
   import { tree } from '../lib/session.svelte';
@@ -425,25 +425,25 @@
             class:is-unread={!entry.is_read}
             class:is-selected={entry.id === selectedId}
           >
-            {#if fav?.url}
-              <img
-                class="rd-item-avatar"
-                src={fav.url}
-                alt=""
-                loading="lazy"
-                onerror={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = 'none';
-                }}
-              />
-            {:else}
-              <span
-                class="rd-item-avatar rd-item-avatar--letter"
-                style:background={fav?.color}
-                aria-hidden="true"
-              >
-                {fav?.letter ?? entry.feed_name.charAt(0)}
-              </span>
-            {/if}
+            <span
+              class="rd-item-avatar rd-item-avatar--letter"
+              style:background={fav?.color}
+              style:color={contrastInk(fav?.color)}
+              aria-hidden="true"
+            >
+              {fav?.letter ?? entry.feed_name.charAt(0)}
+              {#if fav?.url}
+                <img
+                  class="rd-item-avatar-img"
+                  src={fav.url}
+                  alt=""
+                  loading="lazy"
+                  onerror={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              {/if}
+            </span>
             <button class="rd-item-btn" type="button" onclick={() => open(entry)}>
               <span class="rd-item-meta">
                 {#if !entry.is_read}

@@ -8,6 +8,7 @@
    * here as well. Two independent filters is deliberate: a mistake in either one is survivable, and a
    * feed parser is exactly the kind of code where a mistake is eventually found.
    */
+  import { onDestroy } from 'svelte';
   import DOMPurify from 'dompurify';
   import { ActionButton, CopyButton } from 'svelte-widgets';
   import { api, mediaUrl, type EntryDetail } from '../lib/api';
@@ -50,6 +51,9 @@
   let showTop = $state(false);
   let readScrollTick = false;
   let controller: AbortController | null = null;
+
+  // Closing the pane must not leave a fetch running against a component that no longer exists.
+  onDestroy(() => controller?.abort());
 
   /**
    * `ActionButton` keeps a hidden sizer holding the width of every state's label, so the button

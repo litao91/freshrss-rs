@@ -10,6 +10,8 @@
 //! The endpoint is authenticated on purpose: an image proxy anyone on the internet may use is an
 //! open proxy, and the SSRF guard applies to it exactly as it does to feed fetches.
 
+use std::time::Duration;
+
 use axum::{
     extract::{Query, State},
     http::header,
@@ -87,7 +89,9 @@ pub async fn proxy(
     let settings = Settings::from_config(&state.config);
     let mut request = FetchRequest::new(url.clone());
     request.user_agent = BROWSER_UA.to_owned();
-    request.timeout = settings.timeout;
+    // Images are decorative: a dead host should fail fast, not hold the reader for the full feed
+    // timeout once per Referer candidate.
+    request.timeout = settings.timeout.min(Duration::from_secs(10));
     request.max_bytes = settings.max_bytes;
     request.accept = "image/*,*/*;q=0.8".to_owned();
 
@@ -169,7 +173,19 @@ async fn fetch_with_fallbacks(
                     message: "the image host answered 304 to an unconditional request".into(),
                 })
             }
-            Err(err) => last = Some(err),
+            Err(err) => {
+                // A different Referer only helps when the host refused *because* of the Referer
+                // (401/403 hotlink policy). A timeout, DNS failure, 404 or 5xx will not change with
+                // the header, so stop instead of paying another full timeout per candidate.
+                if matches!(err, Error::Http { status: 401 | 403, .. }) {
+                    last = Some(err);
+                    continue;
+                }
+                return Err(Error::Http {
+                    status: 502,
+                    message: format!("the image host refused: {err}"),
+                });
+            }
         }
     }
     Err(Error::Http {

@@ -171,9 +171,20 @@
         else if (reading) readingPane?.goPrev();
         else move(-1);
         break;
-      case 'Enter':
-        if (highlighted) selectEntry(highlighted);
+      case 'Enter': {
+        // Let a focused control activate natively (row, suggestion, dialog button); only open the
+        // highlighted row when focus is not on an interactive element.
+        const ae = document.activeElement;
+        const interactive =
+          ae instanceof HTMLElement &&
+          (ae.tagName === 'BUTTON' ||
+            ae.tagName === 'A' ||
+            ae.tagName === 'SELECT' ||
+            ae.getAttribute('role') === 'option' ||
+            !!ae.closest('dialog, .rd-search-suggest'));
+        if (!interactive && highlighted) selectEntry(highlighted);
         break;
+      }
       case 'Escape':
         // Back to the list. An open menu or panel claims the key first and stops it propagating,
         // so this only ever sees an Escape nothing above it wanted.
@@ -243,7 +254,8 @@
     // Escape is the one binding that must not prevent the default: the default is a native
     // `<dialog>` closing itself, and swallowing the key would leave an open panel stranded until
     // a second press. The dispatcher no-ops on Escape outside reading mode anyway.
-    prevent_default: shortcut.key !== 'Escape',
+    // Escape must reach native dialog dismissal; Enter must reach native button/form activation.
+    prevent_default: shortcut.key !== 'Escape' && shortcut.key !== 'Enter',
   }));
 
   onMount(() => {
@@ -373,7 +385,11 @@
 
     {#if view.selectedEntryId}
       <!-- Loaded on first open, not at boot: the pane pulls in DOMPurify, which the list never needs. -->
-      {#await import('./components/ReadingPane.svelte') then mod}
+      {#await import('./components/ReadingPane.svelte')}
+        <div class="rd-read rd-read-pending">
+          <span class="rd-spinner rd-spinner--lg" aria-hidden="true"></span>
+        </div>
+      {:then mod}
         <mod.default
           bind:this={readingPane}
           entryId={view.selectedEntryId}

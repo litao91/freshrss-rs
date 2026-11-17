@@ -3197,13 +3197,22 @@ dialog::backdrop {
 /* A feed-identity tile leads each row so the source is scannable at a glance. It is shorter than
    the three fixed text lines, so the windowed row height arithmetic is untouched. */
 .rd-item-avatar {
+  position: relative;
+  overflow: hidden;
   flex: 0 0 auto;
   width: 2.2rem;
   height: 2.2rem;
   margin: 0.15rem 0.55rem 0 0;
   border-radius: var(--rd-radius-sm);
-  object-fit: cover;
   background: var(--fd-side);
+}
+
+.rd-item-avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .rd-item-avatar--letter {
@@ -3214,6 +3223,13 @@ dialog::backdrop {
   font-size: 0.95rem;
   font-weight: 700;
   text-transform: uppercase;
+}
+
+/* First-open of the lazily-loaded reading pane: a spinner in the read column, not a blank flash. */
+.rd-read-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Hairline dividers group the reading toolbar into navigation / actions / share clusters. */

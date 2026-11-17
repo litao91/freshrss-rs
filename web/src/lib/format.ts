@@ -78,6 +78,19 @@ export function isoTime(seconds: number): string {
   return toDate(seconds).toISOString();
 }
 
+/** Readable ink (near-black or white) for a generated tile colour, so letter avatars never sit
+ *  low-contrast on their own background. Falls back to white for unparseable colours. */
+export function contrastInk(color: string | undefined): string {
+  const hex = (color ?? '').replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return '#fff';
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.55 ? '#201a14' : '#fff';
+}
+
 /**
  * A reading-time estimate in whole minutes, at ~200 words per minute.
  *

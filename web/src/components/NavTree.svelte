@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { CategoryNode, FeedNode, LabelCount } from '../lib/api';
   import { OPML_EXPORT_URL } from '../lib/api';
-  import { formatCount } from '../lib/format';
+  import { contrastInk, formatCount } from '../lib/format';
   import { t, tf } from '../lib/i18n';
   import { setDrawerOpen } from '../lib/prefs.svelte';
   import { tree } from '../lib/session.svelte';
@@ -252,6 +252,7 @@
                         <span
                           class="rd-favicon rd-favicon--letter"
                           style:background={feed.favicon.color}
+                        style:color={contrastInk(feed.favicon.color)}
                           aria-hidden="true"
                         >
                           {feed.favicon.letter}

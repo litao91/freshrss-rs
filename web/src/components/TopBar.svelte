@@ -41,6 +41,8 @@
   let apiDialogOpen = $state(false);
   let syntaxOpen = $state(false);
   let recent = $state<string[]>(readRecent());
+  let suggestEl: HTMLDivElement | undefined = $state();
+  const suggestOpen = $derived(searchFocused && !search.trim() && recent.length > 0);
 
   // Derived rather than plain constants: the labels go through `t()`, so they have to re-render
   // when the language changes.
@@ -141,6 +143,51 @@
     }
   }
 
+  /** Keep the list open while focus moves into it, so suggestions are reachable by keyboard. */
+  function onSearchFocusOut(event: FocusEvent): void {
+    const form = event.currentTarget as HTMLFormElement | null;
+    const next = event.relatedTarget as Node | null;
+    if (form && !form.contains(next)) searchFocused = false;
+  }
+
+  function focusOption(at: number): void {
+    suggestEl?.querySelectorAll<HTMLButtonElement>('[role="option"]')[at]?.focus();
+  }
+
+  function onSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === 'ArrowDown' && suggestOpen) {
+      event.preventDefault();
+      focusOption(0);
+    }
+  }
+
+  function onSuggestKeydown(event: KeyboardEvent): void {
+    const options = Array.from(
+      suggestEl?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [],
+    );
+    const at = options.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      (options[at + 1] ?? options[0])?.focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (at <= 0) searchEl?.focus();
+      else options[at - 1]?.focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      options[0]?.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      options[options.length - 1]?.focus();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      // Focus first (its onfocus sets the flag), then close, or the list re-opens on focus.
+      searchEl?.focus();
+      searchFocused = false;
+    }
+  }
+
   async function handleSignOut(): Promise<void> {
     closeMenus();
     await signOut();
@@ -187,7 +234,7 @@
     <span class="rd-brand-name">freshrss-rs</span>
   </a>
 
-  <form class="rd-search" role="search" onsubmit={submitSearch}>
+  <form class="rd-search" role="search" onsubmit={submitSearch} onfocusout={onSearchFocusOut}>
     <label class="rd-sr" for="rd-search">{t('topbar.search')}</label>
     <i class="ri-search-line" aria-hidden="true"></i>
     <input
@@ -199,7 +246,11 @@
       bind:this={searchEl}
       bind:value={search}
       onfocus={() => (searchFocused = true)}
-      onblur={() => (searchFocused = false)}
+      onkeydown={onSearchKeydown}
+      role="combobox"
+      aria-expanded={suggestOpen}
+      aria-controls="rd-search-suggest"
+      aria-autocomplete="list"
     />
     {#if search}
       <button class="rd-search-clear" type="button" title={t('topbar.clearSearch')} onclick={clearSearch}>
@@ -209,13 +260,23 @@
     {:else if !searchFocused}
       <kbd class="rd-search-hint" aria-hidden="true">/</kbd>
     {/if}
-    {#if searchFocused && !search.trim() && recent.length > 0}
-      <div class="rd-search-suggest">
+    {#if suggestOpen}
+      <div
+        class="rd-search-suggest"
+        id="rd-search-suggest"
+        role="listbox"
+        tabindex="-1"
+        aria-label={t('search.recent')}
+        bind:this={suggestEl}
+        onkeydown={onSuggestKeydown}
+      >
         <p class="rd-menu-label">{t('search.recent')}</p>
         {#each recent as q (q)}
           <button
             class="rd-menu-item"
             type="button"
+            role="option"
+            aria-selected="false"
             onmousedown={(e) => e.preventDefault()}
             onclick={() => pickRecent(q)}
           >
