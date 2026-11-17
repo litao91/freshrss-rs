@@ -47,6 +47,7 @@
   let scrollEl: HTMLElement | undefined = $state();
   /** Whether the reader has scrolled far enough down that a way back to the top is worth offering. */
   let showTop = $state(false);
+  let readScrollTick = false;
   let controller: AbortController | null = null;
 
   /**
@@ -77,6 +78,8 @@
       node.removeAttribute('autoplay');
     }
     if (node instanceof HTMLImageElement) {
+      // Decode off the main thread so a big photo never blocks the scroll or the entrance.
+      node.decoding = 'async';
       // Lazy-loading placeholders: a scraped page's `<img src="1x1.gif" data-src="real.jpg">` never
       // runs the script that swaps them, so without this the article is a column of blank boxes.
       // The sanitizer keeps `data-*`, which is what makes the real address recoverable here.
@@ -255,7 +258,12 @@
   /** Reveals the back-to-top button once the reader is well past the article head. */
   function onReadScroll(event: Event): void {
     const el = event.currentTarget as HTMLElement;
-    showTop = el.scrollTop > 600;
+    if (readScrollTick) return;
+    readScrollTick = true;
+    requestAnimationFrame(() => {
+      readScrollTick = false;
+      showTop = el.scrollTop > 600;
+    });
   }
 
   /**

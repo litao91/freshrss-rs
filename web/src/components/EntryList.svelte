@@ -105,9 +105,15 @@
    * handler on the list's own container is the same 400px of lookahead the observer had, and
    * `loadMore` still guards against queueing pages faster than they land.
    */
+  let listScrollTick = false;
   function onListScroll(event: Event): void {
     const el = event.currentTarget as HTMLElement;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) void loadMore();
+    if (listScrollTick) return;
+    listScrollTick = true;
+    requestAnimationFrame(() => {
+      listScrollTick = false;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) void loadMore();
+    });
   }
 
   // Restart the listing whenever the slice of the corpus or the way it is ordered changes.

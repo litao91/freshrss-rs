@@ -11,7 +11,7 @@
   import Auth from './components/Auth.svelte';
   import EntryList from './components/EntryList.svelte';
   import NavTree from './components/NavTree.svelte';
-  import ReadingPane from './components/ReadingPane.svelte';
+  import type ReadingPane from './components/ReadingPane.svelte';
   import Toast from './components/Toast.svelte';
   import TopBar from './components/TopBar.svelte';
   import AddDialog from './components/dialogs/AddDialog.svelte';
@@ -372,15 +372,18 @@
     />
 
     {#if view.selectedEntryId}
-      <ReadingPane
-        bind:this={readingPane}
-        entryId={view.selectedEntryId}
-        onBack={() => {
-          selectEntry(null);
-          highlighted = null;
-        }}
-        onNavigate={select}
-      />
+      <!-- Loaded on first open, not at boot: the pane pulls in DOMPurify, which the list never needs. -->
+      {#await import('./components/ReadingPane.svelte') then mod}
+        <mod.default
+          bind:this={readingPane}
+          entryId={view.selectedEntryId}
+          onBack={() => {
+            selectEntry(null);
+            highlighted = null;
+          }}
+          onNavigate={select}
+        />
+      {/await}
     {/if}
 
     <FolderDialog folder={folderDialog} onclose={() => (folderDialog = undefined)} onChanged={reload} />

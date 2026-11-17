@@ -2978,42 +2978,10 @@ kbd {
   opacity: 0.55;
 }
 
-/* --- scroll-edge shadows ---
- *
- * The classic local/scroll background pair: a cover gradient that travels with the content hides
- * the fixed shadow at the edge you are flush against, so a shadow appears only where there is more
- * to scroll. Pure CSS, no scroll listener, and it works in every pane that scrolls. */
-.rd-list-body {
-  --rd-scroll-bg: var(--fd-bg);
-}
-.rd-read-scroll {
-  --rd-scroll-bg: var(--fd-surface);
-}
-.rd-nav-inner {
-  --rd-scroll-bg: var(--fd-side);
-}
-
-.rd-list-body,
-.rd-read-scroll,
-.rd-nav-inner {
-  background-image:
-    linear-gradient(var(--rd-scroll-bg) 30%, transparent),
-    linear-gradient(transparent, var(--rd-scroll-bg) 70%),
-    radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.14), transparent),
-    radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.14), transparent);
-  background-position:
-    top,
-    bottom,
-    top,
-    bottom;
-  background-size:
-    100% 28px,
-    100% 28px,
-    100% 10px,
-    100% 10px;
-  background-repeat: no-repeat;
-  background-attachment: local, local, scroll, scroll;
-}
+/* Scroll-edge shadows were tried two ways (local/scroll backgrounds, then scroll-timeline sticky
+ * overlays) and both measured as per-frame paint/layout cost on the windowed list. The themed
+ * scrollbar and the reload progress bars already tell the reader there is more to scroll, so the
+ * edges stay clean rather than buying a decoration with scroll jank. */
 
 /* --- count tick: a badge that just changed gives one small pop --- */
 

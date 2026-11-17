@@ -44,6 +44,11 @@
       })();
     </script>
 
+    <!-- Start the two fonts the first paint needs at HTML parse, not after CSS/JS discover them:
+         the UI face and the icon face (which otherwise pops in late). The prose face loads on first
+         read instead, so it never contends with boot. -->
+    <link rel="preload" href="/vendor/fonts/atkinsonhyperlegiblenext-normal-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/vendor/remixicon/remixicon.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/vendor/remixicon/remixicon.css" />
   </head>
   <body>
