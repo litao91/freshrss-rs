@@ -80,6 +80,11 @@ user_agent = "freshrss-rs/0.1 (+https://github.com/example/freshrss-rs)"
 block_private_networks = true
 # Comma-separated `host`, `host:port` or CIDR entries exempt from the block above.
 internal_host_allowlist = []
+# Outbound fetches (feeds, full text, favicons, images) honour the standard proxy environment
+# variables: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY (http:// or socks5://) and NO_PROXY. They are read
+# once at startup. A proxy named as a *hostname* on a private address — `localhost`, `proxy.lan` —
+# is itself subject to the SSRF guard, so add it to internal_host_allowlist; an address literal
+# like 127.0.0.1:7890 needs no exemption.
 
 [media]
 # Where images fetched by `GET /api/v1/media` are kept. A copy fetched once is served from here

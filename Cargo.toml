@@ -41,8 +41,10 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 ] }
 
 # --- http client -----------------------------------------------------------
+# `socks` is what makes `ALL_PROXY=socks5://…` work: reqwest reads the proxy environment
+# variables either way, but without it a SOCKS proxy is misdriven as an HTTP one.
 reqwest = { version = "0.13.5", default-features = false, features = [
-    "brotli", "charset", "cookies", "gzip", "http2", "json", "rustls", "stream",
+    "brotli", "charset", "cookies", "gzip", "http2", "json", "rustls", "socks", "stream",
 ] }
 
 # --- serialization / errors / logs ----------------------------------------
