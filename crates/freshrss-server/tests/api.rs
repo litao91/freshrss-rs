@@ -731,6 +731,9 @@ fn png_body() -> FetchedBody {
 
 /// Refuses `fail` times, then answers a PNG `ok` times, then refuses again — counting every
 /// question, which is how a test tells a cache hit from a fetch.
+///
+/// The refusal is a 403 because that is the only kind the proxy retries: a different Referer can
+/// change a hotlink-policy answer, but not a timeout or a 5xx.
 struct CountingFetcher {
     credits: Mutex<Credits>,
     calls: AtomicUsize,
@@ -761,13 +764,19 @@ impl Fetcher for CountingFetcher {
         let mut credits = self.credits.lock().expect("unpoisoned");
         if credits.fail > 0 {
             credits.fail -= 1;
-            return Err(FeedError::Timeout { secs: 1 });
+            return Err(FeedError::Http {
+                status: 403,
+                message: "hotlink protection".to_owned(),
+            });
         }
         if credits.ok > 0 {
             credits.ok -= 1;
             return Ok(FetchOutcome::Found(png_body()));
         }
-        Err(FeedError::Timeout { secs: 1 })
+        Err(FeedError::Http {
+            status: 403,
+            message: "hotlink protection".to_owned(),
+        })
     }
 }
 

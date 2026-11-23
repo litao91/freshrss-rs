@@ -25,6 +25,7 @@ use crate::error::Error;
 use crate::router::AppState;
 use crate::service::refresh::Settings;
 use freshrss_feed::http::{FetchOutcome, FetchRequest, FetchedBody};
+use freshrss_feed::FeedError;
 
 /// A week: article images do not change, and re-fetching them on every read would turn the reader
 /// into a mirror that hammers the hosts it mirrors.
@@ -177,7 +178,7 @@ async fn fetch_with_fallbacks(
                 // A different Referer only helps when the host refused *because* of the Referer
                 // (401/403 hotlink policy). A timeout, DNS failure, 404 or 5xx will not change with
                 // the header, so stop instead of paying another full timeout per candidate.
-                if matches!(err, Error::Http { status: 401 | 403, .. }) {
+                if matches!(err, FeedError::Http { status: 401 | 403, .. }) {
                     last = Some(err);
                     continue;
                 }
