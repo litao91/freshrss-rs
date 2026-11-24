@@ -107,10 +107,10 @@ fn read_head(r: &mut Reader<&[u8]>, doc: &mut Opml) {
         if is_empty {
             return;
         }
-        match local(QName(name)).as_ref() {
-            "title" => doc.title = text(r, QName(name)),
-            "dateCreated" => doc.date_created = Some(text(r, QName(name))),
-            _ => skip(r, QName(name)),
+        match local(QName(name.as_bytes())).as_ref() {
+            "title" => doc.title = text(r, QName(name.as_bytes())),
+            "dateCreated" => doc.date_created = Some(text(r, QName(name.as_bytes()))),
+            _ => skip(r, QName(name.as_bytes())),
         }
     });
 }

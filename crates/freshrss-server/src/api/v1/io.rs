@@ -47,7 +47,7 @@ pub async fn export_opml(State(state): State<AppState>, user: CurrentUser) -> Ap
     // overwrite each other in the browser's download folder.
     let day = jiff::Timestamp::from_millisecond(now_unix().saturating_mul(1000))
         .map(|ts| {
-            ts.to_zoned(jiff::tz::TimeZone::UTC)
+            ts.to_zoned_datetime(jiff::tz::TimeZone::UTC)
                 .strftime("%Y-%m-%d")
                 .to_string()
         })

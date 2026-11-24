@@ -202,7 +202,7 @@ fn write_range(out: &mut String, range: crate::ast::DateRange) {
 fn compact_instant(secs: i64) -> String {
     jiff::Timestamp::from_second(secs)
         .map(|ts| {
-            ts.to_zoned(jiff::tz::TimeZone::UTC)
+            ts.to_zoned_datetime(jiff::tz::TimeZone::UTC)
                 .strftime("%Y%m%dT%H%M%S")
                 .to_string()
         })

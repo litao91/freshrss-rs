@@ -198,19 +198,20 @@ impl Doc {
                         scopes.pop();
                     }
                 }
-                Ok(Event::Text(t)) => pending.push_str(&t),
+                Ok(Event::Text(t)) => pending.push_str(&String::from_utf8_lossy(&t)),
                 // CDATA content is literal by definition, so it is not unescaped.
-                Ok(Event::CData(t)) => pending.push_str(&t),
+                Ok(Event::CData(t)) => pending.push_str(&String::from_utf8_lossy(&t)),
                 Ok(Event::GeneralRef(reference)) => {
                     pending.push_str(&resolve_reference(&reference))
                 }
                 Ok(Event::Comment(t)) => {
                     flush(&mut builder, parent, &mut pending);
-                    builder.comment(parent, &t);
+                    builder.comment(parent, &String::from_utf8_lossy(&t));
                 }
                 Ok(Event::PI(t)) => {
                     flush(&mut builder, parent, &mut pending);
-                    let (target, data) = split_instruction(&t);
+                    let content = String::from_utf8_lossy(&t);
+                    let (target, data) = split_instruction(&content);
                     builder.instruction(parent, target, data);
                 }
                 // The XML declaration and a doctype are not nodes in the data model.
@@ -632,7 +633,8 @@ fn open_element(
         }
     }
 
-    let (prefix, local) = split(e.name().into_inner());
+    let name = String::from_utf8_lossy(e.name().into_inner());
+    let (prefix, local) = split(&name);
     let namespace = prefix.and_then(|prefix| resolve(scopes, prefix));
     let index = builder.element(parent, local, namespace.as_deref());
 
@@ -688,7 +690,7 @@ fn resolve_reference(reference: &quick_xml::events::BytesRef<'_>) -> String {
             return character.to_string();
         }
     }
-    let name: &str = reference;
+    let name = String::from_utf8_lossy(reference);
     crate::entities::xml_unescape(&format!("&{name};")).into_owned()
 }
 

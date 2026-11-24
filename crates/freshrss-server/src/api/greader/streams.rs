@@ -634,7 +634,7 @@ fn now_secs() -> i64 {
 fn today_stamp() -> String {
     jiff::Timestamp::from_second(now_secs())
         .expect("current time is in range")
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .date()
         .to_string()
 }

@@ -253,7 +253,7 @@ fn at(iso: &str) -> i64 {
     let civil = jiff::civil::DateTime::from_str(iso)
         .unwrap_or_else(|e| panic!("{iso:?} is not a date: {e}"));
     civil
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .unwrap_or_else(|e| panic!("{iso:?} does not exist in UTC: {e}"))
         .timestamp()
         .as_second()
@@ -276,7 +276,7 @@ fn show_actual(secs: Option<i64>) -> String {
     };
     let utc = jiff::Timestamp::from_second(secs)
         .map(|ts| {
-            ts.to_zoned(jiff::tz::TimeZone::UTC)
+            ts.to_zoned_datetime(jiff::tz::TimeZone::UTC)
                 .strftime("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })

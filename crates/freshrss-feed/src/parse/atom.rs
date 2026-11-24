@@ -63,14 +63,14 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
                 // Feed-level elements nothing downstream reads. `<author>` in particular is not
                 // inherited by entries here: an entry without its own author shows no byline rather
                 // than the feed's, which is what SimplePie does.
-                super::xml::skip(r, QName(name));
+                super::xml::skip(r, QName(name.as_bytes()));
             }
             "entry" if !is_empty => {
                 if let Some(item) = parse_entry(r, name, base) {
                     feed.items.push(item);
                 }
             }
-            _ if !is_empty => super::xml::skip(r, QName(name)),
+            _ if !is_empty => super::xml::skip(r, QName(name.as_bytes())),
             _ => {}
         }
     });
@@ -83,7 +83,7 @@ fn find_element(r: &mut Reader<&[u8]>, wanted: &str) -> Option<(String, super::x
     loop {
         match r.read_event() {
             Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e)) => {
-                let name = e.name().into_inner().to_owned();
+                let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                 if split(&name).1 == wanted {
                     let found = attrs(&e, r);
                     return Some((name, found));
@@ -99,7 +99,7 @@ fn leaf(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> Option<String> {
     if is_empty {
         return None;
     }
-    let raw = text(r, QName(name));
+    let raw = text(r, QName(name.as_bytes()));
     let normalized = crate::text::normalize_space(&raw);
     (!normalized.is_empty()).then(|| normalized.into_owned())
 }
@@ -160,7 +160,7 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str, base: Option<&str>) -> Option<
             "link" => {
                 let Some(href) = attr(&a, "href") else {
                     if !is_empty {
-                        super::xml::skip(r, QName(child));
+                        super::xml::skip(r, QName(child.as_bytes()));
                     }
                     return;
                 };
@@ -213,9 +213,9 @@ fn parse_entry(r: &mut Reader<&[u8]>, name: &str, base: Option<&str>) -> Option<
                 }
             }
             "rights" | "source" | "generator" | "issued" | "created" if !is_empty => {
-                super::xml::skip(r, QName(child));
+                super::xml::skip(r, QName(child.as_bytes()));
             }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
+            _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
             _ => {}
         }
     });
@@ -261,7 +261,7 @@ fn parse_person(r: &mut Reader<&[u8]>, name: &str) -> (Vec<String>, Vec<String>)
                 emails.push(v);
             }
         }
-        _ if !is_empty => super::xml::skip(r, QName(child)),
+        _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
         _ => {}
     });
     (names, emails)
@@ -285,7 +285,7 @@ fn content_body(
     if is_empty {
         return None;
     }
-    let raw = text(r, QName(name));
+    let raw = text(r, QName(name.as_bytes()));
     let kind = attr(a, "type")
         .unwrap_or_default()
         .trim()
@@ -367,7 +367,7 @@ fn leaf_or_empty(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> String {
     if is_empty {
         return String::new();
     }
-    crate::text::normalize_space(&text(r, QName(name))).into_owned()
+    crate::text::normalize_space(&text(r, QName(name.as_bytes()))).into_owned()
 }
 
 #[cfg(test)]

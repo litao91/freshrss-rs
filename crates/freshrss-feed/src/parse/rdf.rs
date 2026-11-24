@@ -52,8 +52,8 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
                     feed.items.push(item);
                 }
             }
-            "textinput" if !is_empty => super::xml::skip(r, QName(name)),
-            _ if !is_empty => super::xml::skip(r, QName(name)),
+            "textinput" if !is_empty => super::xml::skip(r, QName(name.as_bytes())),
+            _ if !is_empty => super::xml::skip(r, QName(name.as_bytes())),
             _ => {}
         }
     });
@@ -65,7 +65,7 @@ fn find_element(r: &mut Reader<&[u8]>, wanted: &str) -> Option<String> {
     loop {
         match r.read_event() {
             Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e)) => {
-                let name = e.name().into_inner().to_owned();
+                let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                 if split(&name).1 == wanted {
                     return Some(name);
                 }
@@ -91,7 +91,7 @@ fn parse_channel(r: &mut Reader<&[u8]>, name: &str, feed: &mut RawFeed) {
                     None => feed.website = leaf(r, child, is_empty),
                 }
             }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
+            _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
             _ => {}
         }
     });
@@ -107,7 +107,7 @@ fn image_url(r: &mut Reader<&[u8]>, name: &str) -> Option<String> {
                 .map(str::to_owned)
                 .or_else(|| leaf(r, child, is_empty).filter(|u| is_remote_uri(u)));
         } else if !is_empty {
-            super::xml::skip(r, QName(child));
+            super::xml::skip(r, QName(child.as_bytes()));
         }
     });
     url
@@ -180,7 +180,7 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str, about: Option<&str>) -> Option<
                     item.thumbnail.get_or_insert(t);
                 }
             }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
+            _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
             _ => {}
         }
     });
@@ -212,7 +212,7 @@ fn leaf(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> Option<String> {
     if is_empty {
         return None;
     }
-    let raw = text(r, QName(name));
+    let raw = text(r, QName(name.as_bytes()));
     let normalized = crate::text::normalize_space(&raw);
     (!normalized.is_empty()).then(|| normalized.into_owned())
 }
@@ -221,7 +221,7 @@ fn leaf_or_empty(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> String {
     if is_empty {
         return String::new();
     }
-    crate::text::normalize_space(&text(r, QName(name))).into_owned()
+    crate::text::normalize_space(&text(r, QName(name.as_bytes()))).into_owned()
 }
 
 /// Like [`leaf_or_empty`] but keeps the whitespace inside the body intact.
@@ -232,7 +232,7 @@ fn leaf_raw(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> String {
     if is_empty {
         return String::new();
     }
-    text(r, QName(name))
+    text(r, QName(name.as_bytes()))
 }
 
 #[cfg(test)]

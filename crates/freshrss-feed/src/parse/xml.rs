@@ -28,7 +28,8 @@ pub fn reader(text: &str) -> Reader<&[u8]> {
 /// whatever prefix the generator felt like — so matching on the local name is what makes the
 /// parsers work across generators.
 pub fn local(name: QName<'_>) -> Cow<'_, str> {
-    split(name.into_inner()).1.into()
+    let full = std::str::from_utf8(name.into_inner()).unwrap_or_default();
+    split(full).1.into()
 }
 
 /// Splits a qualified name into its prefix and local part.
@@ -56,7 +57,7 @@ pub fn attrs(e: &BytesStart<'_>, _r: &Reader<&[u8]>) -> Attrs {
         let value = attr
             .normalized_value(XmlVersion::default())
             .map(Cow::into_owned)
-            .unwrap_or_else(|_| attr.value.into_owned());
+            .unwrap_or_else(|_| String::from_utf8_lossy(&attr.value).into_owned());
         out.push((key, value));
     }
     out
@@ -70,11 +71,11 @@ pub fn attrs(e: &BytesStart<'_>, _r: &Reader<&[u8]>) -> Attrs {
 pub fn attrs_prefixed(e: &BytesStart<'_>) -> Attrs {
     let mut out = Vec::new();
     for attr in e.attributes().flatten() {
-        let key = attr.key.into_inner().to_owned();
+        let key = String::from_utf8_lossy(attr.key.into_inner()).into_owned();
         let value = attr
             .normalized_value(XmlVersion::default())
             .map(Cow::into_owned)
-            .unwrap_or_else(|_| attr.value.into_owned());
+            .unwrap_or_else(|_| String::from_utf8_lossy(&attr.value).into_owned());
         out.push((key, value));
     }
     out
@@ -106,7 +107,7 @@ pub fn attr<'a>(attrs: &'a Attrs, name: &str) -> Option<&'a str> {
 /// references but leaves HTML-only names for [`html_only_entity_decode`](crate::html_only_entity_decode).
 pub fn text(r: &mut Reader<&[u8]>, name: QName<'_>) -> String {
     match r.read_text(name) {
-        Ok(bytes) => decode_content(&bytes),
+        Ok(bytes) => decode_content(&String::from_utf8_lossy(&bytes)),
         Err(_) => String::new(),
     }
 }
@@ -170,14 +171,14 @@ pub fn walk(
     loop {
         match r.read_event() {
             Ok(Event::Start(e)) => {
-                let name = e.name().into_inner().to_owned();
+                let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                 if split(&name).1 == until_local {
                     return;
                 }
                 on_start(&name, &e, false, r);
             }
             Ok(Event::Empty(e)) => {
-                let name = e.name().into_inner().to_owned();
+                let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                 on_start(&name, &e, true, r);
             }
             Ok(Event::End(e)) => {
@@ -210,11 +211,11 @@ mod tests {
 
     #[test]
     fn local_drops_the_namespace_prefix() {
-        assert_eq!(local(QName("content:encoded")), "encoded");
-        assert_eq!(local(QName("title")), "title");
-        assert_eq!(local(QName("xml:base")), "base");
-        assert_eq!(local(QName(":weird")), "weird");
-        assert_eq!(local(QName("trailing:")), "trailing:");
+        assert_eq!(local(QName(b"content:encoded")), "encoded");
+        assert_eq!(local(QName(b"title")), "title");
+        assert_eq!(local(QName(b"xml:base")), "base");
+        assert_eq!(local(QName(b":weird")), "weird");
+        assert_eq!(local(QName(b"trailing:")), "trailing:");
     }
 
     #[test]
@@ -244,7 +245,7 @@ mod tests {
     fn text_unescapes_entities() {
         let mut r = reader("<t>&lt;p&gt;Hi &amp;amp; bye&lt;/p&gt;</t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "<p>Hi &amp; bye</p>");
+        assert_eq!(text(&mut r, QName(b"t")), "<p>Hi &amp; bye</p>");
     }
 
     #[test]
@@ -252,14 +253,14 @@ mod tests {
         let mut r = reader("<t><![CDATA[<p>Hi &amp; bye</p>]]></t>");
         let _ = r.read_event().unwrap();
         // Inside CDATA nothing is a reference, so `&amp;` must survive as four characters.
-        assert_eq!(text(&mut r, QName("t")), "<p>Hi &amp; bye</p>");
+        assert_eq!(text(&mut r, QName(b"t")), "<p>Hi &amp; bye</p>");
     }
 
     #[test]
     fn text_handles_mixed_cdata_and_escaped_text() {
         let mut r = reader("<t>before <![CDATA[a < b]]> after &amp; end</t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "before a < b after & end");
+        assert_eq!(text(&mut r, QName(b"t")), "before a < b after & end");
     }
 
     #[test]
@@ -274,7 +275,7 @@ mod tests {
     fn text_leaves_html_only_entities_for_the_entity_pass() {
         let mut r = reader("<t>Caf&eacute; &amp; bar</t>");
         let _ = r.read_event().unwrap();
-        let raw = text(&mut r, QName("t"));
+        let raw = text(&mut r, QName(b"t"));
         assert_eq!(raw, "Caf&eacute; & bar");
         assert_eq!(crate::html_only_entity_decode(&raw), "Café & bar");
     }
@@ -283,28 +284,28 @@ mod tests {
     fn text_unwraps_cdata() {
         let mut r = reader("<t><![CDATA[<p>Hi</p>]]></t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "<p>Hi</p>");
+        assert_eq!(text(&mut r, QName(b"t")), "<p>Hi</p>");
     }
 
     #[test]
     fn text_keeps_inner_markup_that_was_not_escaped() {
         let mut r = reader("<t><p>Hi <b>there</b></p></t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "<p>Hi <b>there</b></p>");
+        assert_eq!(text(&mut r, QName(b"t")), "<p>Hi <b>there</b></p>");
     }
 
     #[test]
     fn text_of_a_nested_same_named_element_is_balanced() {
         let mut r = reader("<t>outer <t>inner</t> tail</t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "outer <t>inner</t> tail");
+        assert_eq!(text(&mut r, QName(b"t")), "outer <t>inner</t> tail");
     }
 
     #[test]
     fn text_is_not_trimmed() {
         let mut r = reader("<t>  spaced  </t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "  spaced  ");
+        assert_eq!(text(&mut r, QName(b"t")), "  spaced  ");
     }
 
     #[test]
@@ -312,7 +313,7 @@ mod tests {
         // The caller must not call `text` on an `Empty` event; `walk` reports which is which.
         let mut r = reader("<t>");
         let _ = r.read_event().unwrap();
-        assert_eq!(text(&mut r, QName("t")), "");
+        assert_eq!(text(&mut r, QName(b"t")), "");
     }
 
     #[test]
@@ -390,7 +391,7 @@ mod tests {
         let _ = r.read_event().unwrap();
         let mut seen = Vec::new();
         walk(&mut r, "a", |name, _, _, r| {
-            seen.push((name.to_owned(), text(r, QName(name))));
+            seen.push((name.to_owned(), text(r, QName(name.as_bytes()))));
         });
         assert_eq!(
             seen,

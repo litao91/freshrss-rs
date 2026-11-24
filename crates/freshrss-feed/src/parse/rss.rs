@@ -75,7 +75,7 @@ pub fn parse(document: &str) -> Result<RawFeed, FeedError> {
             }
             // `lastBuildDate`, `language`, `generator`, `copyright`, `managingEditor`, …: nothing
             // downstream reads them, and skipping keeps the loop cheap on large feeds.
-            _ if !is_empty => super::xml::skip(r, QName(name)),
+            _ if !is_empty => super::xml::skip(r, QName(name.as_bytes())),
             _ => {}
         }
     });
@@ -92,7 +92,7 @@ fn find_element(r: &mut Reader<&[u8]>, wanted: &str) -> Option<(String, Option<S
     loop {
         match r.read_event() {
             Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e)) => {
-                let name = e.name().into_inner().to_owned();
+                let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                 let found = attrs(&e, r);
                 if let Some(href) = attr(&found, "base")
                     .map(str::trim)
@@ -115,7 +115,7 @@ fn leaf(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> Option<String> {
     if is_empty {
         return None;
     }
-    let raw = text(r, QName(name));
+    let raw = text(r, QName(name.as_bytes()));
     let normalized = crate::text::normalize_space(&raw);
     (!normalized.is_empty()).then(|| normalized.into_owned())
 }
@@ -149,7 +149,7 @@ fn image_url(r: &mut Reader<&[u8]>, name: &str) -> Option<String> {
                 .map(str::to_owned)
                 .or_else(|| leaf(r, child, is_empty));
         } else if !is_empty {
-            super::xml::skip(r, QName(child));
+            super::xml::skip(r, QName(child.as_bytes()));
         }
     });
     url.filter(|u| is_remote_uri(u))
@@ -207,7 +207,7 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 let value = if is_empty {
                     String::new()
                 } else {
-                    text(r, QName(child))
+                    text(r, QName(child.as_bytes()))
                 };
                 // `Some("")` is preserved: a feed that emits an empty `<guid/>` did supply an id
                 // element, and that is a different situation from supplying none at all.
@@ -236,7 +236,7 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 let body = if is_empty {
                     String::new()
                 } else {
-                    text(r, QName(child))
+                    text(r, QName(child.as_bytes()))
                 };
                 if !body.trim().is_empty() {
                     item.content_html.get_or_insert(body);
@@ -246,7 +246,7 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
                 let body = if is_empty {
                     String::new()
                 } else {
-                    text(r, QName(child))
+                    text(r, QName(child.as_bytes()))
                 };
                 if !body.trim().is_empty() {
                     item.content_text.get_or_insert(body);
@@ -279,10 +279,10 @@ fn parse_item(r: &mut Reader<&[u8]>, name: &str) -> Option<RawItem> {
             {
                 // Media RSS elements with text we do not model.
                 if !is_empty {
-                    super::xml::skip(r, QName(child));
+                    super::xml::skip(r, QName(child.as_bytes()));
                 }
             }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
+            _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
             _ => {}
         }
     });
@@ -334,7 +334,7 @@ fn parse_media_group(r: &mut Reader<&[u8]>, name: &str, item: &mut RawItem) {
                     item.thumbnail = Some(t);
                 }
             }
-            _ if !is_empty => super::xml::skip(r, QName(child)),
+            _ if !is_empty => super::xml::skip(r, QName(child.as_bytes())),
             _ => {}
         }
     });
@@ -421,7 +421,7 @@ fn leaf_or_empty(r: &mut Reader<&[u8]>, name: &str, is_empty: bool) -> String {
     if is_empty {
         return String::new();
     }
-    crate::text::normalize_space(&text(r, QName(name))).into_owned()
+    crate::text::normalize_space(&text(r, QName(name.as_bytes()))).into_owned()
 }
 
 #[cfg(test)]

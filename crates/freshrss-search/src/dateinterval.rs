@@ -17,7 +17,7 @@
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Span, Timestamp, Zoned};
+use jiff::{Span, Timestamp, ZonedDateTime};
 
 use crate::ast::DateRange;
 use crate::error::SearchError;
@@ -326,7 +326,7 @@ fn instant(normalized: &str) -> Result<i64, SearchError> {
         z => offset_zone(z).map_err(|e| bad(normalized, &e.to_string()))?,
     };
     let zoned = civil
-        .to_zoned(tz)
+        .to_zoned_datetime(tz)
         .map_err(|e| bad(normalized, &e.to_string()))?;
     Ok(zoned.timestamp().as_second())
 }
@@ -360,10 +360,10 @@ fn sub_duration(base: i64, duration: &str, now: i64) -> Result<i64, SearchError>
     Ok(result.timestamp().as_second())
 }
 
-fn to_utc(secs: i64, now: i64) -> Result<Zoned, SearchError> {
+fn to_utc(secs: i64, now: i64) -> Result<ZonedDateTime, SearchError> {
     Timestamp::from_second(secs)
         .or_else(|_| Timestamp::from_second(now))
-        .map(|ts| ts.to_zoned(TimeZone::UTC))
+        .map(|ts| ts.to_zoned_datetime(TimeZone::UTC))
         .map_err(|e| bad(&secs.to_string(), &e.to_string()))
 }
 

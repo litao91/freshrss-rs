@@ -180,7 +180,7 @@ impl Default for EntryQuery {
 }
 
 /// A compiled statement: the SQL text and the values to bind, in the order the text names them.
-pub type Built = QueryBuilder<Sqlite>;
+pub type Built = QueryBuilder<'static, Sqlite>;
 
 /// Which of the optional `WHERE` groups to emit.
 ///
@@ -212,12 +212,12 @@ const FOR_UNREAD_COUNT: Include = Include {
 /// what makes an anonymous `?` safe here: sqlx's SQLite driver binds one by counting the anonymous
 /// placeholders before it, which only lines up with the value list if the two grow together.
 struct Conditions<'a> {
-    builder: &'a mut QueryBuilder<Sqlite>,
+    builder: &'a mut QueryBuilder<'static, Sqlite>,
     started: bool,
 }
 
 impl<'a> Conditions<'a> {
-    fn and(&mut self) -> &mut QueryBuilder<Sqlite> {
+    fn and(&mut self) -> &mut QueryBuilder<'static, Sqlite> {
         if self.started {
             self.builder.push(" AND ");
         }
@@ -236,14 +236,14 @@ struct Rung {
 
 impl Rung {
     /// Pushes `expr <sign> ?` and binds the boundary value beside it.
-    fn push(&self, sign: &str, builder: &mut QueryBuilder<Sqlite>) {
+    fn push(&self, sign: &str, builder: &mut QueryBuilder<'static, Sqlite>) {
         builder.push(format_args!("{} {sign} ", self.expr));
         match &self.value {
             Either::Left(v) => {
                 builder.push_bind(*v);
             }
             Either::Right(t) => {
-                builder.push_bind(t.as_str());
+                builder.push_bind(t.clone());
             }
         }
     }
@@ -300,7 +300,7 @@ impl EntryQuery {
     /// statement must be assembled by one builder: sqlx's SQLite driver binds an anonymous `?` by
     /// counting the anonymous placeholders before it, so values contributed by a second builder would
     /// be bound from the start of the list all over again.
-    fn push_ids(&self, builder: &mut QueryBuilder<Sqlite>) -> Result<()> {
+    fn push_ids(&self, builder: &mut QueryBuilder<'static, Sqlite>) -> Result<()> {
         self.validate()?;
         let a = INNER;
 
@@ -420,7 +420,7 @@ impl EntryQuery {
         &self,
         a: &Aliases,
         include: Include,
-        builder: &mut QueryBuilder<Sqlite>,
+        builder: &mut QueryBuilder<'static, Sqlite>,
     ) -> Result<()> {
         let mut w = Conditions {
             builder,
@@ -662,7 +662,7 @@ fn secondary_expr(sort: SecondarySort, a: &Aliases) -> String {
 }
 
 /// Appends the `ORDER BY` clause, identical in shape for both statements.
-fn push_order_by(q: &EntryQuery, a: &Aliases, builder: &mut QueryBuilder<Sqlite>) {
+fn push_order_by(q: &EntryQuery, a: &Aliases, builder: &mut QueryBuilder<'static, Sqlite>) {
     let order = q.order.as_str();
     builder.push(format_args!(" ORDER BY {} {order}", sort_expr(q.sort, a)));
     if q.sort == Sort::CategoryName {
@@ -698,7 +698,7 @@ fn push_order_by(q: &EntryQuery, a: &Aliases, builder: &mut QueryBuilder<Sqlite>
 /// What comes out is all-anonymous, which the whole statement has to be: sqlx's SQLite driver binds an
 /// anonymous `?` by counting the anonymous placeholders before it, so numbering any one of them would
 /// take the rest of the values from the start of the list instead.
-fn push_fragment(builder: &mut QueryBuilder<Sqlite>, fragment: &Fragment) {
+fn push_fragment(builder: &mut QueryBuilder<'static, Sqlite>, fragment: &Fragment) {
     debug_assert_eq!(
         fragment.sql.matches('?').count(),
         fragment.params.len(),
@@ -711,7 +711,7 @@ fn push_fragment(builder: &mut QueryBuilder<Sqlite>, fragment: &Fragment) {
     for (part, param) in parts.zip(&fragment.params) {
         match param {
             Param::Text(needle) => {
-                builder.push_bind(needle.as_str());
+                builder.push_bind(needle.clone());
             }
             Param::Int(id) => {
                 builder.push_bind(*id);
@@ -879,7 +879,7 @@ mod tests {
     /// [`EntryQuery::cursor_ladder`], [`CursorValue::coerced`] — or the position of a placeholder, which
     /// *is* the index its value has in the bound list.
     fn text(built: &Built) -> String {
-        built.sql().as_str().to_owned()
+        built.sql().to_owned()
     }
 
     /// How many values a statement binds: one per placeholder, which is what `push_bind` guarantees.

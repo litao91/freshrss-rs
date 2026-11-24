@@ -70,9 +70,9 @@ pub(super) fn chunks<T>(items: &[T], extra: usize) -> impl Iterator<Item = &[T]>
 ///
 /// An empty iterator emits `IN (NULL)`, which is false for every row: `IN ()` is a syntax error in
 /// SQLite, and an empty id set quietly becoming "every id" would be worse.
-pub(super) fn push_in_list<'q, T, I>(builder: &mut QueryBuilder<Sqlite>, values: I)
+pub(super) fn push_in_list<'q, T, I>(builder: &mut QueryBuilder<'q, Sqlite>, values: I)
 where
-    T: Encode<'q, Sqlite> + Type<Sqlite>,
+    T: Encode<'q, Sqlite> + Type<Sqlite> + 'q,
     I: IntoIterator<Item = T>,
 {
     let mut values = values.into_iter().peekable();

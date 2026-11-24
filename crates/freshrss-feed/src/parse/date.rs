@@ -85,7 +85,7 @@ fn datetime_to_millis(parsed: &jiff::fmt::strtime::BrokenDownTime) -> Option<i64
     if let Some(ms) = parsed
         .to_datetime()
         .ok()
-        .and_then(|dt| dt.to_zoned(utc.clone()).ok())
+        .and_then(|dt| dt.to_zoned_datetime(utc.clone()).ok())
         .map(|z| z.timestamp().as_millisecond())
     {
         return Some(ms);
@@ -93,7 +93,7 @@ fn datetime_to_millis(parsed: &jiff::fmt::strtime::BrokenDownTime) -> Option<i64
     parsed
         .to_date()
         .ok()
-        .and_then(|d| d.to_zoned(utc).ok())
+        .and_then(|d| d.to_zoned_datetime(utc).ok())
         .map(|z| z.timestamp().as_millisecond())
 }
 
@@ -122,7 +122,7 @@ fn normalize(raw: &str) -> String {
 ///
 /// The date, time and zone are what actually identify the instant, so on failure the leading
 /// `weekday,` is dropped and the rest is parsed on its own.
-fn parse_rfc2822(text: &str) -> Option<jiff::Zoned> {
+fn parse_rfc2822(text: &str) -> Option<jiff::ZonedDateTime> {
     if let Ok(zoned) = rfc2822::parse(text) {
         return Some(zoned);
     }
@@ -167,7 +167,7 @@ fn civil_datetime_utc(text: &str) -> Option<i64> {
     let candidate = text.replace(' ', "T");
     let dt = civil::DateTime::from_str(&candidate).ok()?;
     Some(
-        dt.to_zoned(jiff::tz::TimeZone::UTC)
+        dt.to_zoned_datetime(jiff::tz::TimeZone::UTC)
             .ok()?
             .timestamp()
             .as_millisecond(),
@@ -178,7 +178,7 @@ fn civil_datetime_utc(text: &str) -> Option<i64> {
 fn civil_date_only(text: &str) -> Option<i64> {
     let date = civil::Date::from_str(text).ok()?;
     Some(
-        date.to_zoned(jiff::tz::TimeZone::UTC)
+        date.to_zoned_datetime(jiff::tz::TimeZone::UTC)
             .ok()?
             .timestamp()
             .as_millisecond(),
@@ -216,7 +216,7 @@ fn partial_iso(text: &str) -> Option<i64> {
 }
 
 fn midnight_utc(date: civil::Date) -> i64 {
-    date.to_zoned(jiff::tz::TimeZone::UTC)
+    date.to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .map(|z| z.timestamp().as_millisecond())
         .unwrap_or(0)
 }
@@ -227,7 +227,7 @@ pub fn to_rfc3339(unix_seconds: i64) -> String {
     let Ok(ts) = Timestamp::from_millisecond(unix_seconds * 1000) else {
         return String::new();
     };
-    let zoned = ts.to_zoned(jiff::tz::TimeZone::UTC);
+    let zoned = ts.to_zoned_datetime(jiff::tz::TimeZone::UTC);
     let formatted = zoned.strftime("%Y-%m-%dT%H:%M:%S").to_string();
     // RFC 3339 allows either `Z` or `+00:00` for UTC; `Z` is what the JSON Feed and Atom specs
     // show in their examples and what every other feed emits.
@@ -240,7 +240,7 @@ pub fn to_rfc822(unix_seconds: i64) -> String {
     Timestamp::from_millisecond(unix_seconds * 1000)
         .ok()
         .and_then(|ts| {
-            ts.to_zoned(jiff::tz::TimeZone::UTC)
+            ts.to_zoned_datetime(jiff::tz::TimeZone::UTC)
                 .strftime("%a, %d %b %Y %T %z")
                 .to_string()
                 .into()

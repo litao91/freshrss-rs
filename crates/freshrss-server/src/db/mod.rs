@@ -238,16 +238,30 @@ pub(crate) mod support {
     where
         T: for<'r> sqlx::Decode<'r, Sqlite> + sqlx::Type<Sqlite> + Send + Sync + Unpin,
     {
-        db.with(
-            |mut conn| async move { Ok(sqlx::query_scalar(sql_text).fetch_one(&mut *conn).await?) },
-        )
-        .await
-        .expect("query")
+        // The query runs in a named fn taking `&mut SqliteConnection`, the same shape as every DAO
+        // call: sqlx 0.8's `Executor` lifetime cannot be proven general enough for a query built
+        // inside the closure's own async block.
+        async fn fetch<T>(conn: &mut SqliteConnection, sql_text: &'static str) -> Result<T>
+        where
+            T: for<'r> sqlx::Decode<'r, Sqlite> + sqlx::Type<Sqlite> + Send + Sync + Unpin,
+        {
+            Ok(sqlx::query_scalar(sql_text).fetch_one(&mut *conn).await?)
+        }
+        db.with(|mut conn| async move { fetch(&mut conn, sql_text).await })
+            .await
+            .expect("query")
     }
 
     /// Runs a batch of statements, and panics if any of them fails.
     pub(crate) async fn exec(db: &Db, sql_text: &'static str) {
-        db.with(|mut conn| async move { Ok(sqlx::raw_sql(sql_text).execute(&mut *conn).await?) })
+        async fn run(conn: &mut SqliteConnection, sql_text: &'static str) -> Result<()> {
+            // Through the trait method, whose boxed future erases the executor lifetime:
+            // `RawSql::execute` is an async fn generic over `Executor<'e>`, and its opaque future
+            // cannot be proven `Send` when the borrow lives inside a generator.
+            sqlx::Executor::execute(&mut *conn, sqlx::raw_sql(sql_text)).await?;
+            Ok(())
+        }
+        db.with(|mut conn| async move { run(&mut conn, sql_text).await })
             .await
             .expect("execute");
     }
