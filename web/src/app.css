@@ -1,9 +1,10 @@
 /* freshrss-rs reader — design system.
  *
  * Class names, DOM structure and the colour tokens below are reproduced from Feeddi's reader so
- * the UI is visually equivalent to the reference snapshot. The token values for all three themes
+ * the UI is visually equivalent to the reference snapshot. The token values for the Feeddi themes
  * (kagit / sepya / gece) were recovered from Feeddi's published stylesheet; see tools/gen-fonts.py
- * for the typography, which is copied verbatim.
+ * for the typography, which is copied verbatim. Kanagawa is adapted from the mdBook theme at
+ * github.com/saylesss88/mdbook-kanagawa-theme (the Kanagawa Wave palette).
  */
 
 @import './fonts.css';
@@ -77,6 +78,30 @@ html[data-theme='gece'],
   --fd-focus: #8fb0ff;
   --fd-danger: #ff8a80;
   --fd-success: #7bd08f;
+}
+
+/* Kanagawa Wave: sumiInk inks, fujiWhite text, crystalBlue accent. The source palette names are
+   kept beside the values so a future adjustment can be checked against the original theme. */
+html[data-theme='kanagawa'],
+[data-theme-preview='kanagawa'] {
+  color-scheme: dark;
+  --fd-bg: #1f1f28; /* sumiInk1 */
+  --fd-surface: #2a2a37; /* sumiInk2 */
+  --fd-side: #16161d; /* sumiInk0 */
+  --fd-ink: #dcd7ba; /* fujiWhite */
+  --fd-ink-2: #c8c093; /* oldWhite */
+  --fd-prose-ink: #dcd7ba; /* fujiWhite */
+  --fd-muted: #9cabca; /* springViolet2 */
+  --fd-line: #363646; /* sumiInk3 */
+  --fd-field: #727169; /* fujiGray */
+  --fd-accent: #7e9cd8; /* crystalBlue */
+  --fd-accent-hover: #7fb4ca; /* springBlue */
+  --fd-accent-ink: #1f1f28; /* sumiInk1 */
+  --fd-soft: #223249; /* waveBlue1 */
+  --fd-hover: #2a2a37; /* sumiInk2 */
+  --fd-focus: #7fb4ca; /* springBlue */
+  --fd-danger: #e46876; /* waveRed */
+  --fd-success: #98bb6c; /* springGreen */
 }
 
 /* ==========================================================================
@@ -1085,7 +1110,7 @@ i.is-spinning,
 
 .rd-themes {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.35rem;
   margin: 0 0.25rem 0.5rem;
 }

@@ -73,6 +73,7 @@ const en: Record<string, string> = {
   'theme.kagit': 'Paper',
   'theme.sepya': 'Sepia',
   'theme.gece': 'Night',
+  'theme.kanagawa': 'Kanagawa',
   'theme.auto': 'Auto',
 
   'nav.addSubscription': 'Add subscription',
@@ -312,6 +313,7 @@ const tr: Record<string, string> = {
   'theme.kagit': 'Kağıt',
   'theme.sepya': 'Sepya',
   'theme.gece': 'Gece',
+  'theme.kanagawa': 'Kanagawa',
   'theme.auto': 'Otomatik',
 
   'nav.addSubscription': 'Abonelik ekle',

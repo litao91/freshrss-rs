@@ -222,7 +222,7 @@ the `Fetcher` trait rather than the network.
 
 The first browser command drives the built reader in a real Chromium: sign-in, the first page,
 windowed scrolling with a no-duplicate-rows assertion, opening an article, `j k s m u b / Escape`,
-sorting, searching, mark-all-read and all three themes — 67 checks, and it fails on any console
+sorting, searching, mark-all-read and all four themes — 68 checks, and it fails on any console
 error. It needs a running server with a user that has some articles; `scripts/seed-demo.sql`
 produces one against a scratch database. The second points the same browser at the anchored
 mark-read gestures — the two shortcuts, the toolbar and right-click menus and the reading pane's

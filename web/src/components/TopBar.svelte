@@ -50,6 +50,7 @@
     { value: 'kagit', label: t('theme.kagit') },
     { value: 'sepya', label: t('theme.sepya') },
     { value: 'gece', label: t('theme.gece') },
+    { value: 'kanagawa', label: t('theme.kanagawa') },
     { value: 'auto', label: t('theme.auto') },
   ]);
 

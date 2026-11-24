@@ -30,7 +30,7 @@
           var theme = pref === 'auto' ? (dark ? 'gece' : 'kagit') : pref;
           var root = document.documentElement;
           root.setAttribute('data-theme', theme);
-          root.setAttribute('data-bs-theme', theme === 'gece' ? 'dark' : 'light');
+          root.setAttribute('data-bs-theme', theme === 'gece' || theme === 'kanagawa' ? 'dark' : 'light');
           root.setAttribute('data-theme-pref', pref);
           var size = localStorage.getItem('feeddi-reader-size');
           size = { s: 17, m: 19, l: 21 }[size] || parseInt(size, 10);
@@ -39,7 +39,7 @@
           root.setAttribute('data-rd-nav', localStorage.getItem('feeddi-reader-nav') || 'acik');
           root.setAttribute('data-rd-focus', localStorage.getItem('feeddi-reader-focus') || 'kapali');
           var tc = document.querySelector('meta[name="theme-color"]');
-          if (tc) tc.setAttribute('content', theme === 'gece' ? '#16130f' : theme === 'sepya' ? '#f1e6cf' : '#f6f2ea');
+          if (tc) tc.setAttribute('content', theme === 'gece' ? '#16130f' : theme === 'kanagawa' ? '#1f1f28' : theme === 'sepya' ? '#f1e6cf' : '#f6f2ea');
         } catch (e) {}
       })();
     </script>

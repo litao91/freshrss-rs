@@ -9,7 +9,7 @@
  * carry over.
  */
 
-export type ThemeName = 'kagit' | 'sepya' | 'gece';
+export type ThemeName = 'kagit' | 'sepya' | 'gece' | 'kanagawa';
 export type ThemePref = ThemeName | 'auto';
 export type Density = 'rahat' | 'sikisik';
 export type Toggle = 'acik' | 'kapali';
@@ -29,6 +29,7 @@ export const THEME_LABELS: Record<ThemeName, string> = {
   kagit: 'Paper',
   sepya: 'Sepia',
   gece: 'Night',
+  kanagawa: 'Kanagawa',
 };
 
 export const MIN_SIZE = 15;
@@ -88,11 +89,15 @@ function applyTheme(): void {
   const theme = resolveTheme(prefs.themePref);
   prefs.theme = theme;
   root.setAttribute('data-theme', theme);
-  root.setAttribute('data-bs-theme', theme === 'gece' ? 'dark' : 'light');
+  root.setAttribute('data-bs-theme', theme === 'gece' || theme === 'kanagawa' ? 'dark' : 'light');
   root.setAttribute('data-theme-pref', prefs.themePref);
   // Keep the browser chrome (mobile address bar) in step with the page.
   const meta = document.querySelector('meta[name="theme-color"]');
-  const color = theme === 'gece' ? '#16130f' : theme === 'sepya' ? '#f1e6cf' : '#f6f2ea';
+  const color =
+    theme === 'gece' ? '#16130f'
+    : theme === 'kanagawa' ? '#1f1f28'
+    : theme === 'sepya' ? '#f1e6cf'
+    : '#f6f2ea';
   meta?.setAttribute('content', color);
 }
 
@@ -157,7 +162,7 @@ function applyLanguage(): void {
 /** Reads persisted preferences and applies them. Call once at startup, after `index.html`'s script. */
 export function initPrefs(): void {
   const storedTheme = read(KEYS.theme);
-  if (storedTheme === 'kagit' || storedTheme === 'sepya' || storedTheme === 'gece' || storedTheme === 'auto') {
+  if (storedTheme === 'kagit' || storedTheme === 'sepya' || storedTheme === 'gece' || storedTheme === 'kanagawa' || storedTheme === 'auto') {
     prefs.themePref = storedTheme;
   }
 
@@ -197,7 +202,7 @@ export function setTheme(pref: ThemePref): void {
 }
 
 export function cycleTheme(): void {
-  const order: ThemePref[] = ['kagit', 'sepya', 'gece', 'auto'];
+  const order: ThemePref[] = ['kagit', 'sepya', 'gece', 'kanagawa', 'auto'];
   const next = order[(order.indexOf(prefs.themePref) + 1) % order.length];
   setTheme(next);
 }

@@ -323,10 +323,10 @@ try {
   await shot(page, '03-list');
 
   // --- themes ------------------------------------------------------------
-  for (const theme of ['sepya', 'gece', 'kagit']) {
+  for (const theme of ['sepya', 'gece', 'kanagawa', 'kagit']) {
     await page.evaluate((t) => {
       document.documentElement.setAttribute('data-theme', t);
-      document.documentElement.setAttribute('data-bs-theme', t === 'gece' ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-bs-theme', t === 'gece' || t === 'kanagawa' ? 'dark' : 'light');
     }, theme);
     await page.waitForTimeout(200);
     const bg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--fd-bg').trim());
