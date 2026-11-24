@@ -9,7 +9,7 @@
    */
   import { tick } from 'svelte';
   import { ActionMenu, ButtonGroup, VirtualList, type CmdAction } from 'svelte-widgets';
-  import { format_shortcut } from 'svelte-widgets/utils';
+  import { format_shortcut } from 'svelte-widgets/shortcuts';
   import { mediaUrl, type EntrySummary } from '../lib/api';
   import {
     entries,
